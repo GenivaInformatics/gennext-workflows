@@ -1,0 +1,73 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: get-node-config
+  namespace: argo
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: get-node-config
+  arguments:
+    parameters:
+      - name: node-name
+      - name: user-id
+      - name: job-id
+  templates:
+    - name: get-node-config
+      inputs:
+        parameters:
+          - name: node-name
+          - name: user-id
+          - name: job-id
+      outputs:
+        parameters:
+          # REL -> relative
+          - name: input-rel-dir
+            valueFrom:
+              path: /tmp/INPUT_REL_DIR
+          - name: output-rel-dir
+            valueFrom:
+              path: /tmp/OUTPUT_REL_DIR
+          - name: ref-base-dir
+            valueFrom:
+              path: /tmp/REF_BASE_DIR
+          - name: temp-rel-dir
+            valueFrom:
+              path: /tmp/TEMP_REL_DIR
+          - name: scratch-rel-dir
+            valueFrom:
+              path: /tmp/SCRATCH_REL_DIR
+          - name: thread-count
+            valueFrom:
+              path: /tmp/THREAD_COUNT
+      script:
+        image: bitnami/kubectl:latest
+        command: [bash]
+        # X_REL_DIR env var's are not relative but the files written are
+        source: |
+          NODE_NAME="{{inputs.parameters.node-name}}"
+          clean_path() {
+          sed -E 's#/+#/#g; s#([^/])$#\1/#';
+          }
+          join_paths() {
+          echo "${1:+$1/}$2" | clean_path
+          }
+          kubectl get node $NODE_NAME -o jsonpath='
+          {"INPUT_REL_DIR="}{.metadata.annotations.gennext\.bio/input-base-dir}
+          {"\nOUTPUT_REL_DIR="}{.metadata.annotations.gennext\.bio/output-base-dir}
+          {"\nREF_BASE_DIR="}{.metadata.annotations.gennext\.bio/ref-base-dir}
+          {"\nTEMP_REL_DIR="}{.metadata.annotations.gennext\.bio/temp-base-dir}
+          {"\nSCRATCH_REL_DIR="}{.metadata.annotations.gennext\.bio/scratch-base-dir}
+          {"\nTHREAD_COUNT="}{.metadata.annotations.gennext\.bio/thread-count}
+          ' > /tmp/keypaths_tmp0
+          while IFS='=' read -r key val
+          do
+            if [[ $key = "REF_BASE_DIR" ]]
+            then
+              echo "$val" | clean_path > "/tmp/$key"
+            elif [[ $key = "THREAD_COUNT" ]]
+            then
+              echo "$val" > "/tmp/$key"
+            else
+              echo "$(join_paths $val {{inputs.parameters.user-id}}/{{inputs.parameters.job-id}})" > "/tmp/$key"
+            fi
+          done < /tmp/keypaths_tmp0

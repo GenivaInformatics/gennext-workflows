@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gennext-ft-server
+  namespace: gennext-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gennext-ft-server
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    spec:
+      affinity: {}
+      containers:
+        - env:
+            - name: GENNEXT_FT_EDGE_TITLE
+              value: gennext-ft-edge
+            - name: GENNEXT_FT_EDGE_NAMESPACE
+              value: gennext-dev
+            - name: GENNEXT_FT_EDGE_PORT
+              value: "13031"
+          image: bergun/gennext-ft-server:0.0.1
+          imagePullPolicy: Always
+          name: gennext-ft-server
+          ports:
+            - containerPort: 8000
+              name: 8000tcp
+              protocol: TCP
+            - containerPort: 8080
+              name: 8080tcp
+              protocol: TCP
+          resources: {}
+      dnsConfig:
+        nameservers:
+          - 8.8.8.8
+          - 8.8.4.4
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        gennext_node_type: vertex
+      serviceAccount: gennext-ft-server

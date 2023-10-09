@@ -1,0 +1,49 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: fastqc-template
+spec:
+  templates:
+    - name: fastqc
+      inputs:
+        parameters:
+          - name: fq-r1
+          - name: fq-r2
+          - name: output-dir
+      outputs:
+        parameters:
+          - name: output-dir
+            value: "{{inputs.parameters.output-dir}}"
+      volumes:
+        - name: fq-r1
+          hostPath:
+            path: "{{inputs.parameters.fq-r1}}"
+            type: File
+        - name: fq-r2
+          hostPath:
+            path: "{{inputs.parameters.fq-r2}}"
+            type: File
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+
+      script:
+        name: "fastqc"
+        image: quay.io/biocontainers/fastqc:0.12.1--hdfd78af_0
+        command: [sh]
+        source: |
+          ls -lha  /mnt/input/r1/;
+          ls -lha  /mnt/input/r2/;
+          fastqc \
+          --outdir=/mnt/output \
+          --threads=2 \
+          /mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}} \
+          /mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}
+        volumeMounts:
+          - name: fq-r1
+            mountPath: "/mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}"
+          - name: fq-r2
+            mountPath: "/mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}"
+          - name: output-dir
+            mountPath: "/mnt/output/"

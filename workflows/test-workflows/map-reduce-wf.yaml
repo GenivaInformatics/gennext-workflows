@@ -1,0 +1,76 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: fan-out-in-params-workflow
+spec:
+  entrypoint: fan-out-in-params-workflow
+  nodeSelector:
+    kubernetes.io/hostname: "gennext.bio"
+  templates:
+    # Definition of the entire workflow
+    # You'll find the definition of the different step templates below.
+    - name: fan-out-in-params-workflow
+      steps:
+        - - name: generate
+            template: gen-number-list
+        - - name: fan-out
+            template: fan-out
+            arguments:
+              parameters:
+                - name: number
+                  value: "{{item}}"
+            # This line actually fans out the items into multiple steps
+            withParam: "{{steps.generate.outputs.result}}"
+        - - name: fan-in
+            template: fan-in
+            arguments:
+              parameters:
+                - name: numbers
+                  value: "{{steps.fan-out.outputs.parameters}}"
+
+    # Step to generate the output sequence
+    # The output is a simple JSON-compliant array of ints like so:
+    # [1, 2, 3]
+    - name: gen-number-list
+      script:
+        image: python:alpine3.6
+        command: [python]
+        source: |
+          import json
+          import sys
+          import random
+          json.dump([i for i in range(1, random.randint(8, 16))], sys.stdout)
+    # Fan-out: Splitting the output sequence into steps
+    # Argo iterates over the array generated in the previous step and
+    # passes on one element for each step.
+    - name: fan-out
+      paralellism: 2
+      inputs:
+        parameters:
+          - name: number
+      container:
+        image: alpine:latest
+        command: [sh, -c]
+        args: ["echo {{inputs.parameters.number}} > /tmp/number.txt"]
+      outputs:
+        parameters:
+          - name: number
+            valueFrom:
+              path: /tmp/number.txt
+
+    # Fan-in: Combining the outputs
+    # When reading the elements, argo reads the output of the previous step
+    # from "output-number" as JSON objects fo all output parameters. The input
+    # to this step will then be a JSON-compliant array of objects like so:
+    # [{"number":"1"},{"number":"2"},{"number":"3"}]
+    #
+    # Do note: The ints were converted into strings since argo considers all
+    # inputs and outputs to be strings by default.
+    - name: fan-in
+      inputs:
+        parameters:
+          - name: numbers
+      container:
+        image: alpine:latest
+        command: [sh, -c]
+        args: ["echo received {{inputs.parameters.numbers}}"]

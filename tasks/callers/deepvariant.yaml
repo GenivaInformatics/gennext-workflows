@@ -1,0 +1,86 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: deepvariant-template
+  namespace: argo
+spec:
+  entrypoint: deepvariant
+  templates:
+    - name: deepvariant
+      inputs:
+        parameters:
+          - name: input-bam
+            value: "/runspace/sample_dev/23-214/bam/23-214_recal.bam"
+          - name: genome-ref-f
+            value: "/home/workspace/refs_annots/genome/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set.fa"
+          - name: regions-file
+            value: "/home/workspace/refs_annots/region_beds/gencode.v41.hg38.coding_regions.bed"
+          - name: output-vcf
+            value: "/tmp/bed-split/vcf/output_dv.vcf.gz"
+          - name: output-g-vcf
+            value: "/tmp/bed-split/vcf/output_dv.g.vcf.gz"
+          - name: thread-count
+            value: "16"
+          - name: scratch-dir
+            value: "/runspace/tmp/scratch/"
+      outputs:
+        parameters:
+          - name: output-vcf
+            value: "{{=sprig.osBase(inputs.parameters['output-vcf'])}}"
+          - name: output-g-vcf
+            value: "{{=sprig.osBase(inputs.parameters['output-g-vcf'])}}"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: output-vcf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-vcf'])}}"
+            type: DirectoryOrCreate
+        - name: output-g-vcf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-g-vcf'])}}"
+            type: DirectoryOrCreate
+        - name: regions-file
+          hostPath:
+            path: "{{inputs.parameters.regions-file}}"
+            type: File
+        - name: genome-ref-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['genome-ref-f'])}}"
+            type: Directory
+        - name: scratch-dir
+          hostPath:
+            path: "{{inputs.parameters.scratch-dir}}"
+            type: Directory
+      script:
+        name: "deepvariant-wes"
+        # image: google/deepvariant:1.5.0-gpu
+        # image: gcr.io/deepvariant-docker/deepvariant:1.5.0-gpu
+        image: gcr.io/deepvariant-docker/deepvariant:1.5.0
+        command: [sh]
+        source: |
+          samtools index -@{{inputs.parameters.thread-count}} /input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}};
+          /opt/deepvariant/bin/run_deepvariant \
+          --model_type WES \
+          --reads /input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+          --ref /input/ref/{{=sprig.osBase(inputs.parameters['genome-ref-f'])}} \
+          --regions /input/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}} \
+          --num_shards {{inputs.parameters.thread-count}} \
+          --intermediate_results_dir /scratch/ \
+          --output_vcf /output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf'])}} \
+          --output_gvcf /output/gvcf/{{=sprig.osBase(inputs.parameters['output-g-vcf'])}};
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/input/bam/"
+          - name: output-vcf
+            mountPath: "/output/vcf/"
+          - name: output-g-vcf
+            mountPath: "/output/gvcf/"
+          - name: regions-file
+            mountPath: "/input/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}}"
+          - name: genome-ref-f
+            mountPath: "/input/ref/"
+          - name: scratch-dir
+            mountPath: "/scratch/"

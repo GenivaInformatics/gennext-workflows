@@ -1,0 +1,54 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: parallel-caller-workflow
+spec:
+  entrypoint: parallel-caller
+  arguments:
+    parameters:
+      - name: regions-beds-list
+      - name: callers-list
+        default: '["haplotypecaller", "freebayes"]'
+      - name: thread-count
+  templates:
+    # Definition of the entire workflow
+    # You'll find the definition of the different step templates below.
+    - name: parallel-caller
+      arguments:
+        parameters:
+          - name: regions-beds-list
+            value: "{{workflow.parameters.regions-beds-list}}"
+          - name: callers-list
+            value: "{{workflow.parameters.callers-list}}"
+      dag:
+        tasks:
+          - name: split-regions-beds-list
+            template: split-regions-beds-list
+            arguments:
+              parameters:
+                - name: regions-bed
+                  value: "{{item}}"
+                - name: callers-list
+                  value: "{{inputs.parameters.callers-list}}"
+            withParam: "{{inputs.parameters.regions-beds-list}}"
+          - name: split-callers-list
+            template: split-callers-list
+            arguments:
+              parameters:
+                - name: regions-bed
+                  value: "{{tasks.split-regions-beds-list.outputs.parameters.regions-bed}}"
+                - name: caller
+                  value: "{{item2}}"
+            withParam: "{{tasks.split-regions-beds-list.outputs.result}}"
+            depends: "split-regions-beds-list"
+    - name: split-regions-beds-list
+      inputs:
+        parameters:
+          - name: regions-bed
+          - name: callers-list
+      depends: "split-callers-list"
+    - name: split-callers-list
+      inputs:
+        parameters:
+          - name: regions-bed
+          - name: caller

@@ -1,0 +1,50 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: freebayes-template
+spec:
+  templates:
+    - name: freebayes
+      inputs:
+        parameters:
+          - name: input-bam
+          - name: genome-ref-f
+          - name: regions-file
+          - name: output-vcf
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: output-vcf
+          hostPath:
+            path: "{{inputs.parameters.output-vcf}}"
+            type: FileOrCreate
+        - name: regions-file
+          hostPath:
+            path: "{{inputs.parameters.regions-file}}"
+            type: File
+        - name: genome-ref-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['genome-ref-f'])}}"
+            type: Directory
+      script:
+        name: "freebayes"
+        image: quay.io/biocontainers/freebayes:1.3.6--h346b5cb_1
+        command: [sh]
+        source: |
+          freebayes \
+          ---genotype-qualities \
+          -f /mnt/ref/{{=sprig.osBase(inputs.parameters['genome-ref-f'])}} \
+          --targets /mnt/input/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}} \
+          /mnt/input/{{=sprig.osBase(inputs.parameters['input-bam'])}}  \
+          > /mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf'])}}
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}"
+          - name: output-vcf
+            mountPath: "/mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf'])}}"
+          - name: regions-file
+            mountPath: "/mnt/input/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}}"
+          - name: genome-ref-f
+            mountPath: "/mnt/ref/"

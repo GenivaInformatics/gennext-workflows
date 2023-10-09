@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  generateName: hostpath-example-
+spec:
+  entrypoint: main
+  arguments:
+    parameters:
+    - name: hostpath-dir
+  templates:
+  - name: main
+    steps:
+    - - name: process-data
+        template: process-data
+  - name: process-data
+    inputs:
+      parameters:
+      - name: hostpath-dir
+    container:
+      image: alpine:latest
+      command: ["ls", "-l", "/mnt/data"]
+      volumeMounts:
+      - name: data-volume
+        mountPath: /mnt/data
+    volumes:
+    - name: data-volume
+      hostPath:
+        path: "{{inputs.parameters.hostpath-dir}}"
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node-name}}"

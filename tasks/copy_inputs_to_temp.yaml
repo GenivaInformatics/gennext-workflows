@@ -1,0 +1,162 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: copy-inputs-to-temp
+  namespace: argo
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: copy-inputs-to-temp
+  # arguments:
+  #   parameters:
+  #     - name: job-id
+  #     - name: input-rel-dir
+  templates:
+    - name: copy-inputs-to-temp
+      inputs:
+        parameters:
+          - name: run-data
+          - name: input-rel-dir
+          - name: temp-rel-dir
+      outputs:
+        parameters:
+          - name: fq-r1
+            valueFrom:
+              parameter: "{{steps.copy-fastq-to-temp.outputs.parameters.fq-r1}}"
+          - name: fq-r2
+            valueFrom:
+              parameter: "{{steps.copy-fastq-to-temp.outputs.parameters.fq-r2}}"
+          - name: regions-file
+            valueFrom:
+              parameter: "{{steps.copy-regions-file-to-temp.outputs.parameters.regions-file}}"
+      steps:
+        - - name: copy-fastq-to-temp
+            template: copy-fastq-to-temp
+            when: "!{{=jsonpath(inputs.parameters['run-data'], '$.isBam')}}"
+            arguments:
+              parameters:
+                - name: fq-r1
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.files.fqR1.name')}}"
+                - name: fq-r2
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.files.fqR2.name')}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+          - name: copy-bam-to-temp
+            template: copy-bam-to-temp
+            when: "{{=jsonpath(inputs.parameters['run-data'], '$.isBam')}}"
+            arguments:
+              parameters:
+                - name: bam
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.files.bam.name')}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+        - - name: copy-regions-file-to-temp
+            template: copy-regions-file-to-temp
+            when: "'{{=jsonpath(inputs.parameters['run-data'], '$.files.regionsFile.name')}}' != ''"
+            arguments:
+              parameters:
+                - name: regions-file
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.files.regionsFile.name')}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+    - name: read-run-data
+      inputs:
+        parameters:
+          - name: run-data
+    - name: copy-fastq-to-temp
+      volumes:
+        - name: input-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.input-rel-dir}}"
+        - name: temp-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.temp-rel-dir}}"
+            type: DirectoryOrCreate
+      inputs:
+        parameters:
+          - name: fq-r1
+          - name: fq-r2
+          - name: input-rel-dir
+          - name: temp-rel-dir
+      outputs:
+        parameters:
+          - name: fq-r1
+            value: "{{inputs.parameters.temp-rel-dir}}{{inputs.parameters.fq-r1}}"
+          - name: fq-r2
+            value: "{{inputs.parameters.temp-rel-dir}}{{inputs.parameters.fq-r2}}"
+      script:
+        image: alpine:latest
+        command: [sh]
+        source: |
+          #!/bin/sh
+          cp /mnt/input/{{inputs.parameters.fq-r1}} /mnt/temp/
+          cp /mnt/input/{{inputs.parameters.fq-r2}} /mnt/temp/
+        volumeMounts:
+          - name: input-rel-dir
+            mountPath: /mnt/input
+          - name: temp-rel-dir
+            mountPath: /mnt/temp
+
+    - name: copy-bam-to-temp
+      volumes:
+        - name: input-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.input-rel-dir}}"
+        - name: temp-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.temp-rel-dir}}"
+            type: DirectoryOrCreate
+      inputs:
+        parameters:
+          - name: bam
+          - name: input-rel-dir
+          - name: temp-rel-dir
+      outputs:
+        parameters:
+          - name: bam
+            value: "{{inputs.parameters.temp-rel-dir}}{{inputs.parameters.bam}}"
+      script:
+        image: alpine:latest
+        command: [sh]
+        source: |
+          #!/bin/sh
+          cp /mnt/input/{{inputs.parameters.bam}} /mnt/temp/
+        volumeMounts:
+          - name: input-rel-dir
+            mountPath: /mnt/input
+          - name: temp-rel-dir
+            mountPath: /mnt/temp
+    - name: copy-regions-file-to-temp
+      volumes:
+        - name: input-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.input-rel-dir}}"
+        - name: temp-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.temp-rel-dir}}"
+            type: DirectoryOrCreate
+      inputs:
+        parameters:
+          - name: regions-file
+          - name: input-rel-dir
+          - name: temp-rel-dir
+      outputs:
+        parameters:
+          - name: regions-file
+            value: "{{inputs.parameters.temp-rel-dir}}{{inputs.parameters.regions-file}}"
+      script:
+        image: alpine:latest
+        command: [sh]
+        source: |
+          #!/bin/sh
+          cp /mnt/input/{{inputs.parameters.regions-file}} /mnt/temp/
+        volumeMounts:
+          - name: input-rel-dir
+            mountPath: /mnt/input
+          - name: temp-rel-dir
+            mountPath: /mnt/temp

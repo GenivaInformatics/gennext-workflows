@@ -1,0 +1,61 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: multicaller-template
+spec:
+  templates:
+    - name: multicaller
+      dag:
+        tasks:
+          - name:
+    - name: haplotypecaller
+      inputs:
+        parameters:
+          - name: input-bam
+          - name: genome-ref-f
+          - name: regions-file
+          - name: dbsnp-f
+          - name: output-vcf
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: output-vcf
+          hostPath:
+            path: "{{inputs.parameters.output-vcf}}"
+            type: FileOrCreate
+        - name: regions-file
+          hostPath:
+            path: "{{inputs.parameters.regions-file}}"
+            type: File
+        - name: genome-ref-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['genome-ref-f'])}}"
+            type: Directory
+        - name: dbsnp-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['dbsnp-f'])}}"
+            type: Directory
+      script:
+        name: "haplotypecaller"
+        image: broadinstitute/gatk:4.4.0.0
+        command: [sh]
+        source: |
+          gatk HaplotypeCaller \
+          -I /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+          -R /mnt/ref/{{=sprig.osBase(inputs.parameters['genome-ref-f'])}} \
+          --dbsnp /mnt/dbsnp/{{=sprig.osBase(inputs.parameters['dbsnp-f'])}} \
+          -L /mnt/input/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}} \
+          -O /mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf'])}}
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}"
+          - name: output-vcf
+            mountPath: "/mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf'])}}"
+          - name: regions-file
+            mountPath: "/mnt/input/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}}"
+          - name: genome-ref-f
+            mountPath: "/mnt/ref/"
+          - name: dbsnp-f
+            mountPath: "/mnt/dbsnp/"

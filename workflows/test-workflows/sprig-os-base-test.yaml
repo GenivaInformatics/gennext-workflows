@@ -1,0 +1,27 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: sprig-os-base-test
+spec:
+  entrypoint: main
+  arguments:
+    parameters:
+      - name: path
+        default: "/tmp/test/a.txt"
+      - name: node-name
+  templates:
+    - name: main
+      inputs:
+        parameters:
+          - name: path
+      outputs:
+        parameters:
+          - name: result
+            value: "{{=sprig.osBase(inputs.parameters.path)}}"
+      script:
+        image: alpine:latest
+        command: [sh]
+        source: |
+          echo {{=sprig.osBase(inputs.parameters.path)}}
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node-name}}"

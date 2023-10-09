@@ -1,0 +1,75 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: haplotypecaller-template
+spec:
+  templates:
+    - name: haplotypecaller
+      inputs:
+        parameters:
+          - name: input-bam
+          - name: genome-ref-f
+          - name: regions-file
+          - name: dbsnp-f
+          - name: output-vcf
+      outputs:
+        parameters:
+          - name: output-vcf
+            value: "{{=sprig.osBase(inputs.parameters['output-vcf'])}}.vcf.gz"
+          - name: output-g-vcf
+            value: "{{=sprig.osBase(inputs.parameters['output-vcf'])}}.g.vcf.gz"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: output-vcf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-vcf'])}}"
+            type: Directory
+        - name: regions-file
+          hostPath:
+            path: "{{inputs.parameters.regions-file}}"
+            type: File
+        - name: genome-ref-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['genome-ref-f'])}}"
+            type: Directory
+        - name: dbsnp-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['dbsnp-f'])}}"
+            type: Directory
+      script:
+        name: "haplotypecaller"
+        image: broadinstitute/gatk:4.4.0.0
+        command: [sh]
+        source: |
+          gatk HaplotypeCaller \
+          --input /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+          --reference /mnt/ref/{{=sprig.osBase(inputs.parameters['genome-ref-f'])}} \
+          --dbsnp /mnt/dbsnp/{{=sprig.osBase(inputs.parameters['dbsnp-f'])}} \
+          --intervals /mnt/input/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}}.bed \
+          --interval-padding 20 \
+          --emit-ref-confidence GVCF \
+          --annotation-group StandardAnnotation \
+          --annotation-group AS_StandardAnnotation \
+          --output /mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf'])}}.g.vcf;
+          gatk GenotypeGVCFs \
+          -R /mnt/ref/{{=sprig.osBase(inputs.parameters['genome-ref-f'])}} \
+          -V /mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf'])}}.g.vcf \
+          -O /mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf'])}}.vcf;
+          bgzip -f /mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf'])}}.vcf;
+          bgzip -f /mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf'])}}.g.vcf;
+          tabix -f -p vcf /mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf'])}}.vcf.gz;
+          tabix -f -p vcf /mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf'])}}.g.vcf.gz
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/mnt/input/bam/"
+          - name: output-vcf
+            mountPath: "/mnt/output/"
+          - name: regions-file
+            mountPath: "/mnt/input/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}}.bed"
+          - name: genome-ref-f
+            mountPath: "/mnt/ref/"
+          - name: dbsnp-f
+            mountPath: "/mnt/dbsnp/"

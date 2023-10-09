@@ -1,0 +1,65 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: snap-template
+spec:
+  templates:
+    - name: snap
+      inputs:
+        parameters:
+          - name: fq-r1
+          - name: fq-r2
+          - name: genome-ref
+          - name: bam
+          - name: thread-count
+          - name: read-group-str
+      outputs:
+        parameters:
+          - name: bam
+            value: "{{inputs.parameters.bam}}"
+      volumes:
+        - name: fq-r1
+          hostPath:
+            path: "{{inputs.parameters.fq-r1}}"
+            type: File
+        - name: fq-r2
+          hostPath:
+            path: "{{inputs.parameters.fq-r2}}"
+            type: File
+        - name: bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters.bam)}}"
+            type: DirectoryOrCreate
+        - name: genome-ref
+          hostPath:
+            path: "{{inputs.parameters.genome-ref}}"
+            type: Directory
+
+      script:
+        name: "snap"
+        image: bergun/snap-aligner:v2.0.3
+        command: [sh]
+        # From Manual: "By default, SNAP runs in DRAGEN mode.
+        # If you intend to use SNAP’s output with HaplotypeCaller
+        # you should enable HaplotypeCaller mode with -hc."
+        # -so flag: sort, index, and mark duplicates
+        source: |
+          snap-aligner \
+          paired \
+          /mnt/ref/ \
+          /mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}} \
+          /mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}} \
+          -hc \
+          -t {{inputs.parameters.thread-count}} \
+          -R "{{inputs.parameters.read-group-str}}" \
+          -o /mnt/output/{{=sprig.osBase(inputs.parameters['bam'])}}
+
+        volumeMounts:
+          - name: fq-r1
+            mountPath: "/mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}"
+          - name: fq-r2
+            mountPath: "/mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}"
+          - name: bam
+            mountPath: "/mnt/output/"
+          - name: genome-ref
+            mountPath: "/mnt/ref/"

@@ -1,0 +1,45 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: get-run-data
+  namespace: argo
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: get-run-data
+  # arguments:
+  #   parameters:
+  #     - name: job-id
+  #     - name: input-rel-dir
+  templates:
+    - name: get-run-data
+      inputs:
+        parameters:
+          # Parameters can also be passed via configmap reference.
+          - name: job-id
+            # value: "{{inputs.parameters.job-id}}"
+          - name: input-rel-dir
+            # value: "{{inputs.parameters.input-rel-dir}}"
+      outputs:
+        parameters:
+          # REL -> relative
+          - name: run-data
+            valueFrom:
+              path: "/mnt/input/{{inputs.parameters.job-id}}.json"
+      script:
+        image: python:3.11-alpine3.18
+        command: [python]
+        source: |
+          import json
+          from pathlib import Path
+          job_id = "{{inputs.parameters.job-id}}"
+          json_f = (Path("/mnt/input/") / job_id).with_suffix(".json")
+          with open(json_f, "r") as f:
+            run_data = json.load(f)
+          print(json.dumps(run_data))
+        volumeMounts:
+          - name: input-rel-dir
+            mountPath: /mnt/input
+      volumes:
+        - name: input-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.input-rel-dir}}"

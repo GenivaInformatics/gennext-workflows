@@ -1,0 +1,48 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: get-abs-ref-dirs
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: get-abs-ref-dirs
+  # arguments:
+  #   parameters:
+  #     - name: ref-ver
+  #     - name: ref-base-dir
+  #     - name: node-name
+  templates:
+    - name: get-abs-ref-dirs
+      inputs:
+        parameters:
+          # Parameters can also be passed via configmap reference.
+          - name: ref-ver
+            # value: "{{workflow.parameters.ref-ver}}"
+          - name: ref-base-dir
+            # value: "{{workflow.parameters.ref-base-dir}}"
+      outputs:
+        parameters:
+          # REL -> relative
+          - name: ref-genome-f
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.genome"
+          - name: ref-dbsnp-f
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.dbsnp"
+          - name: regions-bed-f
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.regions.exome"
+      volumes:
+        - name: gennext-references
+          configMap:
+            name: gennext-references
+      script:
+        image: bash:alpine3.18
+        command: [bash]
+        source: |
+          clean_path() {
+          sed -E 's#/+#/#g; s#([^/])$#\1/#';
+          }
+          for i in $(ls /tmp/ref-configmap); do sed -E -e "s#^#$(clean_path <<< {{inputs.parameters.ref-base-dir}})#" <<< read /tmp/ref-configmap/$i > /tmp/$i; done
+        volumeMounts:
+          - name: gennext-references
+            mountPath: /tmp/ref-configmap

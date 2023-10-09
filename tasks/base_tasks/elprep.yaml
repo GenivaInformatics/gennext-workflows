@@ -1,0 +1,86 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: elprep-template
+  namespace: argo
+spec:
+  templates:
+    - name: elprep
+      inputs:
+        parameters:
+          - name: sample-name
+          - name: genome-ref
+          - name: regions-file
+          - name: dbsnp-elsites-f
+          - name: input-bam
+          - name: output-bam
+          - name: metrics-dir
+          - name: scratch-dir
+          - name: thread-count
+      outputs:
+        parameters:
+          - name: output-bam
+            value: "{{inputs.parameters.output-bam}}"
+          - name: bqsr-metrics
+            value: "{{inputs.parameters.metrics-dir}}/{{inputs.parameters.sample-name}}.bqsr.metrics"
+          - name: dupes-metrics
+            value: "{{inputs.parameters.metrics-dir}}/{{inputs.parameters.sample-name}}.dupes.metrics"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: output-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-bam'])}}"
+            type: DirectoryOrCreate
+        - name: metrics-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['metrics-dir'])}}"
+            type: DirectoryOrCreate
+        - name: dbsnp-elsites-f
+          hostPath:
+            path: "{{inputs.parameters.dbsnp-elsites-f}}"
+            type: File
+        - name: regions-file
+          hostPath:
+            path: "{{inputs.parameters.regions-file}}"
+            type: File
+        - name: genome-ref-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['genome-ref'])}}"
+            type: Directory
+        - name: scratch-dir
+          hostPath:
+            path: "{{inputs.parameters.scratch-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: ""
+        image: dceoy/elprep:latest
+        command: [sh]
+        source: |
+          elprep sfm /mnt/input/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+          /mnt/output/{{=sprig.osBase(inputs.parameters['output-bam'])}} \
+          --nr-of-threads {{inputs.parameters.thread-count}} \
+          --sorting-order coordinate \
+          --mark-duplicates --mark-optical-duplicates /mnt/output/metrics/{{inputs.parameters.sample-name}}.dupes.metrics \
+          --bqsr /mnt/output/metrics/{{inputs.parameters.sample-name}}.bqsr.metrics \
+          --known-sites /mnt/known-sites/{{=sprig.osBase(inputs.parameters['dbsnp-elsites-f'])}} \
+          --reference /mnt/ref/{{=sprig.osBase(inputs.parameters['genome-ref'])}}.elfasta \
+          --tmp-path /mnt/scratch/ \
+          --log-path /mnt/scratch/
+        volumeMounts:
+          - name: scratch-dir
+            mountPath: "/mnt/scratch/"
+          - name: input-bam
+            mountPath: "/mnt/input/"
+          - name: output-bam
+            mountPath: "/mnt/output/"
+          - name: metrics-dir
+            mountPath: "/mnt/output/metrics/"
+          - name: dbsnp-elsites-f
+            mountPath: "/mnt/known-sites/{{=sprig.osBase(inputs.parameters['dbsnp-elsites-f'])}}"
+          - name: genome-ref-dir
+            mountPath: "/mnt/ref/"
+          - name: regions-file
+            mountPath: "/mnt/input/bed/{{=sprig.osBase(inputs.parameters['regions-file'])}}"

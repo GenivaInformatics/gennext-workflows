@@ -1,0 +1,67 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: test-workflow
+spec:
+  entrypoint: test-workflow
+  volumes:
+    - name: input
+      hostPath:
+        path: "{{workflow.parameters.input_bed_f}}"
+    - name: output
+      hostPath:
+        path: "{{workflow.parameters.output_dir}}"
+  arguments:
+    parameters:
+      - name: input_bed_f
+      - name: output_dir
+      - name: thread_count
+      - name: node_name
+  templates:
+    # Definition of the entire workflow
+    # You'll find the definition of the different step templates below.
+    - name: test-workflow
+      steps:
+        - - name: copy-bed-f
+            template: copy-bed-f
+            arguments:
+              parameters:
+                - name: input_bed_f
+                  value: "{{workflow.parameters.input_bed_f}}"
+                - name: output_dir
+                  value: "{{workflow.parameters.output_dir}}"
+        - - name: bed-split-workflow
+            templateRef:
+              name: bed-split-workflow
+              template: bed-split-workflow
+            arguments:
+              parameters:
+                - name: input_bed_f
+                  value: "{{steps.copy-bed-f.outputs.parameters.input_v2_bed_f}}"
+                - name: output_dir
+                  value: "{{workflow.parameters.output_dir}}"
+                - name: thread_count
+                  value: "{{workflow.parameters.thread_count}}"
+                - name: node_name
+                  value: "{{workflow.parameters.node_name}}"
+    - name: copy-bed-f
+      inputs:
+        parameters:
+          - name: input_bed_f
+          - name: output_dir
+      outputs:
+        parameters:
+          - name: input_v2_bed_f
+            value: "{{workflow.parameters.input_bed_f}}_v2.bed"
+      script:
+        image: alpine:latest
+        command: [sh]
+        source: |
+          cp /mnt/input/{{=sprig.osBase(workflow.parameters.input_bed_f)}} /mnt/output/{{=sprig.osBase(workflow.parameters.input_bed_f)}}_v2.bed
+        volumeMounts:
+          - name: input
+            mountPath: /mnt/input/{{=sprig.osBase(workflow.parameters.input_bed_f)}}
+          - name: output
+            mountPath: /mnt/output/
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node_name}}"

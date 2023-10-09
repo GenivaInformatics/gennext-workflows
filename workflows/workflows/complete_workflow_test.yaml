@@ -1,0 +1,47 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: complete-workflow-test
+  namespace: argo
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: complete-workflow-test
+  arguments:
+    parameters:
+      - name: node-name
+      - name: user-id
+      - name: job-id
+      - name: process-type
+  templates:
+    - name: complete-workflow-test
+      dag:
+        tasks:
+          - name: get-node-config
+            templateRef:
+              name: get-node-config
+              template: get-node-config
+            arguments:
+              parameters:
+                - name: node-name
+                  value: "{{workflow.parameters.node-name}}"
+                - name: user-id
+                  value: "{{workflow.parameters.user-id}}"
+                - name: job-id
+                  value: "{{workflow.parameters.job-id}}"
+          - name: hostpath-example
+            templateRef:
+              name: hostpath-example
+              template: main
+            arguments:
+              parameters:
+                - name: hostpath-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.input-rel-dir}}"
+            dependencies: [get-node-config]
+  #   volumeMounts:
+  #   - name: my-volume
+  #     mountPath: /mnt
+  # volumes:
+  # - name: my-volume
+  #   emptyDir: {}
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node-name}}"

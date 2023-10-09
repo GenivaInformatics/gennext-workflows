@@ -1,0 +1,6 @@
+#IDE stuff
+.vscode/
+
+#Non-Workflow stuff
+/events/
+/service-accounts/

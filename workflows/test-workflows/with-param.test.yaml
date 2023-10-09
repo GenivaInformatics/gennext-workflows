@@ -1,0 +1,34 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: loops-param
+spec:
+  entrypoint: loop-param-arg-example
+  arguments:
+    parameters:
+      - name: params # a list of items
+  templates:
+    - name: loop-param-arg-example
+      inputs:
+        parameters:
+          - name: params
+      steps:
+        - - name: test-split
+            template: cat-regions-file
+            arguments:
+              parameters:
+                - name: regions-file
+                  value: "{{item.regions-file}}"
+            withParam: "{{inputs.parameters.params}}" # parameter specifies the list to iterate over
+
+    # This template is the same as in the previous example
+    - name: cat-regions-file
+      inputs:
+        parameters:
+          - name: regions-file
+      script:
+        image: "alpine:latest"
+        command: [sh]
+        source: |
+          echo {{=sprig.osBase(inputs.parameters['regions-file'])}}
+          cat /mnt/input/{{=sprig.osBase(inputs.parameters['regions-file'])}} | head -n5

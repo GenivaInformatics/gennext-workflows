@@ -1,0 +1,61 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: bwa-mem2-template
+  namespace: argo
+spec:
+  templates:
+    - name: bwa-mem2
+      container:
+        name: ""
+        image: bergun/bwa-mem2_samtools:0.0.1
+        command:
+          - sh
+          - -c
+        args: #            -R {{workflow.parameters.read_group_header}} \
+          - "bwa-mem2 mem -M -t {{workflow.parameters.thread_count}}
+            /mnt/ref/{{=sprig.osBase(workflow.parameters.ref_f)}}
+            /mnt/input/r1/{{=sprig.osBase(workflow.parameters.fastq1_f)}}
+            /mnt/input/r2/{{=sprig.osBase(workflow.parameters.fastq2_f)}}
+            | samtools sort -@{{workflow.parameters.thread_count}}
+            -T /mnt/scratch -o /mnt/output/{{=sprig.osBase(workflow.parameters.output_bam_f)}}"
+        volumeMounts:
+          - name: scratch
+            mountPath: /mnt/scratch
+          - name: input-r1
+            mountPath: "/mnt/input/r1/{{=sprig.osBase(workflow.parameters.fastq1_f)}}"
+          - name: input-r2
+            mountPath: "/mnt/input/r2/{{=sprig.osBase(workflow.parameters.fastq2_f)}}"
+          - name: output
+            mountPath: "/mnt/output/"
+          - name: ref
+            mountPath: /mnt/ref
+  entrypoint: bwa-mem2
+  arguments:
+    parameters:
+      - name: fastq1_f
+      - name: fastq2_f
+      # - name: read_group_header
+      - name: output_bam_f
+      - name: ref_f
+      - name: scratch_dir
+      - name: node_name
+      - name: thread_count
+  volumes:
+    - name: scratch
+      hostPath:
+        path: "{{workflow.parameters.scratch_dir}}"
+    - name: output
+      hostPath:
+        path: "{{=sprig.osDir(workflow.parameters.output_bam_f)}}"
+    - name: input-r1
+      hostPath:
+        path: "{{workflow.parameters.fastq1_f}}"
+    - name: input-r2
+      hostPath:
+        path: "{{workflow.parameters.fastq2_f}}"
+    - name: ref
+      hostPath:
+        path: "{{=sprig.osDir(workflow.parameters.ref_f)}}"
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node_name}}"

@@ -1,0 +1,163 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: bed-split-workflow
+spec:
+  entrypoint: bed-split-workflow
+  volumes:
+    - name: input
+      hostPath:
+        path: "{{workflow.parameters.input_bed_f}}"
+    - name: output
+      hostPath:
+        path: "{{workflow.parameters.output_dir}}"
+  arguments:
+    parameters:
+      - name: input_bed_f
+      - name: output_dir
+      - name: thread_count
+      - name: node_name
+  templates:
+    # Definition of the entire workflow
+    # You'll find the definition of the different step templates below.
+    - name: bed-split-workflow
+      steps:
+        - - name: generate-beds-list
+            template: generate-beds-list
+            arguments:
+              parameters:
+                - name: input_bed_f
+                  value: "{{workflow.parameters.input_bed_f}}"
+                - name: output_dir
+                  value: "{{workflow.parameters.output_dir}}"
+                - name: thread_count
+                  value: "{{workflow.parameters.thread_count}}"
+        - - name: bgzip-tabix-bed
+            template: bgzip-tabix-bed
+            arguments:
+              parameters:
+                - name: split_bed_f
+                  value: "{{item}}"
+            # This line actually fans out the items into multiple steps
+            withParam: "{{steps.generate-beds-list.outputs.result}}"
+        - - name: join-in
+            template: join-in
+            arguments:
+              parameters:
+                - name: split_bed_fs
+                  value: "{{steps.bgzip-tabix-bed.outputs.parameters}}"
+
+    # Step to generate the output sequence
+    # The output is a simple JSON-compliant array of ints like so:
+    # [1, 2, 3]
+    - name: generate-beds-list
+      inputs:
+        parameters:
+          - name: input_bed_f
+          - name: output_dir
+          - name: thread_count
+      script:
+        image: python:alpine
+        command: [python]
+        source: |
+          import re
+          import gzip
+          import sys
+          import json
+          from pathlib import Path
+          from concurrent.futures import ThreadPoolExecutor
+          from collections.abc import Iterable
+
+          def is_gzip(gzip_f: Path) -> bool:
+              with gzip.open(gzip_f, 'r') as f:
+                  try:
+                      f.read(1)
+                      return True
+                  except gzip.BadGzipFile:
+                      return False
+
+          def bed_write(lines: Iterable[bytes], output: Path):
+              with open(output, 'w') as f:
+                  f.writelines(lines)
+              return str(output)
+
+          def chunk(l, n):
+              """Yield n number of striped chunks from l."""
+              for i in range(0, n):
+                  yield l[i::n]
+
+          def bed_split(bed_f: Path, output_dir: Path, thread_count: int) -> list[str]:
+              reader , is_bytes = (gzip.open, True) if is_gzip(bed_f) else (open, False)
+              get_output_base = lambda x: '.'.join([bed_f.name, '_'+str(x)])
+              with reader(bed_f, 'r') as input_f:
+                  lines = input_f.readlines()
+              if is_bytes:
+                  lines = map(lambda l: l.decode('ascii'), lines)
+              lines = tuple(filter(lambda l: not re.match(r'^browser|^track|^#', l), lines))
+
+              chunks = enumerate(chunk(lines, thread_count))
+              with ThreadPoolExecutor(max_workers=thread_count) as executor:
+                  outputs = executor.map(lambda x: bed_write(x[1], output_dir / get_output_base(f'{x[0]:04}')), chunks)
+              return list(outputs)
+
+          json.dump(
+              bed_split(
+                  Path('/mnt/input/{{=sprig.osBase(workflow.parameters.input_bed_f)}}'),
+                  Path('/mnt/output/'),
+                  {{workflow.parameters.thread_count}}),
+              sys.stdout)
+        volumeMounts:
+          - name: input
+            mountPath: /mnt/input/{{=sprig.osBase(workflow.parameters.input_bed_f)}}
+          - name: output
+            mountPath: /mnt/output/
+
+    # bgzip-tabix-bed: Splitting the output sequence into steps
+    # Argo iterates over the array generated in the previous step and
+    # passes on one element for each step.
+    - name: bgzip-tabix-bed
+      inputs:
+        parameters:
+          - name: split_bed_f
+      container:
+        image: quay.io/biocontainers/htslib:1.17--h81da01d_2
+        workingDir: /mnt/output/
+        command: [sh, -c]
+        args:
+          [
+            "bgzip -k {{inputs.parameters.split_bed_f}}; tabix {{inputs.parameters.split_bed_f}}.gz",
+          ]
+        volumeMounts:
+          - name: output
+            mountPath: /mnt/output/
+      outputs:
+        parameters:
+          - name: split_bed_f
+            value: "{{=sprig.osDir(workflow.parameters.output_dir)}}/{{=sprig.osBase(inputs.parameters.split_bed_f)}}"
+          - name: split_bed_f_gz
+            value: "{{=sprig.osDir(workflow.parameters.output_dir)}}/{{=sprig.osBase(inputs.parameters.split_bed_f)}}.gz"
+          - name: split_bed_f_gz_tbi
+            value: "{{=sprig.osDir(workflow.parameters.output_dir)}}/{{=sprig.osBase(inputs.parameters.split_bed_f)}}.gz.tbi"
+
+    # join-in: Combining the outputs
+    # When reading the elements, argo reads the output of the previous step
+    # from "output-number" as JSON objects fo all output parameters. The input
+    # to this step will then be a JSON-compliant array of objects like so:
+    # [{"number":"1"},{"number":"2"},{"number":"3"}]
+    #
+    # Do note: The ints were converted into strings since argo considers all
+    # inputs and outputs to be strings by default.
+    - name: join-in
+      inputs:
+        parameters:
+          - name: split_bed_fs
+      outputs:
+        parameters:
+          - name: split_bed_fs
+            value: "{{inputs.parameters.split_bed_fs}}"
+      container:
+        image: alpine:latest
+        command: [sh, -c]
+        args: ["echo {{inputs.parameters.split_bed_fs}}"]
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node_name}}"

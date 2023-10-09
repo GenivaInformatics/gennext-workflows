@@ -1,0 +1,156 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: ces-workflow
+spec:
+  entrypoint: main
+  templates:
+    - name: main
+      inputs:
+        parameters:
+          - name: job-id
+          - name: input-rel-dir
+          - name: ref-base-dir
+          - name: temp-rel-dir
+          - name: scratch-rel-dir
+          - name: output-rel-dir
+          - name: thread-count
+            default: "8"
+      outputs:
+        parameters:
+          - name: bam-output
+            valueFrom:
+              parameter: "{{tasks.elprep.outputs.parameters.output-bam}}"
+      dag:
+        tasks:
+          - name: get-run-data
+            templateRef:
+              name: get-run-data
+              template: get-run-data
+            arguments:
+              parameters:
+                - name: job-id
+                  value: "{{inputs.parameters.job-id}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+          - name: get-abs-ref-dirs
+            templateRef:
+              name: get-abs-ref-dirs
+              template: get-abs-ref-dirs
+            arguments:
+              parameters:
+                - name: ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}"
+                - name: ref-ver
+                  value: "{{=jsonpath(tasks['get-run-data'].outputs.parameters['run-data'], '$.refVersion')}}"
+            depends: "get-run-data"
+          - name: copy-inputs-to-temp
+            templateRef:
+              name: copy-inputs-to-temp
+              template: copy-inputs-to-temp
+            arguments:
+              parameters:
+                - name: run-data
+                  value: "{{tasks.get-run-data.outputs.parameters.run-data}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+            depends: "get-run-data"
+          - name: preprocess-fastq
+            templateRef:
+              name: preprocess-fastq
+              template: main
+            arguments:
+              parameters:
+                - name: sample-name
+                  value: "{{=jsonpath(tasks['get-run-data'].outputs.parameters['run-data'], '$.sampleName')}}"
+                - name: fq-r1
+                  value: "{{tasks.copy-inputs-to-temp.outputs.parameters.fq-r1}}"
+                - name: fq-r2
+                  value: "{{tasks.copy-inputs-to-temp.outputs.parameters.fq-r2}}"
+                - name: genome-ref
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+                - name: temp-abs-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+            depends: "copy-inputs-to-temp && get-abs-ref-dirs"
+          - name: elprep
+            templateRef:
+              name: elprep-template
+              template: elprep
+            arguments:
+              parameters:
+                - name: sample-name
+                  value: "{{=jsonpath(tasks['get-run-data'].outputs.parameters['run-data'], '$.sampleName')}}"
+                - name: genome-ref
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
+                - name: regions-file
+                  value: "{{tasks.copy-inputs-to-temp.outputs.parameters.regions-file}}"
+                - name: dbsnp-elsites-f
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-dbsnp-f}}.elsites"
+                - name: input-bam
+                  value: "{{tasks.preprocess-fastq.outputs.parameters.bam}}"
+                - name: output-bam
+                  value: "{{inputs.parameters.temp-rel-dir}}bam/{{=jsonpath(tasks['get-run-data'].outputs.parameters['run-data'], '$.sampleName')}}_recal.bam"
+                - name: metrics-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}metrics/"
+                - name: scratch-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+                - name: thread-count
+                  value: "{{=sprig.int(inputs.parameters['thread-count']) - 2}}"
+            depends: "preprocess-fastq"
+          - name: bed-split
+            templateRef:
+              name: bed-split-template
+              template: main
+            arguments:
+              parameters:
+                - name: regions-file
+                  value: "{{tasks.copy-inputs-to-temp.outputs.parameters.regions-file}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}bed-split/"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "copy-inputs-to-temp"
+          - name: deepvariant
+            templateRef:
+              name: deepvariant-template
+              template: deepvariant
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{tasks.elprep.outputs.parameters.output-bam}}"
+                - name: genome-ref-f
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
+                - name: regions-files
+                  value: "{{tasks.copy-inputs-to-temp.outputs.parameters.regions-file}}"
+                - name: output-vcf
+                  value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(tasks['get-run-data'].outputs.parameters['run-data'], '$.sampleName')}}_dv.vcf.gz"
+                - name: output-g-vcf
+                  value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(tasks['get-run-data'].outputs.parameters['run-data'], '$.sampleName')}}_dv.g.vcf.gz"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+                - name: scratch-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+            depends: "elprep && bed-split"
+          - name: haplotypecaller
+            templateRef:
+              name: haplotypecaller-wrapper-template
+              template: main
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{tasks.elprep.outputs.parameters.output-bam}}"
+                - name: regions-files
+                  value: "{{tasks.bed-split.outputs.parameters.regions-files}}"
+                - name: genome-ref-f
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
+                - name: dbsnp-f
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-dbsnp-f}}"
+                - name: output-vcf-basename
+                  value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(tasks['get-run-data'].outputs.parameters['run-data'], '$.sampleName')}}_hc"
+                - name: scratch-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+            depends: "elprep && deepvariant"

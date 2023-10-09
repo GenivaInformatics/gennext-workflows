@@ -1,0 +1,190 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: bed-split-template
+spec:
+  entrypoint: main
+  arguments:
+    parameters:
+      - name: regions-file
+      - name: output-dir
+      - name: thread-count
+  podGC:
+    strategy: OnPodSuccess
+  templates:
+    # Definition of the entire workflow
+    # You'll find the definition of the different step templates below.
+    - name: main
+      inputs:
+        parameters:
+          - name: regions-file
+          - name: output-dir
+          - name: thread-count
+      outputs:
+        parameters:
+          - name: regions-files
+            valueFrom:
+              parameter: "{{steps.join-in.outputs.parameters.regions-files}}"
+      steps:
+        - - name: generate-beds-list
+            template: generate-beds-list
+            arguments:
+              parameters:
+                - name: regions-file
+                  value: "{{inputs.parameters.regions-file}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.output-dir}}"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+        - - name: bgzip-tabix-bed
+            template: bgzip-tabix-bed
+            arguments:
+              parameters:
+                - name: regions-file
+                  value: "{{item}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.output-dir}}"
+            # This line actually fans out the items into multiple steps
+            withParam: "{{steps.generate-beds-list.outputs.result}}"
+        - - name: join-in
+            template: join-in
+            arguments:
+              parameters:
+                - name: regions-files
+                  value: "{{steps.bgzip-tabix-bed.outputs.parameters}}"
+        # - - name: post-join
+        #     template: post-join
+        #     arguments:
+        #       parameters:
+        #         - name: index
+        #           value: "{{item.index}}"
+        #     withParam: "{{steps.join-in.outputs.parameters.regions-files}}"
+
+    # Step to generate the output sequence
+    - name: generate-beds-list
+      volumes:
+        - name: input
+          hostPath:
+            path: "{{inputs.parameters.regions-file}}"
+            type: File
+        - name: output
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      inputs:
+        parameters:
+          - name: regions-file
+          - name: output-dir
+          - name: thread-count
+      script:
+        volumeMounts:
+          - name: input
+            mountPath: "/mnt/input/{{=sprig.osBase(inputs.parameters['regions-file'])}}"
+          - name: output
+            mountPath: "/mnt/output/"
+        image: python:alpine
+        command: [python]
+        source: |
+          import re
+          import gzip
+          import sys
+          import json
+          from pathlib import Path
+          from concurrent.futures import ThreadPoolExecutor
+          from collections.abc import Iterable
+
+          def is_gzip(gzip_f: Path) -> bool:
+              with gzip.open(gzip_f, 'r') as f:
+                  try:
+                      f.read(1)
+                      return True
+                  except gzip.BadGzipFile:
+                      return False
+
+          def bed_write(lines: Iterable[bytes], output: Path):
+              with open(output, 'w') as f:
+                  f.writelines(lines)
+              return str(output)
+
+          def chunk(l, n):
+              """Yield n number of striped chunks from l."""
+              for i in range(0, n):
+                  yield l[i::n]
+
+          def bed_split(bed_f: Path, output_dir: Path, thread_count: int) -> list[str]:
+              reader , is_bytes = (gzip.open, True) if is_gzip(bed_f) else (open, False)
+              get_output_base = lambda x: '.'.join([bed_f.name, '_'+str(x)])
+              with reader(bed_f, 'r') as input_f:
+                  lines = input_f.readlines()
+              if is_bytes:
+                  lines = map(lambda l: l.decode('ascii'), lines)
+              lines = tuple(filter(lambda l: not re.match(r'^browser|^track|^#', l), lines))
+
+              chunks = enumerate(chunk(lines, thread_count))
+              with ThreadPoolExecutor(max_workers=thread_count) as executor:
+                  outputs = executor.map(lambda x: bed_write(x[1], output_dir / get_output_base(f'{x[0]:04}')), chunks)
+              return list(outputs)
+
+          json.dump(
+              bed_split(
+                  Path('/mnt/input/{{=sprig.osBase(inputs.parameters['regions-file'])}}'),
+                  Path('/mnt/output/'),
+                  {{inputs.parameters.thread-count}}),
+              sys.stdout)
+
+    # bgzip-tabix-bed: Splitting the output sequence into steps
+    # Argo iterates over the array generated in the previous step and
+    # passes on one element for each step.
+    - name: bgzip-tabix-bed
+      inputs:
+        parameters:
+          - name: regions-file
+          - name: output-dir
+      volumes:
+        - name: output
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      script:
+        image: quay.io/biocontainers/htslib:1.17--h81da01d_2
+        workingDir: /mnt/output/
+        command: [sh]
+        source: |
+          bgzip -k {{inputs.parameters.regions-file}}; tabix {{inputs.parameters.regions-file}}.gz
+        volumeMounts:
+          - name: output
+            mountPath: /mnt/output/
+      outputs:
+        parameters:
+          - name: index
+            value: "{{=sprig.last(sprig.splitList('_', inputs.parameters['regions-file']))}}"
+          - name: regions-file
+            value: "{{=sprig.osClean(inputs.parameters['output-dir'])}}/{{=sprig.osBase(inputs.parameters['regions-file'])}}"
+          - name: regions-file-gz
+            value: "{{=sprig.osClean(inputs.parameters['output-dir'])}}/{{=sprig.osBase(inputs.parameters['regions-file'])}}.gz"
+          - name: regions-file-gz-tbi
+            value: "{{=sprig.osClean(inputs.parameters['output-dir'])}}/{{=sprig.osBase(inputs.parameters['regions-file'])}}.gz.tbi"
+
+    # join-in: Combining the outputs
+    - name: join-in
+      inputs:
+        parameters:
+          - name: regions-files
+      outputs:
+        parameters:
+          - name: regions-files
+            value: "{{inputs.parameters.regions-files}}"
+      script:
+        image: alpine:latest
+        command: [sh]
+        source: |
+          echo {{inputs.parameters.regions-files}}
+    # - name: post-join
+    #   inputs:
+    #     parameters:
+    #       - name: index
+    #   script:
+    #     image: alpine:latest
+    #     command: [sh]
+    #     source: |
+    #       echo {{inputs.parameters.index}}

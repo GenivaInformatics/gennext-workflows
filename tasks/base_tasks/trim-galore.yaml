@@ -1,0 +1,54 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: trim-galore-template
+spec:
+  templates:
+    - name: trim-galore
+      inputs:
+        parameters:
+          - name: fq-r1
+          - name: fq-r2
+          - name: sample-name
+          - name: output-dir
+          - name: thread-count
+      outputs:
+        parameters:
+          - name: fq-r1
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-name}}_val_1.fq.gz"
+          - name: fq-r2
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-name}}_val_2.fq.gz"
+      volumes:
+        - name: fq-r1
+          hostPath:
+            path: "{{inputs.parameters.fq-r1}}"
+            type: File
+        - name: fq-r2
+          hostPath:
+            path: "{{inputs.parameters.fq-r2}}"
+            type: File
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+
+      script:
+        name: "trim-galore"
+        image: quay.io/biocontainers/trim-galore:0.6.10--hdfd78af_0
+        command: [sh]
+        source: |
+          trim_galore \
+          --cores {{inputs.parameters.thread-count}} \
+          --paired \
+          --basename {{inputs.parameters.sample-name}} \
+          --phred33 \
+          "/mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}" \
+          "/mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}" \
+          --output_dir {{inputs.parameters.output-dir}}
+        volumeMounts:
+          - name: fq-r1
+            mountPath: "/mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}"
+          - name: fq-r2
+            mountPath: "/mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}"
+          - name: output-dir
+            mountPath: "{{inputs.parameters.output-dir}}"

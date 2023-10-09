@@ -1,0 +1,135 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: caller-hc-workflow
+spec:
+  entrypoint: main
+  volumes:
+    - name: scratch-dir
+      hostPath:
+        path: "{{inputs.parameters.scratch-dir}}"
+        type: Directory
+    - name: output-vcf
+      hostPath:
+        path: "{{=sprig.osDir(inputs.parameters['output-vcf'])}}"
+        type: Directory
+  arguments:
+    parameters:
+      - name: sample-id
+        value: "TST-23"
+      - name: input-bam
+        value: "/runspace/sample_dev/23-214/bam/23-214_recal.bam"
+      - name: regions-files #JSON list of regions files
+      - name: genome-ref-f
+        value: "/home/workspace/refs_annots/genome/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set.fa"
+      - name: dbsnp-f
+        value: "/home/workspace/refs_annots/dbsnp/snp_155/GRCh38.dbSNP155.vcf.gz"
+      - name: output-vcf
+        value: "/tmp/bed-split/vcf/output"
+      - name: scratch-dir
+        value: "/runspace/tmp/scratch/"
+  templates:
+    - name: main
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: input-bam
+          - name: regions-files #JSON list of regions files
+          - name: genome-ref-f
+          - name: output-vcf
+          - name: scratch-dir
+          - name: dbsnp-f
+      steps:
+        - - name: caller
+            withParam: "{{workflow.parameters.regions-files}}"
+            templateRef:
+              name: haplotypecaller-template
+              template: haplotypecaller
+            # template: dummy-haplotypecaller-template
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{workflow.parameters.input-bam}}"
+                - name: genome-ref-f
+                  value: "{{workflow.parameters.genome-ref-f}}"
+                - name: regions-file
+                  value: "{{item.regions-file}}"
+                - name: dbsnp-f
+                  value: "{{workflow.parameters.dbsnp-f}}"
+                - name: output-vcf
+                  value: "{{workflow.parameters.scratch-dir}}/{{=sprig.osBase(workflow.parameters['output-vcf'])}}_{{item.index}}"
+        - - name: vcf-to-str
+            template: to-str-template
+            arguments:
+              parameters:
+                - name: input-vcfs
+                  value: "{{steps.caller.outputs.parameters}}"
+                - name: arg-to-map
+                  value: "output-vcf"
+        - - name: g-vcf-to-str
+            template: to-str-template
+            arguments:
+              parameters:
+                - name: input-vcfs
+                  value: "{{steps.caller.outputs.parameters}}"
+                - name: arg-to-map
+                  value: "output-g-vcf"
+        - - name: merge-vcf
+            template: concat-vcf-template
+            arguments:
+              parameters:
+                - name: input-vcfs-str
+                  value: "{{steps.vcf-to-str.outputs.result}}"
+                - name: input-g-vcfs-str
+                  value: "{{steps.g-vcf-to-str.outputs.result}}"
+                - name: output-vcf
+                  value: "{{workflow.parameters.output-vcf}}"
+    - name: to-str-template
+      inputs:
+        parameters:
+          - name: input-vcfs
+          - name: arg-to-map
+      script:
+        image: docker.io/egladman/jq:1.6-busybox
+        command: [sh]
+        source: |
+          ls /tmp/;
+          touch /tmp/test.txt;
+          echo '{{inputs.parameters.input-vcfs}}' | jq -r 'map(.["{{inputs.parameters.arg-to-map}}"]) | join(" ")'
+    - name: concat-vcf-template
+      inputs:
+        parameters:
+          - name: input-vcfs-str
+          - name: input-g-vcfs-str
+          - name: output-vcf
+            value: "{{workflow.parameters.output-vcf}}"
+      outputs:
+        parameters:
+          - name: output-vcf
+            value: "{{inputs.parameters.output-vcf}}.vcf.gz"
+          - name: output-g-vcf
+            value: "{{inputs.parameters.output-vcf}}.g.vcf.gz"
+      script:
+        volumeMounts:
+          - name: scratch-dir
+            mountPath: "/input"
+          - name: output-vcf
+            mountPath: "/output"
+        image: quay.io/biocontainers/bcftools:1.17--h3cc50cf_1
+        command: [sh]
+        workingDir: /input
+        source: |
+          bcftools concat \
+          -a \
+          -Ov {{inputs.parameters.input-vcfs-str}} | \
+          bcftools sort \
+          -Oz \
+          -o /output/{{=sprig.osBase(inputs.parameters['output-vcf'])}}.vcf.gz;
+          bcftools index -t --threads 2 /output/{{=sprig.osBase(inputs.parameters['output-vcf'])}}.vcf.gz;
+          bcftools concat \
+          -a \
+          -Ov {{inputs.parameters.input-g-vcfs-str}} | \
+          bcftools sort \
+          -Oz \
+          -o /output/{{=sprig.osBase(inputs.parameters['output-vcf'])}}.g.vcf.gz;
+          bcftools index -t --threads 2 /output/{{=sprig.osBase(inputs.parameters['output-vcf'])}}.g.vcf.gz

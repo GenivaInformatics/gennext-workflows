@@ -1,0 +1,64 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: compose-read-group-str
+spec:
+  entrypoint: main
+  # arguments:
+  #   parameters:
+  #     - name: job-id
+  #     - name: input-rel-dir
+  #     - name: temp-rel-dir
+  #     - name: scratch-rel-dir
+  #     - name: output-rel-dir
+  #     - name: ref-base-dir
+  templates:
+    - name: compose-read-group-str-from-fq
+      inputs:
+        parameters:
+          - name: fq-r1
+          - name: sample-name
+      outputs:
+        parameters:
+          - name: read-group-str
+            valueFrom:
+              path: /tmp/read_group_str.var
+      volumes:
+        - name: fq-r1
+          hostPath:
+            path: "{{inputs.parameters.fq-r1}}"
+            type: File
+      script:
+        volumeMounts:
+          - name: fq-r1
+            mountPath: "/mnt/input/r1/{{=sprig.osBase(inputs.parameters.fq-r1)}}"
+        image: python:3.11-alpine3.18
+        command: ["python"]
+        source: |
+          from pathlib import Path
+          import gzip
+
+          input_file = Path("/mnt/input/r1/{{=sprig.osBase(inputs.parameters.fq-r1)}}")
+
+          LB = "NULL"  # Read-Group library
+          PL = "ILLUMINA"  # Read-Group platorm
+          SM = "{{inputs.parameters.sample-name}}"  # Sample ID
+
+          with gzip.open(input_file, "rt", encoding='ascii') as f:
+                RGID = "_".join(f.readline().split(":")[0:4])[
+                    1:
+                ].replace(
+                    " ", "_"
+                )  # Read Group ID / Platform Unit
+          PU = RGID + "." + LB
+
+          RG_str = (
+            f"@RG\\tID:{RGID}\\tSM:{SM}\\tPL:{PL}\\tLB:{LB}\\tPU:{PU}".replace(
+                "\r", ""
+            )
+            .replace("\n", "")
+            .replace(" ", "_")
+          )
+          with open("/tmp/read_group_str.var", "w") as f:
+            f.write(RG_str)
+          print(RG_str)

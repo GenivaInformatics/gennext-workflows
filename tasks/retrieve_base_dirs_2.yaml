@@ -1,0 +1,81 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: get-node-base-dirs-
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: get-node-base-dirs
+  arguments:
+    parameters:
+      - name: node-name
+  templates:
+    - name: get-node-base-dirs
+      steps:
+        - - name: get-annotations
+            template: get-annotations
+            arguments:
+              parameters:
+                - name: node-name
+                  value: "{{workflow.parameters.node-name}}"
+        - - name: use-annotations
+            template: use-annotations
+            arguments:
+              parameters:
+                - name: input-base-dir
+                  value: "{{steps.get-annotations.outputs.parameters.input-base-dir}}"
+                - name: output-base-dir
+                  value: "{{steps.get-annotations.outputs.parameters.output-base-dir}}"
+                - name: ref-base-dir
+                  value: "{{steps.get-annotations.outputs.parameters.ref-base-dir}}"
+                - name: temp-base-dir
+                  value: "{{steps.get-annotations.outputs.parameters.temp-base-dir}}"
+                - name: scratch-base-dir
+                  value: "{{steps.get-annotations.outputs.parameters.scratch-base-dir}}"
+    - name: get-annotations
+      inputs:
+        parameters:
+          - name: node-name
+      outputs:
+        parameters:
+          - name: input-base-dir
+            valueFrom:
+              path: /tmp/INPUT_BASE_DIR
+          - name: output-base-dir
+            valueFrom:
+              path: /tmp/OUTPUT_BASE_DIR
+          - name: ref-base-dir
+            valueFrom:
+              path: /tmp/REF_BASE_DIR
+          - name: temp-base-dir
+            valueFrom:
+              path: /tmp/TEMP_BASE_DIR
+          - name: scratch-base-dir
+            valueFrom:
+              path: /tmp/SCRATCH_BASE_DIR
+      script:
+        image: bitnami/kubectl:latest
+        command: [bash]
+        source: |
+          NODE_NAME="{{inputs.parameters.node-name}}"
+          kubectl get node $NODE_NAME -o jsonpath='{"INPUT_BASE_DIR="}{.metadata.annotations.gennext\.bio/input-base-dir}{"\nOUTPUT_BASE_DIR="}{.metadata.annotations.gennext\.bio/output-base-dir}{"\nREF_BASE_DIR="}{.metadata.annotations.gennext\.bio/ref-base-dir}{"\nTEMP_BASE_DIR="}{.metadata.annotations.gennext\.bio/temp-base-dir}{"\nSCRATCH_BASE_DIR="}{.metadata.annotations.gennext\.bio/input-base-dir}' > /tmp/keyvals_tmp0
+          while IFS='=' read -r key value
+          do
+            echo "$value" > "/tmp/$key"
+          done < /tmp/keyvals_tmp0
+    - name: use-annotations
+      inputs:
+        parameters:
+          - name: input-base-dir
+          - name: output-base-dir
+          - name: ref-base-dir
+          - name: temp-base-dir
+          - name: scratch-base-dir
+      container:
+        image: alpine:latest
+        command: [sh, -c]
+        args:
+          [
+            "echo Input Base Dir: {{inputs.parameters.input-base-dir}}; echo Output Base Dir: {{inputs.parameters.output-base-dir}}",
+          ]
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node-name}}"
