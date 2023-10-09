@@ -10,19 +10,19 @@ spec:
       inputs:
         parameters:
           - name: input-bam
-            value: "/runspace/sample_dev/23-214/bam/23-214_recal.bam"
+            # value: ""
           - name: genome-ref-f
-            value: "/home/workspace/refs_annots/genome/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set.fa"
+            # value: ""
           - name: regions-file
-            value: "/home/workspace/refs_annots/region_beds/gencode.v41.hg38.coding_regions.bed"
+            # value: ""
           - name: output-vcf
-            value: "/tmp/bed-split/vcf/output_dv.vcf.gz"
+            # value: ""
           - name: output-g-vcf
-            value: "/tmp/bed-split/vcf/output_dv.g.vcf.gz"
+            # value: ""
           - name: thread-count
-            value: "16"
+            value: "8"
           - name: scratch-dir
-            value: "/runspace/tmp/scratch/"
+            # value: ""
       outputs:
         parameters:
           - name: output-vcf
