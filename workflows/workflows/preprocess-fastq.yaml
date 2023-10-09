@@ -62,7 +62,7 @@ spec:
           #         value: "{{tasks.trim-galore.outputs.parameters.fq-r2}}"
           #       - name: output-dir
           #         value: "{{inputs.parameters.temp-abs-dir}}/metrics/fastqc/post-trim/"
-          #   dependecies: [trim-galore]
+          #   dependencies: [trim-galore]
           - name: compose-read-group-str
             templateRef:
               name: compose-read-group-str
