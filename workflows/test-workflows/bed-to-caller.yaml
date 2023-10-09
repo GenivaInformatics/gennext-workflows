@@ -5,7 +5,7 @@ metadata:
 spec:
   entrypoint: bed-to-caller
   nodeSelector:
-    kubernetes.io/hostname: "gennext.bio"
+    kubernetes.io/hostname: "{{workflow.parameters.node-name}}"
   arguments:
     parameters:
       - name: regions-file
@@ -13,6 +13,7 @@ spec:
       - name: dbsnp-f
       - name: genome-ref
       - name: input-bam
+      - name: node-name
   templates:
     # Definition of the entire workflow
     # You'll find the definition of the different step templates below.

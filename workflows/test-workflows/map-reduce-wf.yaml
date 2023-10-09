@@ -5,7 +5,10 @@ metadata:
 spec:
   entrypoint: fan-out-in-params-workflow
   nodeSelector:
-    kubernetes.io/hostname: "gennext.bio"
+    kubernetes.io/hostname: "{{workflow.parameters.node-name}}"
+  arguments:
+    parameters:
+      - name: node-name
   templates:
     # Definition of the entire workflow
     # You'll find the definition of the different step templates below.
