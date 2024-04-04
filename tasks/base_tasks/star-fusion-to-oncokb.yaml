@@ -1,0 +1,50 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: star-fusion-to-oncokb-template
+  namespace: argo
+spec:
+  templates:
+    - name: star-fusion-to-oncokb
+      inputs:
+        parameters:
+          - name: star-fusion-tsv
+          - name: star-fusion-oncokb-tsv
+      outputs:
+        parameters:
+          - name: star-fusion-oncokb-tsv
+            value: "{{inputs.parameters.star-fusion-oncokb-tsv}}"
+      volumes:
+        - name: star-fusion-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['star-fusion-tsv'])}}"
+            type: Directory
+        - name: star-fusion-oncokb-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['star-fusion-oncokb-tsv'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: star-fusion-to-oncokb-script
+        image: python:3.11-alpine3.18
+        workingDir: /mnt/input/
+        command: [python]
+        source: |
+          starfusion_tsv = "/mnt/input/{{=sprig.osBase(inputs.parameters['star-fusion-tsv'])}}"
+          starfusion_oncokb_tsv = "/mnt/output/{{=sprig.osBase(inputs.parameters['star-fusion-oncokb-tsv'])}}"
+
+          with open(starfusion_tsv, "rt") as f_in:
+              header = f_in.readline()
+              header_cols = header.strip().split("\t")
+              print(header_cols)
+
+              with open(starfusion_oncokb_tsv, "wt") as f_out:
+                  f_out.write("\t".join(["Fusion"] + header_cols[1:]) + "\n")
+                  while line := f_in.readline():
+                      values = line.strip().split("\t")
+                      fusions = "-".join(values[0].split("--"))
+                      f_out.write("\t".join([fusions] + values[1:]) + "\n")
+        volumeMounts:
+          - name: star-fusion-tsv
+            mountPath: "/mnt/input/"
+          - name: star-fusion-oncokb-tsv
+            mountPath: "/mnt/output/"

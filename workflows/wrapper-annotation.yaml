@@ -1,0 +1,106 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: wrapper-annotation
+  namespace: argo
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: wrapper-annotation
+  arguments:
+    parameters:
+      - name: user-id
+      - name: job-id
+      - name: ref-version
+      - name: annots
+      - name: filter-type
+      - name: filter-info
+      - name: node-name
+  podGC:
+    strategy: OnPodSuccess
+  retryStrategy:
+    limit: "2"
+    retryPolicy: "Always"
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node-name}}"
+  templates:
+    - name: wrapper-annotation
+      dag:
+        tasks:
+          - name: get-base-node-config
+            templateRef:
+              name: get-base-node-config
+              template: get-base-node-config
+              # OUTPUTS
+              # input-base-dir
+              # output-base-dir
+              # ref-base-dir
+              # temp-base-dir
+              # scratch-base-dir
+              # thread-count
+            arguments:
+              parameters:
+                - name: node-name
+                  value: "{{workflow.parameters.node-name}}"
+          - name: cravat-solo
+            when: "{{workflow.parameters.filter-type}} == 'solo'"
+            templateRef:
+              name: cravat-templates
+              template: cravat-solo-template
+            arguments:
+              parameters:
+                - name: proband-vcf
+                  value: "{{tasks.get-base-node-config.outputs.parameters.output-base-dir}}{{=jsonpath(workflow.parameters['filter-info'], '$.proband.ownerUser')}}/{{=jsonpath(workflow.parameters['filter-info'], '$.proband.runId')}}/vcf/{{=jsonpath(workflow.parameters['filter-info'], '$.proband.sampleId')}}_dv.vcf.gz"
+                - name: ref-version
+                  value: "{{workflow.parameters.ref-version}}"
+                - name: annotators
+                  value: "{{workflow.parameters.annots}}"
+                  # value: "{{=sprig.join(' ', jsonpath(workflow.parameters.annots, '$.0'))}}"
+                - name: modules-dir
+                  value: "{{tasks.get-base-node-config.outputs.parameters.modules-base-dir}}"
+                - name: output-dir
+                  value: "{{tasks.get-base-node-config.outputs.parameters.annots-base-dir}}/{{workflow.parameters.user-id}}/S_{{workflow.parameters.job-id}}/"
+            depends: "get-base-node-config"
+          - name: cravat-duo
+            when: "{{workflow.parameters.filter-type}} == 'duo'"
+            templateRef:
+              name: cravat-templates
+              template: cravat-duo-template
+            arguments:
+              parameters:
+                - name: proband-vcf
+                  value: "{{tasks.get-base-node-config.outputs.parameters.output-base-dir}}{{=jsonpath(workflow.parameters['filter-info'], '$.proband.ownerUser')}}/{{=jsonpath(workflow.parameters['filter-info'], '$.proband.runId')}}/vcf/{{=jsonpath(workflow.parameters['filter-info'], '$.proband.sampleId')}}_dv.vcf.gz"
+                - name: case-vcf
+                  value: "{{tasks.get-base-node-config.outputs.parameters.output-base-dir}}{{=jsonpath(workflow.parameters['filter-info'], '$.case.ownerUser')}}/{{=jsonpath(workflow.parameters['filter-info'], '$.case.runId')}}/vcf/{{=jsonpath(workflow.parameters['filter-info'], '$.case.sampleId')}}_dv.vcf.gz"
+                - name: ref-version
+                  value: "{{workflow.parameters.ref-version}}"
+                - name: annotators
+                  value: "{{workflow.parameters.annots}}"
+                  # value: "{{=sprig.join(' ', jsonpath(workflow.parameters.annots, '$.0'))}}"
+                - name: modules-dir
+                  value: "{{tasks.get-base-node-config.outputs.parameters.modules-base-dir}}"
+                - name: output-dir
+                  value: "{{tasks.get-base-node-config.outputs.parameters.annots-base-dir}}/{{workflow.parameters.user-id}}/D_{{workflow.parameters.job-id}}/"
+            depends: "get-base-node-config"
+          - name: cravat-trio
+            when: "{{workflow.parameters.filter-type}} == 'trio'"
+            templateRef:
+              name: cravat-templates
+              template: cravat-trio-template
+            arguments:
+              parameters:
+                - name: proband-vcf
+                  value: "{{tasks.get-base-node-config.outputs.parameters.output-base-dir}}{{=jsonpath(workflow.parameters['filter-info'], '$.proband.ownerUser')}}/{{=jsonpath(workflow.parameters['filter-info'], '$.proband.runId')}}/vcf/{{=jsonpath(workflow.parameters['filter-info'], '$.proband.sampleId')}}_dv.vcf.gz"
+                - name: mother-vcf
+                  value: "{{tasks.get-base-node-config.outputs.parameters.output-base-dir}}{{=jsonpath(workflow.parameters['filter-info'], '$.mother.ownerUser')}}/{{=jsonpath(workflow.parameters['filter-info'], '$.mother.runId')}}/vcf/{{=jsonpath(workflow.parameters['filter-info'], '$.mother.sampleId')}}_dv.vcf.gz"
+                - name: father-vcf
+                  value: "{{tasks.get-base-node-config.outputs.parameters.output-base-dir}}{{=jsonpath(workflow.parameters['filter-info'], '$.father.ownerUser')}}/{{=jsonpath(workflow.parameters['filter-info'], '$.father.runId')}}/vcf/{{=jsonpath(workflow.parameters['filter-info'], '$.father.sampleId')}}_dv.vcf.gz"
+                - name: ref-version
+                  value: "{{workflow.parameters.ref-version}}"
+                - name: annotators
+                  value: "{{workflow.parameters.annots}}"
+                  # value: "{{=sprig.join(' ', jsonpath(workflow.parameters.annots, '$.0'))}}"
+                - name: modules-dir
+                  value: "{{tasks.get-base-node-config.outputs.parameters.modules-base-dir}}"
+                - name: output-dir
+                  value: "{{tasks.get-base-node-config.outputs.parameters.annots-base-dir}}/{{workflow.parameters.user-id}}/T_{{workflow.parameters.job-id}}/"
+            depends: "get-base-node-config"

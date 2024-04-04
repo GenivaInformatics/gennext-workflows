@@ -1,0 +1,120 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: alter-bam-contig-names-template
+spec:
+  templates:
+    - name: alter-bam-contig-names-on-node
+      nodeSelector:
+        kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      inputs:
+        parameters:
+          - name: input-file
+          - name: output-file
+          - name: node-name
+      outputs:
+        parameters:
+          - name: output-file
+            valueFrom:
+              path: /tmp/output_dir_path
+      volumes:
+        - name: input-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-file'])}}"
+            type: Directory
+        - name: output-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-file'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: "alter-bam-contig-names-script"
+        image: quay.io/biocontainers/pysam:0.22.0--py310h41dec4a_1
+        command: [python]
+        source: |
+          # updates canonical chrom contig names to chr prefixed versions
+          # if no update is needed, returns input file
+          # else, returns the newly created altered output file given with input parameters
+          from pysam import AlignmentFile
+          from pathlib import Path
+
+          input_bam_dir = Path('/mnt/input/') / Path("{{=sprig.osBase(inputs.parameters['input-file'])}}")
+          output_bam_dir = Path('/mnt/output/') / Path("{{=sprig.osBase(inputs.parameters['output-file'])}}")
+
+          with AlignmentFile(input_bam_dir, "rb") as input_bam_obj:
+            input_contigs = [contig['SN'] for contig in input_bam_obj.header['SQ']]
+            hg19_contigs = list(map(str,range(1,23))) + ['X','Y','M','MT']
+
+            if any(map(lambda input_contig: input_contig in hg19_contigs, input_contigs)):
+              output_bam_header = dict(input_bam_obj.header)
+              for i, c in enumerate(output_bam_header['SQ']):
+                if c['SN'] in hg19_contigs:
+                  output_bam_header['SQ'][i] = {'SN':'chr'+c['SN'],'LN':c['LN']}
+              with AlignmentFile(output_bam_dir, 'wb', header=output_bam_header) as f:
+                for read in input_bam_obj.fetch(until_eof=True):
+                  f.write(read)
+              with open("/tmp/output_dir_path", 'wt') as f:
+                f.write("{{inputs.parameters.output-file}}")
+            else:
+              with open("/tmp/output_dir_path", 'wt') as f:
+                f.write("{{inputs.parameters.input-file}}")
+        volumeMounts:
+          - name: input-file
+            mountPath: "/mnt/input/"
+          - name: output-file
+            mountPath: "/mnt/output/"
+
+    - name: alter-bam-contig-names
+      inputs:
+        parameters:
+          - name: input-file
+          - name: output-file
+      outputs:
+        parameters:
+          - name: output-file
+            valueFrom:
+              path: /tmp/output_dir_path
+      volumes:
+        - name: input-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-file'])}}"
+            type: Directory
+        - name: output-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-file'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: "alter-bam-contig-names-script"
+        image: quay.io/biocontainers/pysam:0.22.0--py310h41dec4a_1
+        command: [python]
+        source: |
+          # updates canonical chrom contig names to chr prefixed versions
+          # if no update is needed, returns input file
+          # else, returns the newly created altered output file given with input parameters
+          from pysam import AlignmentFile
+          from pathlib import Path
+
+          input_bam_dir = Path('/mnt/input/') / Path("{{=sprig.osBase(inputs.parameters['input-file'])}}")
+          output_bam_dir = Path('/mnt/output/') / Path("{{=sprig.osBase(inputs.parameters['output-file'])}}")
+
+          with AlignmentFile(input_bam_dir, "rb") as input_bam_obj:
+            input_contigs = [contig['SN'] for contig in input_bam_obj.header['SQ']]
+            hg19_contigs = list(map(str,range(1,23))) + ['X','Y','M','MT']
+
+            if any(map(lambda input_contig: input_contig in hg19_contigs, input_contigs)):
+              output_bam_header = dict(input_bam_obj.header)
+              for i, c in enumerate(output_bam_header['SQ']):
+                if c['SN'] in hg19_contigs:
+                  output_bam_header['SQ'][i] = {'SN':'chr'+c['SN'],'LN':c['LN']}
+              with AlignmentFile(output_bam_dir, 'wb', header=output_bam_header) as f:
+                for read in input_bam_obj.fetch(until_eof=True):
+                  f.write(read)
+              with open("/tmp/output_dir_path", 'wt') as f:
+                f.write("{{inputs.parameters.output-file}}")
+            else:
+              with open("/tmp/output_dir_path", 'wt') as f:
+                f.write("{{inputs.parameters.input-file}}")
+        volumeMounts:
+          - name: input-file
+            mountPath: "/mnt/input/"
+          - name: output-file
+            mountPath: "/mnt/output/"

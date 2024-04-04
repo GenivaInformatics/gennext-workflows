@@ -1,0 +1,67 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: annovar-template
+  namespace: argo
+spec:
+  templates:
+    - name: annovar
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: input-vcf-f
+          - name: output-dir
+          - name: ref-version
+            value: "hg38"
+          - name: annotators
+            value: "refGene,ensGene,esp6500siv2_all,1000g2015aug_all,exac03,avsnp150,dbnsfp42c,dbscsnv11,dbnsfp31a_interpro,clinvar_20221231,cosmic91,icgc28,gnomad_genome"
+          - name: annovardb-dir
+      outputs:
+        parameters:
+          - name: annovar-out-f
+            value: "{{inputs.parameters.output-dir}}/{{inputs.parameters.sample-id}}.hg38_multianno.txt"
+      volumes:
+        - name: input-vcf-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-vcf-f'])}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+        - name: annovardb-dir
+          hostPath:
+            path: "{{inputs.parameters.annovardb-dir}}"
+            type: Directory
+      script:
+        name: annovar-script
+        image: bergun/cancervar:v0.0.1
+        command: [sh]
+        source: |
+          annotators="{{inputs.parameters.annotators}}"
+
+          # Split the string by commas and set them as 'g' or 'f'
+          operations=$(echo $annotators | tr ',' '\n' | while read -r part; do
+              if echo "$part" | grep -q "Gene$"; then
+                  echo -n "g,"
+              else
+                  echo -n "f,"
+              fi
+          done)
+
+          # Remove the trailing comma
+          operations=${operations%,}
+
+          perl ./table_annovar.pl \
+          /mnt/input/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}} \
+          /mnt/annovardb -buildver hg38 \
+          -out "/mnt/output/{{inputs.parameters.sample-id}}" \
+          -protocol $annotators  -operation  $operations \
+          -nastring . --vcfinput --remove
+        volumeMounts:
+          - name: input-vcf-f
+            mountPath: "/mnt/input/"
+          - name: output-dir
+            mountPath: "/mnt/output/"
+          - name: annovardb-dir
+            mountPath: "/mnt/annovardb/"

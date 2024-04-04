@@ -1,0 +1,214 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: copy-inputs-to-scratch
+  namespace: argo
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: copy-inputs-to-scratch
+  # arguments:
+  #   parameters:
+  #     - name: job-id
+  #     - name: input-rel-dir
+  templates:
+    - name: copy-inputs-to-scratch
+      inputs:
+        parameters:
+          - name: run-data
+          - name: input-rel-dir
+          - name: scratch-rel-dir
+      outputs:
+        parameters:
+          # - name: bam
+          #   valueFrom:
+          #     parameter: "{{steps.copy-bam-to-scratch.outputs.parameters.bam}}"
+          - name: fq-r1
+            valueFrom:
+              parameter: "{{steps.copy-fastq-to-scratch.outputs.parameters.fq-r1}}"
+          - name: fq-r2
+            valueFrom:
+              parameter: "{{steps.copy-fastq-to-scratch.outputs.parameters.fq-r2}}"
+          - name: regions-file
+            valueFrom:
+              parameter: "{{steps.copy-regions-file-to-scratch.outputs.parameters.regions-file}}"
+      steps:
+        - - name: copy-fastq-to-scratch
+            template: copy-fastq-to-scratch
+            # when: "!{{=jsonpath(inputs.parameters['run-data'], '$.isBam')}}"
+            arguments:
+              parameters:
+                - name: fq-r1
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR1.name')}}"
+                - name: fq-r2
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR2.name')}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+        - - name: copy-fastq-rna-to-scratch
+            template: copy-fastq-to-scratch
+            # when: "!{{=jsonpath(inputs.parameters['run-data'], '$.isBam')}}"
+            arguments:
+              parameters:
+                - name: fq-r1
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR1RNA.name')}}"
+                - name: fq-r2
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR2RNA.name')}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+          # - name: copy-bam-to-scratch
+          #   template: copy-bam-to-scratch
+          #   # when: "{{=jsonpath(inputs.parameters['run-data'], '$.isBam')}}"
+          #   arguments:
+          #     parameters:
+          #       - name: bam
+          #         value: "{{= jsonpath(inputs.parameters['run-data'], '$.isBam') ? jsonpath(inputs.parameters['run-data'], '$.samples[0].files.bam.name')}} : ''"
+          #       - name: input-rel-dir
+          #         value: "{{inputs.parameters.input-rel-dir}}"
+          #       - name: scratch-rel-dir
+          #         value: "{{inputs.parameters.scratch-rel-dir}}"
+        - - name: copy-regions-file-to-scratch
+            template: copy-regions-file-to-scratch
+            # when: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.regionsFile.name')}} != ''"
+            arguments:
+              parameters:
+                - name: regions-file
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.regionsFile.name')}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+          # - name: copy-default-regions-file-to-scratch
+          #   template: copy-regions-file-to-scratch
+          #   when: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.regionsFile.name')}} == ''"
+          #   arguments:
+          #     parameters:
+          #       - name: regions-file
+          #         value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.regionsFile.name')}}"
+          #       - name: input-rel-dir
+          #         value: "{{inputs.parameters.input-rel-dir}}"
+          #       - name: scratch-rel-dir
+          #         value: "{{inputs.parameters.scratch-rel-dir}}"
+    - name: copy-fastq-to-scratch
+      volumes:
+        - name: input-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.input-rel-dir}}"
+        - name: scratch-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.scratch-rel-dir}}"
+            type: DirectoryOrCreate
+      inputs:
+        parameters:
+          - name: fq-r1
+          - name: fq-r2
+          - name: input-rel-dir
+          - name: scratch-rel-dir
+      outputs:
+        parameters:
+          - name: fq-r1
+            value: "{{inputs.parameters.scratch-rel-dir}}{{inputs.parameters.fq-r1}}"
+          - name: fq-r2
+            value: "{{inputs.parameters.scratch-rel-dir}}{{inputs.parameters.fq-r2}}"
+      script:
+        image: alpine:latest
+        command: [sh]
+        source: |
+          #!/bin/sh
+          cp /mnt/input/{{inputs.parameters.fq-r1}} /mnt/scratch/
+          cp /mnt/input/{{inputs.parameters.fq-r2}} /mnt/scratch/
+        volumeMounts:
+          - name: input-rel-dir
+            mountPath: /mnt/input/
+          - name: scratch-rel-dir
+            mountPath: /mnt/scratch/
+    - name: copy-vcf-to-scratch
+      volumes:
+        - name: input-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.input-rel-dir}}"
+        - name: scratch-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.scratch-rel-dir}}"
+            type: DirectoryOrCreate
+      inputs:
+        parameters:
+          - name: vcf
+          - name: input-rel-dir
+          - name: scratch-rel-dir
+      outputs:
+        parameters:
+          - name: vcf
+            value: "{{inputs.parameters.scratch-rel-dir}}{{inputs.parameters.vcf}}"
+      script:
+        image: alpine:latest
+        command: [sh]
+        source: |
+          #!/bin/sh
+          cp /mnt/input/{{inputs.parameters.vcf}} /mnt/scratch/
+        volumeMounts:
+          - name: input-rel-dir
+            mountPath: /mnt/input/
+          - name: scratch-rel-dir
+            mountPath: /mnt/scratch/
+
+    - name: copy-bam-to-scratch
+      volumes:
+        - name: input-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.input-rel-dir}}"
+        - name: scratch-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.scratch-rel-dir}}"
+            type: DirectoryOrCreate
+      inputs:
+        parameters:
+          - name: bam
+          - name: input-rel-dir
+          - name: scratch-rel-dir
+      outputs:
+        parameters:
+          - name: bam
+            value: "{{inputs.parameters.scratch-rel-dir}}{{inputs.parameters.bam}}"
+      script:
+        image: alpine:latest
+        command: [sh]
+        source: |
+          #!/bin/sh
+          cp /mnt/input/{{inputs.parameters.bam}} /mnt/scratch/
+        volumeMounts:
+          - name: input-rel-dir
+            mountPath: /mnt/input
+          - name: scratch-rel-dir
+            mountPath: /mnt/scratch
+    - name: copy-regions-file-to-scratch
+      volumes:
+        - name: input-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.input-rel-dir}}"
+        - name: scratch-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.scratch-rel-dir}}"
+            type: DirectoryOrCreate
+      inputs:
+        parameters:
+          - name: regions-file
+          - name: input-rel-dir
+          - name: scratch-rel-dir
+      outputs:
+        parameters:
+          - name: regions-file
+            value: "{{inputs.parameters.scratch-rel-dir}}/{{inputs.parameters.regions-file}}"
+      script:
+        image: alpine:latest
+        command: [sh]
+        source: |
+          #!/bin/sh
+          cp /mnt/input/{{inputs.parameters.regions-file}} /mnt/scratch/
+        volumeMounts:
+          - name: input-rel-dir
+            mountPath: /mnt/input/
+          - name: scratch-rel-dir
+            mountPath: /mnt/scratch/

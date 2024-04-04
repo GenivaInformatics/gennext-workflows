@@ -19,6 +19,9 @@ spec:
           - name: temp-rel-dir
       outputs:
         parameters:
+          # - name: bam
+          #   valueFrom:
+          #     parameter: "{{steps.copy-bam-to-temp.outputs.parameters.bam}}"
           - name: fq-r1
             valueFrom:
               parameter: "{{steps.copy-fastq-to-temp.outputs.parameters.fq-r1}}"
@@ -31,39 +34,50 @@ spec:
       steps:
         - - name: copy-fastq-to-temp
             template: copy-fastq-to-temp
-            when: "!{{=jsonpath(inputs.parameters['run-data'], '$.isBam')}}"
+            # when: "!{{=jsonpath(inputs.parameters['run-data'], '$.isBam')}}"
             arguments:
               parameters:
                 - name: fq-r1
-                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.files.fqR1.name')}}"
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR1.name')}}"
                 - name: fq-r2
-                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.files.fqR2.name')}}"
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR2.name')}}"
                 - name: input-rel-dir
                   value: "{{inputs.parameters.input-rel-dir}}"
                 - name: temp-rel-dir
                   value: "{{inputs.parameters.temp-rel-dir}}"
-          - name: copy-bam-to-temp
-            template: copy-bam-to-temp
-            when: "{{=jsonpath(inputs.parameters['run-data'], '$.isBam')}}"
-            arguments:
-              parameters:
-                - name: bam
-                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.files.bam.name')}}"
-                - name: input-rel-dir
-                  value: "{{inputs.parameters.input-rel-dir}}"
-                - name: temp-rel-dir
-                  value: "{{inputs.parameters.temp-rel-dir}}"
+          # - name: copy-bam-to-temp
+          #   template: copy-bam-to-temp
+          #   # when: "{{=jsonpath(inputs.parameters['run-data'], '$.isBam')}}"
+          #   arguments:
+          #     parameters:
+          #       - name: bam
+          #         value: "{{= jsonpath(inputs.parameters['run-data'], '$.isBam') ? jsonpath(inputs.parameters['run-data'], '$.samples[0].files.bam.name')}} : ''"
+          #       - name: input-rel-dir
+          #         value: "{{inputs.parameters.input-rel-dir}}"
+          #       - name: temp-rel-dir
+          #         value: "{{inputs.parameters.temp-rel-dir}}"
         - - name: copy-regions-file-to-temp
             template: copy-regions-file-to-temp
-            when: "'{{=jsonpath(inputs.parameters['run-data'], '$.files.regionsFile.name')}}' != ''"
+            # when: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.regionsFile.name')}} != ''"
             arguments:
               parameters:
                 - name: regions-file
-                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.files.regionsFile.name')}}"
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.regionsFile.name')}}"
                 - name: input-rel-dir
                   value: "{{inputs.parameters.input-rel-dir}}"
                 - name: temp-rel-dir
                   value: "{{inputs.parameters.temp-rel-dir}}"
+          # - name: copy-default-regions-file-to-temp
+          #   template: copy-regions-file-to-temp
+          #   when: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.regionsFile.name')}} == ''"
+          #   arguments:
+          #     parameters:
+          #       - name: regions-file
+          #         value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.regionsFile.name')}}"
+          #       - name: input-rel-dir
+          #         value: "{{inputs.parameters.input-rel-dir}}"
+          #       - name: temp-rel-dir
+          #         value: "{{inputs.parameters.temp-rel-dir}}"
     - name: read-run-data
       inputs:
         parameters:
@@ -125,7 +139,10 @@ spec:
         command: [sh]
         source: |
           #!/bin/sh
-          cp /mnt/input/{{inputs.parameters.bam}} /mnt/temp/
+          if [ {{inputs.parameters.bam}} -ne '' ]
+          then
+            cp /mnt/input/{{inputs.parameters.bam}} /mnt/temp/
+          fi
         volumeMounts:
           - name: input-rel-dir
             mountPath: /mnt/input
@@ -154,7 +171,10 @@ spec:
         command: [sh]
         source: |
           #!/bin/sh
-          cp /mnt/input/{{inputs.parameters.regions-file}} /mnt/temp/
+          if [ {{inputs.parameters.regions-file}} -ne '' ]
+          then
+            cp /mnt/input/{{inputs.parameters.regions-file}} /mnt/temp/
+          fi
         volumeMounts:
           - name: input-rel-dir
             mountPath: /mnt/input

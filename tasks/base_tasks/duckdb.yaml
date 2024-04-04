@@ -1,0 +1,810 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: duckdb-template
+spec:
+  templates:
+    - name: determine-otherinfo-column
+      inputs:
+        parameters:
+          - name: annovar-oncokb-maf
+      outputs:
+        parameters:
+          - name: filter-column-name
+            valueFrom:
+              path: "/tmp/filter_col_name"
+          - name: vlod-column-name
+            valueFrom:
+              path: "/tmp/vlod_col_name"
+          - name: sample-column-name
+            valueFrom:
+              path: "/tmp/sample_col_name"
+      volumes:
+        - name: annovar-oncokb-maf
+          hostPath:
+            path: "{{inputs.parameters.annovar-oncokb-maf}}"
+            type: File
+      script:
+        name: determine-otherinfo-column-script
+        image: python:3.11-alpine3.18
+        command: [python]
+        source: |
+          # FILTER column filtering information
+          PASS = ['clustered_events', 'duplicate', 'fragment', 'multiallelic', 'n_ratio', 'orientation', 'position', 'slippage', 'haplotype', 'germline', 'strict_strand']
+          FILTER = ['map_qual', 'base_qual', 'contamination', 'weak_evidence', 'low_allele_frac', 'normal_artifact', 'panel_of_normals', 'strand_bias']
+          # FORMAT column information
+          FORMAT = ['GT', 'AD', 'AF', 'DP', 'F1R2', 'F2R1', 'FAD', 'SB', 'PGT', 'PID', 'PS', 'SB']
+
+          def find_sample_column(file_path):
+              format_column = None
+              format_column_index = -1
+              sample_column = None
+              sample_column_index = -1
+
+              with open(file_path, 'r') as file:
+                  # Read the header line to get column names
+                  columns = file.readline().strip().split('\t')
+
+                  # Identify "Otherinfo" columns
+                  otherinfo_columns = [col for col in columns if col.startswith('Otherinfo')]
+
+                  # Check each "Otherinfo" column for FORMAT
+                  for line in file:
+                      values = line.strip().split('\t')
+
+                      for col in otherinfo_columns:
+                          col_index = columns.index(col)
+                          if set(values[col_index].split(':')).intersection(set(FORMAT)):
+                              format_column = col
+                              format_column_index = col_index
+                              sample_column_index = format_column_index + 1
+                              sample_column = columns[sample_column_index]
+                              break
+
+                      if sample_column is not None:
+                          break
+
+              return sample_column, sample_column_index
+
+          def find_filter_column(file_path):
+              filter_column = None
+              filter_column_index = -1
+
+              with open(file_path, 'r') as file:
+                  # Read the header line to get column names
+                  header = file.readline().strip()
+                  columns = header.split('\t')
+
+                  # Identify "Otherinfo" columns
+                  otherinfo_columns = [col for col in columns if col.startswith('Otherinfo')]
+
+                  # Check each "Otherinfo" column for FILTER
+                  for line in file:
+                      values = line.strip().split('\t')
+
+                      for col in otherinfo_columns:
+                          col_index = columns.index(col)
+                          if set(values[col_index].split(';')).intersection(set(FILTER + PASS + ['PASS'])):
+                              filter_column = col
+                              filter_column_index = col_index
+                              break
+
+                      if filter_column is not None:
+                          break
+
+              return filter_column, filter_column_index
+
+
+          def find_det_dets_column(file_path):
+              det_column = None
+              det_column_index = -1
+
+              with open(file_path, 'r') as file:
+                  # Read the header line to get column names
+                  header = file.readline().strip()
+                  columns = header.split('\t')
+
+                  # Identify "Otherinfo" columns
+                  otherinfo_columns = [col for col in columns if col.startswith('Otherinfo')]
+
+                  # Check each "Otherinfo" column for DET and DETS
+                  for line in file:
+                      values = line.strip().split('\t')
+
+                      for col in otherinfo_columns:
+                          col_index = columns.index(col)
+                          if 'DET=' in values[col_index] and 'DETS=' in values[col_index]:
+                              det_column = col
+                              det_column_index = col_index
+                              break
+
+                      if det_column is not None:
+                          break
+
+              return det_column, det_column_index
+
+          vlod_column_name, vlod_column_index = find_det_dets_column('/mnt/input/oncokb_maf.tsv')
+          with open("/tmp/vlod_col_name", 'w') as file:
+              file.write(vlod_column_name)
+          filter_column_name, filter_column_index = find_filter_column('/mnt/input/oncokb_maf.tsv')
+          with open("/tmp/filter_col_name", 'w') as file:
+              file.write(filter_column_name)
+          sample_column_name, sample_column_index = find_sample_column('/mnt/input/oncokb_maf.tsv')
+          with open("/tmp/sample_col_name", 'w') as file:
+              file.write(sample_column_name)
+        volumeMounts:
+          - name: annovar-oncokb-maf
+            mountPath: "/mnt/input/oncokb_maf.tsv"
+    - name: duckdb-snv
+      inputs:
+        parameters:
+          - name: annovar-oncokb-maf
+          - name: cancervar-tsv
+          - name: vlod-column-name
+          - name: filter-column-name
+          - name: sample-column-name
+          - name: output-duckdb
+      outputs:
+        parameters:
+          - name: output-duckdb
+            value: "{{inputs.parameters.output-duckdb}}"
+      volumes:
+        - name: annovar-oncokb-maf
+          hostPath:
+            path: "{{inputs.parameters.annovar-oncokb-maf}}"
+            type: File
+        - name: cancervar-tsv
+          hostPath:
+            path: "{{inputs.parameters.cancervar-tsv}}"
+            type: File
+        - name: output-duckdb
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-duckdb'])}}"
+            type: DirectoryOrCreate
+
+      script:
+        name: "duckdb-snv-script"
+        image: qldrsc/duckdb:latest
+        command: ["duckdb", "-init"]
+        source: |
+          .open /mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}
+          DROP TABLE IF EXISTS oncokb_snv;
+          DROP TABLE IF EXISTS cancervar_snv;
+          DROP VIEW IF EXISTS combined_snv;
+          DROP VIEW IF EXISTS advanced_combined_snv;
+          CREATE TABLE oncokb_snv AS FROM read_csv_auto('/mnt/input/oncokb_snv.tsv', header=True, sep='\t', sample_size=-1);
+          CREATE TABLE cancervar_snv AS FROM read_csv_auto('/mnt/input/cancervar_snv.tsv', header=True, sep='\t', sample_size=-1);
+          CREATE VIEW combined_snv AS
+          SELECT
+            CONCAT('chr', cancervar_snv."#Chr") AS Chrom,
+            cancervar_snv."Start",
+            cancervar_snv."End",
+            oncokb_snv."Reference_Allele" AS Ref,
+            cancervar_snv."Alt",
+            oncokb_snv."{{inputs.parameters.filter-column-name}}" AS "Filter",
+            cancervar_snv."Ref.Gene" AS "Gene.refGene",
+            cancervar_snv."Func.refGene",
+            cancervar_snv."ExonicFunc.refGene",
+            oncokb_snv."tx",
+            oncokb_snv."exon",
+            oncokb_snv."txChange",
+            oncokb_snv."aaChange",
+            oncokb_snv."Variant_Type",
+            oncokb_snv."avsnp150",
+            cancervar_snv."clinvar: Clinvar",
+            cancervar_snv."CancerVar: CancerVar and Evidence",
+            REPLACE(
+            SUBSTRING(
+                cancervar_snv."CancerVar: CancerVar and Evidence"
+                FROM POSITION('#' IN cancervar_snv."CancerVar: CancerVar and Evidence") + 1
+                FOR POSITION(' ' IN SUBSTRING(cancervar_snv."CancerVar: CancerVar and Evidence" FROM POSITION('#' IN cancervar_snv."CancerVar: CancerVar and Evidence"))) - 1
+            ),
+            '_', ' '
+            ) AS "CancerVar: Tier",
+            (
+            SELECT STRING_AGG(DISTINCT CONCAT('CBP', i + 1), ', ')
+            FROM generate_series(0, 11) as gs(i)
+            WHERE TRIM(SPLIT_PART(SPLIT_PART(SPLIT_PART(cancervar_snv."CancerVar: CancerVar and Evidence", 'EVS=[', 2), ']', 1), ',', gs.i+1)) ~ '^[0-9]+$' AND
+                    CAST(TRIM(SPLIT_PART(SPLIT_PART(SPLIT_PART(cancervar_snv."CancerVar: CancerVar and Evidence", 'EVS=[', 2), ']', 1), ',', gs.i+1)) AS INTEGER) > 0
+            ) AS "CancerVar: Evidence",
+            cancervar_snv."cosmic91",
+            oncokb_snv."ICGC_Id",
+            SPLIT_PART(oncokb_snv."{{inputs.parameters.sample-column-name}}", ':', 1) AS GT,
+            SPLIT_PART(oncokb_snv."{{inputs.parameters.sample-column-name}}", ':', 2) AS AD,
+            SPLIT_PART(oncokb_snv."{{inputs.parameters.sample-column-name}}", ':', 3) AS AF,
+            SPLIT_PART(oncokb_snv."{{inputs.parameters.sample-column-name}}", ':', 4) AS DP,
+            SPLIT_PART(SPLIT_PART(oncokb_snv."{{inputs.parameters.vlod-column-name}}", 'DET=', 2), ';', 1) AS DET,
+            CASE
+              WHEN TRIM(SPLIT_PART(SPLIT_PART(oncokb_snv."{{inputs.parameters.vlod-column-name}}", 'DETS=', 2), ';', 1)) = '' THEN NULL
+              ELSE CAST(SPLIT_PART(SPLIT_PART(oncokb_snv."{{inputs.parameters.vlod-column-name}}", 'DETS=', 2), ';', 1) AS FLOAT)
+            END AS DETS,
+            oncokb_snv."GENE_IN_ONCOKB",
+            oncokb_snv."ONCOGENIC",
+            oncokb_snv."LEVEL_1",
+            oncokb_snv."LEVEL_2",
+            oncokb_snv."LEVEL_3A",
+            oncokb_snv."LEVEL_3B",
+            oncokb_snv."LEVEL_4",
+            oncokb_snv."LEVEL_R1",
+            oncokb_snv."LEVEL_R2",
+            oncokb_snv."HIGHEST_LEVEL",
+            oncokb_snv."HIGHEST_SENSITIVE_LEVEL",
+            oncokb_snv."HIGHEST_RESISTANCE_LEVEL",
+            oncokb_snv."TX_CITATIONS",
+          FROM
+            cancervar_snv
+          INNER JOIN oncokb_snv ON cancervar_snv."#Chr" = SUBSTRING(oncokb_snv."Chromosome" FROM 4)
+                        AND cancervar_snv."Start" = oncokb_snv."Start_Position"
+                        AND cancervar_snv."End" = oncokb_snv."End_Position"
+                        AND cancervar_snv."Alt" = oncokb_snv."Tumor_Seq_Allele2";
+          CREATE VIEW advanced_combined_snv AS
+          SELECT
+            CONCAT('chr', cancervar_snv."#Chr") AS Chrom,
+            cancervar_snv."Start",
+            cancervar_snv."End",
+            oncokb_snv."Reference_Allele" AS Ref,
+            cancervar_snv."Alt",
+            oncokb_snv."{{inputs.parameters.filter-column-name}}" AS "Filter",
+            cancervar_snv."Ref.Gene" AS "Gene.refGene",
+            cancervar_snv."Func.refGene",
+            cancervar_snv."ExonicFunc.refGene",
+            oncokb_snv."GeneDetail.refGene",
+            oncokb_snv."Gene.ensGene",
+            oncokb_snv."Func.ensGene",
+            oncokb_snv."ExonicFunc.ensGene",
+            oncokb_snv."GeneDetail.ensGene",
+            oncokb_snv."tx",
+            oncokb_snv."exon",
+            oncokb_snv."txChange",
+            oncokb_snv."aaChange",
+            oncokb_snv."Variant_Type",
+            oncokb_snv."avsnp150",
+            cancervar_snv."clinvar: Clinvar",
+            cancervar_snv."CancerVar: CancerVar and Evidence",
+            REPLACE(
+            SUBSTRING(
+                cancervar_snv."CancerVar: CancerVar and Evidence"
+                FROM POSITION('#' IN cancervar_snv."CancerVar: CancerVar and Evidence") + 1
+                FOR POSITION(' ' IN SUBSTRING(cancervar_snv."CancerVar: CancerVar and Evidence" FROM POSITION('#' IN cancervar_snv."CancerVar: CancerVar and Evidence"))) - 1
+            ),
+            '_', ' '
+            ) AS "CancerVar: Tier",
+            (
+            SELECT STRING_AGG(DISTINCT CONCAT('CBP', i + 1), ', ')
+            FROM generate_series(0, 11) as gs(i)
+            WHERE TRIM(SPLIT_PART(SPLIT_PART(SPLIT_PART(cancervar_snv."CancerVar: CancerVar and Evidence", 'EVS=[', 2), ']', 1), ',', gs.i+1)) ~ '^[0-9]+$' AND
+                    CAST(TRIM(SPLIT_PART(SPLIT_PART(SPLIT_PART(cancervar_snv."CancerVar: CancerVar and Evidence", 'EVS=[', 2), ']', 1), ',', gs.i+1)) AS INTEGER) > 0
+            ) AS "CancerVar: Evidence",
+            cancervar_snv."cosmic91",
+            oncokb_snv."ICGC_Id",
+            SPLIT_PART(oncokb_snv."{{inputs.parameters.sample-column-name}}", ':', 1) AS GT,
+            SPLIT_PART(oncokb_snv."{{inputs.parameters.sample-column-name}}", ':', 2) AS AD,
+            SPLIT_PART(oncokb_snv."{{inputs.parameters.sample-column-name}}", ':', 3) AS AF,
+            SPLIT_PART(oncokb_snv."{{inputs.parameters.sample-column-name}}", ':', 4) AS DP,
+            SPLIT_PART(SPLIT_PART(oncokb_snv."{{inputs.parameters.vlod-column-name}}", 'DET=', 2), ';', 1) AS DET,
+            CASE
+                WHEN TRIM(SPLIT_PART(SPLIT_PART(oncokb_snv."{{inputs.parameters.vlod-column-name}}", 'DETS=', 2), ';', 1)) = '' THEN NULL
+                ELSE CAST(SPLIT_PART(SPLIT_PART(oncokb_snv."{{inputs.parameters.vlod-column-name}}", 'DETS=', 2), ';', 1) AS FLOAT)
+            END AS DETS,
+            cancervar_snv."OMIM",
+            cancervar_snv."Phenotype_MIM",
+            cancervar_snv."OrphaNumber",
+            cancervar_snv."Orpha",
+            cancervar_snv."Pathway",
+            cancervar_snv."Therap_list",
+            cancervar_snv."Diag_list",
+            cancervar_snv."Prog_list",
+            oncokb_snv."esp6500siv2_all",
+            oncokb_snv."1000g2015aug_all",
+            oncokb_snv."ExAC_ALL",
+            oncokb_snv."ExAC_AFR",
+            oncokb_snv."ExAC_AMR",
+            oncokb_snv."ExAC_EAS",
+            oncokb_snv."ExAC_FIN",
+            oncokb_snv."ExAC_NFE",
+            oncokb_snv."ExAC_SAS",
+            oncokb_snv."ExAC_OTH",
+            oncokb_snv."SIFT_score",
+            oncokb_snv."SIFT_pred",
+            oncokb_snv."SIFT_converted_rankscore",
+            oncokb_snv."SIFT4G_score",
+            oncokb_snv."SIFT4G_pred",
+            oncokb_snv."SIFT4G_converted_rankscore",
+            oncokb_snv."LRT_score",
+            oncokb_snv."LRT_pred",
+            oncokb_snv."LRT_converted_rankscore",
+            oncokb_snv."MutationTaster_score",
+            oncokb_snv."MutationTaster_pred",
+            oncokb_snv."MutationTaster_converted_rankscore",
+            oncokb_snv."MutationAssessor_score",
+            oncokb_snv."MutationAssessor_pred",
+            oncokb_snv."MutationAssessor_rankscore",
+            oncokb_snv."FATHMM_score",
+            oncokb_snv."FATHMM_pred",
+            oncokb_snv."FATHMM_converted_rankscore",
+            oncokb_snv."PROVEAN_score",
+            oncokb_snv."PROVEAN_pred",
+            oncokb_snv."PROVEAN_converted_rankscore",
+            oncokb_snv."MetaSVM_score",
+            oncokb_snv."MetaSVM_pred",
+            oncokb_snv."MetaSVM_rankscore",
+            oncokb_snv."MetaLR_score",
+            oncokb_snv."MetaLR_pred",
+            oncokb_snv."MetaLR_rankscore",
+            oncokb_snv."MetaRNN_score",
+            oncokb_snv."MetaRNN_rankscore",
+            oncokb_snv."MetaRNN_pred",
+            oncokb_snv."M-CAP_score",
+            oncokb_snv."M-CAP_pred",
+            oncokb_snv."M-CAP_rankscore",
+            oncokb_snv."MutPred_score",
+            oncokb_snv."MutPred_rankscore",
+            oncokb_snv."MVP_score",
+            oncokb_snv."MVP_rankscore",
+            oncokb_snv."MPC_score",
+            oncokb_snv."MPC_rankscore",
+            oncokb_snv."PrimateAI_score",
+            oncokb_snv."PrimateAI_pred",
+            oncokb_snv."PrimateAI_rankscore",
+            oncokb_snv."DEOGEN2_score",
+            oncokb_snv."DEOGEN2_pred",
+            oncokb_snv."DEOGEN2_rankscore",
+            oncokb_snv."BayesDel_addAF_score",
+            oncokb_snv."BayesDel_addAF_rankscore",
+            oncokb_snv."BayesDel_addAF_pred",
+            oncokb_snv."BayesDel_noAF_score",
+            oncokb_snv."BayesDel_noAF_rankscore",
+            oncokb_snv."BayesDel_noAF_pred",
+            oncokb_snv."ClinPred_score",
+            oncokb_snv."ClinPred_pred",
+            oncokb_snv."ClinPred_rankscore",
+            oncokb_snv."LIST-S2_score",
+            oncokb_snv."LIST-S2_pred",
+            oncokb_snv."LIST-S2_rankscore",
+            oncokb_snv."Aloft_pred",
+            oncokb_snv."Aloft_Confidence",
+            oncokb_snv."DANN_score",
+            oncokb_snv."DANN_rankscore",
+            oncokb_snv."fathmm-MKL_coding_score",
+            oncokb_snv."fathmm-MKL_coding_pred",
+            oncokb_snv."fathmm-MKL_coding_rankscore",
+            oncokb_snv."fathmm-XF_coding_score",
+            oncokb_snv."fathmm-XF_coding_pred",
+            oncokb_snv."fathmm-XF_coding_rankscore",
+            oncokb_snv."Eigen-raw_coding",
+            oncokb_snv."Eigen-raw_coding_rankscore",
+            oncokb_snv."Eigen-PC-raw_coding",
+            oncokb_snv."Eigen-PC-raw_coding_rankscore",
+            oncokb_snv."integrated_fitCons_score",
+            oncokb_snv."integrated_fitCons_rankscore",
+            oncokb_snv."integrated_confidence_value",
+            oncokb_snv."GERP++_NR",
+            oncokb_snv."GERP++_RS",
+            oncokb_snv."GERP++_RS_rankscore",
+            oncokb_snv."phyloP100way_vertebrate",
+            oncokb_snv."phyloP100way_vertebrate_rankscore",
+            oncokb_snv."phyloP30way_mammalian",
+            oncokb_snv."phyloP30way_mammalian_rankscore",
+            oncokb_snv."phastCons100way_vertebrate",
+            oncokb_snv."phastCons100way_vertebrate_rankscore",
+            oncokb_snv."phastCons30way_mammalian",
+            oncokb_snv."phastCons30way_mammalian_rankscore",
+            oncokb_snv."SiPhy_29way_logOdds",
+            oncokb_snv."SiPhy_29way_logOdds_rankscore",
+            oncokb_snv."Interpro_domain",
+            oncokb_snv."GTEX_V8_gene",
+            oncokb_snv."GTEX_V8_tissue",
+            oncokb_snv."dbscSNV_ADA_SCORE",
+            oncokb_snv."dbscSNV_RF_SCORE",
+            oncokb_snv."CLNALLELEID",
+            oncokb_snv."CLNDN",
+            oncokb_snv."CLNDISDB",
+            oncokb_snv."CLNREVSTAT",
+            oncokb_snv."CLNSIG",
+            oncokb_snv."gnomAD_genome_ALL",
+            oncokb_snv."gnomAD_genome_AFR",
+            oncokb_snv."gnomAD_genome_AMR",
+            oncokb_snv."gnomAD_genome_ASJ",
+            oncokb_snv."gnomAD_genome_EAS",
+            oncokb_snv."gnomAD_genome_FIN",
+            oncokb_snv."gnomAD_genome_NFE",
+            oncokb_snv."gnomAD_genome_OTH",
+            oncokb_snv."GENE_IN_ONCOKB",
+            oncokb_snv."VARIANT_IN_ONCOKB",
+            oncokb_snv."MUTATION_EFFECT",
+            oncokb_snv."MUTATION_EFFECT_CITATIONS",
+            oncokb_snv."ONCOGENIC",
+            oncokb_snv."LEVEL_1",
+            oncokb_snv."LEVEL_2",
+            oncokb_snv."LEVEL_3A",
+            oncokb_snv."LEVEL_3B",
+            oncokb_snv."LEVEL_4",
+            oncokb_snv."LEVEL_R1",
+            oncokb_snv."LEVEL_R2",
+            oncokb_snv."HIGHEST_LEVEL",
+            oncokb_snv."HIGHEST_SENSITIVE_LEVEL",
+            oncokb_snv."HIGHEST_RESISTANCE_LEVEL",
+            oncokb_snv."TX_CITATIONS",
+            oncokb_snv."LEVEL_Dx1",
+            oncokb_snv."LEVEL_Dx2",
+            oncokb_snv."LEVEL_Dx3",
+            oncokb_snv."HIGHEST_DX_LEVEL",
+            oncokb_snv."PX_CITATIONS",
+          FROM
+            cancervar_snv
+          INNER JOIN oncokb_snv ON cancervar_snv."#Chr" = SUBSTRING(oncokb_snv."Chromosome" FROM 4)
+                        AND cancervar_snv."Start" = oncokb_snv."Start_Position"
+                        AND cancervar_snv."End" = oncokb_snv."End_Position"
+                        AND cancervar_snv."Alt" = oncokb_snv."Tumor_Seq_Allele2";
+          .exit
+        volumeMounts:
+          - name: annovar-oncokb-maf
+            mountPath: "/mnt/input/oncokb_snv.tsv"
+          - name: cancervar-tsv
+            mountPath: "/mnt/input/cancervar_snv.tsv"
+          - name: output-duckdb
+            mountPath: "/mnt/output/"
+    - name: duckdb-sv
+      inputs:
+        parameters:
+          - name: oncokb-tsv-f
+          - name: annotsv-tsv-f
+          - name: output-duckdb
+      outputs:
+        parameters:
+          - name: output-duckdb
+            value: "{{inputs.parameters.output-duckdb}}"
+      volumes:
+        - name: oncokb-tsv-f
+          hostPath:
+            path: "{{inputs.parameters.oncokb-tsv-f}}"
+            type: File
+        - name: annotsv-tsv-f
+          hostPath:
+            path: "{{inputs.parameters.annotsv-tsv-f}}"
+            type: File
+        - name: output-duckdb
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-duckdb'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: "duckdb-sv-script"
+        image: qldrsc/duckdb:latest
+        command: ["duckdb", "-init"]
+        source: |
+          .open "/mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}"
+          CREATE TABLE oncokb_sv AS FROM read_csv_auto('/mnt/input/oncokb/oncokb_sv.tsv', header=True, sep='\t');
+          CREATE TABLE annotsv_sv AS FROM read_csv_auto('/mnt/input/annotsv/annotsv_sv.tsv', header=True, sep='\t');
+          CREATE VIEW combined_sv AS
+          SELECT
+              annotsv_sv.SV_chrom,
+              annotsv_sv.SV_start,
+              annotsv_sv.SV_end,
+              annotsv_sv.SV_length,
+              annotsv_sv.SV_type,
+              annotsv_sv.REF,
+              annotsv_sv.ALT,
+              annotsv_sv.CytoBand,
+              annotsv_sv.Gene_name,
+              annotsv_sv.Annotation_mode,
+              annotsv_sv.Tx,
+              annotsv_sv.Tx_start,
+              annotsv_sv.Tx_end,
+              annotsv_sv.OMIM_ID,
+              annotsv_sv.OMIM_phenotype,
+              annotsv_sv.OMIM_inheritance,
+              annotsv_sv.GnomAD_pLI,
+              annotsv_sv.ExAC_pLI,
+              annotsv_sv.ACMG_class,
+              oncokb_sv.Sv_Type AS "ONCOKB_SV_TYPE",
+              oncokb_sv.GeneA AS "ONCOKB_GENE",
+              oncokb_sv.MUTATION_EFFECT,
+              oncokb_sv.MUTATION_EFFECT_CITATIONS,
+              oncokb_sv.ONCOGENIC,
+              oncokb_sv.GENE_IN_ONCOKB,
+              oncokb_sv.VARIANT_IN_ONCOKB,
+              oncokb_sv.LEVEL_1,
+              oncokb_sv.LEVEL_2,
+              oncokb_sv.LEVEL_3A,
+              oncokb_sv.LEVEL_3B,
+              oncokb_sv.LEVEL_4,
+              oncokb_sv.LEVEL_R1,
+              oncokb_sv.LEVEL_R2,
+              oncokb_sv.HIGHEST_LEVEL,
+              oncokb_sv.HIGHEST_SENSITIVE_LEVEL,
+              oncokb_sv.HIGHEST_RESISTANCE_LEVEL,
+              CAST(oncokb_sv.TX_CITATIONS AS VARCHAR) AS TX_CITATIONS,
+              oncokb_sv.LEVEL_Dx1,
+              oncokb_sv.LEVEL_Dx2,
+              oncokb_sv.LEVEL_Dx3,
+              oncokb_sv.HIGHEST_DX_LEVEL,
+              CAST(oncokb_sv.DX_CITATIONS AS VARCHAR) AS DX_CITATIONS,
+              oncokb_sv.LEVEL_Px1,
+              oncokb_sv.LEVEL_Px2,
+              oncokb_sv.LEVEL_Px3,
+              oncokb_sv.HIGHEST_PX_LEVEL,
+              CAST(oncokb_sv.PX_CITATIONS AS VARCHAR) AS PX_CITATIONS,
+          FROM
+              annotsv_sv
+          JOIN oncokb_sv ON annotsv_sv.AnnotSV_ID = oncokb_sv.AnnotSV_ID;
+          CREATE VIEW advanced_combined_sv AS
+          SELECT
+              annotsv_sv.SV_chrom,
+              annotsv_sv.SV_start,
+              annotsv_sv.SV_end,
+              annotsv_sv.SV_length,
+              annotsv_sv.SV_type,
+              annotsv_sv.Paired_Reads,
+              annotsv_sv.Split_Reads,
+              annotsv_sv.Samples_ID,
+              annotsv_sv.ID,
+              annotsv_sv.REF,
+              annotsv_sv.ALT,
+              annotsv_sv.QUAL,
+              annotsv_sv.FILTER,
+              annotsv_sv.INFO,
+              annotsv_sv.FORMAT,
+              annotsv_sv.SAMPLE_DATA,
+              annotsv_sv.Annotation_mode,
+              annotsv_sv.CytoBand,
+              annotsv_sv.Gene_name,
+              annotsv_sv.Gene_count,
+              annotsv_sv.Tx,
+              annotsv_sv.Tx_start,
+              annotsv_sv.Tx_end,
+              annotsv_sv.Overlapped_tx_length,
+              annotsv_sv.Overlapped_CDS_length,
+              annotsv_sv.Overlapped_CDS_percent,
+              annotsv_sv.Frameshift,
+              annotsv_sv.Exon_count,
+              annotsv_sv.Location,
+              annotsv_sv.Location2,
+              annotsv_sv.Dist_nearest_SS,
+              annotsv_sv.Intersect_start,
+              annotsv_sv.Intersect_end,
+              annotsv_sv.RE_gene,
+              annotsv_sv.P_gain_phen,
+              annotsv_sv.P_gain_hpo,
+              annotsv_sv.P_gain_source,
+              annotsv_sv.P_gain_coord,
+              annotsv_sv.P_loss_phen,
+              annotsv_sv.P_loss_hpo,
+              annotsv_sv.P_loss_source,
+              annotsv_sv.P_loss_coord,
+              annotsv_sv.P_ins_phen,
+              annotsv_sv.P_ins_hpo,
+              annotsv_sv.P_ins_source,
+              annotsv_sv.P_ins_coord,
+              annotsv_sv.po_P_gain_phen,
+              annotsv_sv.po_P_gain_hpo,
+              annotsv_sv.po_P_gain_source,
+              annotsv_sv.po_P_gain_coord,
+              annotsv_sv.po_P_gain_percent,
+              annotsv_sv.po_P_loss_phen,
+              annotsv_sv.po_P_loss_hpo,
+              annotsv_sv.po_P_loss_source,
+              annotsv_sv.po_P_loss_coord,
+              annotsv_sv.po_P_loss_percent,
+              annotsv_sv.P_snvindel_nb,
+              annotsv_sv.P_snvindel_phen,
+              annotsv_sv.B_gain_source,
+              annotsv_sv.B_gain_coord,
+              annotsv_sv.B_gain_AFmax,
+              annotsv_sv.B_loss_source,
+              annotsv_sv.B_loss_coord,
+              annotsv_sv.B_loss_AFmax,
+              annotsv_sv.B_ins_source,
+              annotsv_sv.B_ins_coord,
+              annotsv_sv.B_inv_source,
+              annotsv_sv.B_inv_coord,
+              annotsv_sv.B_inv_AFmax,
+              annotsv_sv.po_B_gain_allG_source,
+              annotsv_sv.po_B_gain_allG_coord,
+              annotsv_sv.po_B_gain_someG_coord,
+              annotsv_sv.po_B_loss_allG_source,
+              annotsv_sv.po_B_loss_allG_coord,
+              annotsv_sv.po_B_loss_someG_source,
+              annotsv_sv.po_B_loss_someG_coord,
+              annotsv_sv.TAD_coordinate,
+              annotsv_sv.ENCODE_experiment,
+              annotsv_sv.GC_content_left,
+              annotsv_sv.GC_content_right,
+              annotsv_sv.Repeat_coord_left,
+              annotsv_sv.Repeat_type_left,
+              annotsv_sv.Repeat_coord_right,
+              annotsv_sv.Repeat_type_right,
+              annotsv_sv.Gap_left,
+              annotsv_sv.Gap_right,
+              annotsv_sv.SegDup_left,
+              annotsv_sv.SegDup_right,
+              annotsv_sv.ENCODE_blacklist_left,
+              annotsv_sv.ENCODE_blacklist_characteristics_left,
+              annotsv_sv.ENCODE_blacklist_right,
+              annotsv_sv.ENCODE_blacklist_characteristics_right,
+              annotsv_sv.ACMG,
+              annotsv_sv.HI,
+              annotsv_sv.TS,
+              annotsv_sv.DDD_HI_percent,
+              annotsv_sv.DDD_status,
+              annotsv_sv.DDD_mode,
+              annotsv_sv.DDD_consequence,
+              annotsv_sv.DDD_disease,
+              annotsv_sv.DDD_pmid,
+              annotsv_sv.ExAC_delZ,
+              annotsv_sv.ExAC_dupZ,
+              annotsv_sv.ExAC_cnvZ,
+              annotsv_sv.ExAC_synZ,
+              annotsv_sv.ExAC_misZ,
+              annotsv_sv.GenCC_disease,
+              annotsv_sv.GenCC_moi,
+              annotsv_sv.GenCC_classification,
+              annotsv_sv.GenCC_pmid,
+              annotsv_sv.OMIM_ID,
+              annotsv_sv.OMIM_phenotype,
+              annotsv_sv.OMIM_inheritance,
+              annotsv_sv.OMIM_morbid,
+              annotsv_sv.OMIM_morbid_candidate,
+              annotsv_sv.LOEUF_bin,
+              annotsv_sv.GnomAD_pLI,
+              annotsv_sv.ExAC_pLI,
+              annotsv_sv.AnnotSV_ranking_score,
+              annotsv_sv.AnnotSV_ranking_criteria,
+              annotsv_sv.ACMG_class,
+              annotsv_sv.Split_Reads_Mates,
+              annotsv_sv.Nearest_SS_type,
+              annotsv_sv.B_ins_AFmax,
+              annotsv_sv.po_B_gain_someG_source,
+              oncokb_sv.GeneA AS "ONCOKB_GENE",
+              oncokb_sv.Sv_Type AS "ONCOKB_SV_TYPE",
+              oncokb_sv.ANNOTATED,
+              oncokb_sv.GENE_IN_ONCOKB,
+              oncokb_sv.VARIANT_IN_ONCOKB,
+              oncokb_sv.MUTATION_EFFECT,
+              oncokb_sv.MUTATION_EFFECT_CITATIONS,
+              oncokb_sv.ONCOGENIC,
+              oncokb_sv.LEVEL_1,
+              oncokb_sv.LEVEL_2,
+              oncokb_sv.LEVEL_3A,
+              oncokb_sv.LEVEL_3B,
+              oncokb_sv.LEVEL_4,
+              oncokb_sv.LEVEL_R1,
+              oncokb_sv.LEVEL_R2,
+              oncokb_sv.HIGHEST_LEVEL,
+              oncokb_sv.HIGHEST_SENSITIVE_LEVEL,
+              oncokb_sv.HIGHEST_RESISTANCE_LEVEL,
+              CAST(oncokb_sv.TX_CITATIONS AS VARCHAR) AS TX_CITATIONS,
+              oncokb_sv.LEVEL_Dx1,
+              oncokb_sv.LEVEL_Dx2,
+              oncokb_sv.LEVEL_Dx3,
+              oncokb_sv.HIGHEST_DX_LEVEL,
+              CAST(oncokb_sv.DX_CITATIONS AS VARCHAR) AS DX_CITATIONS,
+              oncokb_sv.LEVEL_Px1,
+              oncokb_sv.LEVEL_Px2,
+              oncokb_sv.LEVEL_Px3,
+              oncokb_sv.HIGHEST_PX_LEVEL,
+              CAST(oncokb_sv.PX_CITATIONS AS VARCHAR) AS PX_CITATIONS,
+          FROM annotsv_sv
+          JOIN oncokb_sv ON annotsv_sv.AnnotSV_ID = oncokb_sv.AnnotSV_ID;
+          .exit
+        volumeMounts:
+          - name: output-duckdb
+            mountPath: "/mnt/output/"
+          - name: oncokb-tsv-f
+            mountPath: "/mnt/input/oncokb/oncokb_sv.tsv"
+          - name: annotsv-tsv-f
+            mountPath: "/mnt/input/annotsv/annotsv_sv.tsv"
+    - name: duckdb-fusions
+      inputs:
+        parameters:
+          - name: oncokb-tsv-f
+          - name: output-duckdb
+      outputs:
+        parameters:
+          - name: output-duckdb
+            value: "{{inputs.parameters.output-duckdb}}"
+      volumes:
+        - name: oncokb-tsv-f
+          hostPath:
+            path: "{{inputs.parameters.oncokb-tsv-f}}"
+            type: File
+        - name: output-duckdb
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-duckdb'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: "duckdb-fusions-script"
+        image: qldrsc/duckdb:latest
+        command: ["duckdb", "-init"]
+        source: |
+          .open "/mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}"
+          CREATE TABLE oncokb_fusions AS FROM read_csv_auto('/mnt/input/oncokb/oncokb_fusions.tsv', header=True, sep='\t');
+          CREATE VIEW combined_fusions AS
+          SELECT
+              oncokb_fusions.Fusion,
+              oncokb_fusions.LeftGene,
+              oncokb_fusions.LeftBreakpoint,
+              oncokb_fusions.RightGene,
+              oncokb_fusions.RightBreakpoint,
+              oncokb_fusions.FFPM,
+              oncokb_fusions.annots,
+              oncokb_fusions.MUTATION_EFFECT,
+              oncokb_fusions.MUTATION_EFFECT_CITATIONS,
+              oncokb_fusions.ONCOGENIC,
+              oncokb_fusions.LEVEL_1,
+              oncokb_fusions.LEVEL_2,
+              oncokb_fusions.LEVEL_3A,
+              oncokb_fusions.LEVEL_3B,
+              oncokb_fusions.LEVEL_4,
+              oncokb_fusions.LEVEL_R1,
+              oncokb_fusions.LEVEL_R2,
+              oncokb_fusions.HIGHEST_LEVEL,
+              oncokb_fusions.HIGHEST_SENSITIVE_LEVEL,
+              oncokb_fusions.HIGHEST_RESISTANCE_LEVEL,
+              oncokb_fusions.TX_CITATIONS,
+              oncokb_fusions.LEVEL_Dx1,
+              oncokb_fusions.LEVEL_Dx2,
+              oncokb_fusions.LEVEL_Dx3,
+              oncokb_fusions.HIGHEST_DX_LEVEL,
+              oncokb_fusions.DX_CITATIONS,
+              oncokb_fusions.LEVEL_Px1,
+              oncokb_fusions.LEVEL_Px2,
+              oncokb_fusions.LEVEL_Px3,
+              oncokb_fusions.HIGHEST_PX_LEVEL,
+              CAST(oncokb_fusions.PX_CITATIONS AS VARCHAR) AS PX_CITATIONS,
+          FROM
+              oncokb_fusions;
+          CREATE VIEW advanced_combined_fusions AS
+          SELECT
+              CAST(Fusion AS VARCHAR) AS Fusion,
+              CAST(JunctionReadCount AS BIGINT) AS JunctionReadCount,
+              CAST(SpanningFragCount AS BIGINT) AS SpanningFragCount,
+              CAST(est_J AS DOUBLE) AS est_J,
+              CAST(est_S AS DOUBLE) AS est_S,
+              CAST(SpliceType AS VARCHAR) AS SpliceType,
+              CAST(LeftGene AS VARCHAR) AS LeftGene,
+              CAST(LeftBreakpoint AS VARCHAR) AS LeftBreakpoint,
+              CAST(RightGene AS VARCHAR) AS RightGene,
+              CAST(RightBreakpoint AS VARCHAR) AS RightBreakpoint,
+              CAST(JunctionReads AS VARCHAR) AS JunctionReads,
+              CAST(SpanningFrags AS VARCHAR) AS SpanningFrags,
+              CAST(LargeAnchorSupport AS VARCHAR) AS LargeAnchorSupport,
+              CAST(FFPM AS DOUBLE) AS FFPM,
+              CAST(LeftBreakDinuc AS VARCHAR) AS LeftBreakDinuc,
+              CAST(LeftBreakEntropy AS DOUBLE) AS LeftBreakEntropy,
+              CAST(RightBreakDinuc AS VARCHAR) AS RightBreakDinuc,
+              CAST(RightBreakEntropy AS DOUBLE) AS RightBreakEntropy,
+              CAST(annots AS VARCHAR) AS annots,
+              CAST(ANNOTATED AS BOOLEAN) AS ANNOTATED,
+              CAST(GENE_IN_ONCOKB AS BOOLEAN) AS GENE_IN_ONCOKB,
+              CAST(VARIANT_IN_ONCOKB AS BOOLEAN) AS VARIANT_IN_ONCOKB,
+              CAST(MUTATION_EFFECT AS VARCHAR) AS MUTATION_EFFECT,
+              CAST(ONCOGENIC AS VARCHAR) AS ONCOGENIC,
+              CAST(LEVEL_1 AS VARCHAR) AS LEVEL_1,
+              CAST(LEVEL_2 AS VARCHAR) AS LEVEL_2,
+              CAST(LEVEL_3A AS VARCHAR) AS LEVEL_3A,
+              CAST(LEVEL_3B AS VARCHAR) AS LEVEL_3B,
+              CAST(LEVEL_4 AS VARCHAR) AS LEVEL_4,
+              CAST(LEVEL_R1 AS VARCHAR) AS LEVEL_R1,
+              CAST(LEVEL_R2 AS VARCHAR) AS LEVEL_R2,
+              CAST(HIGHEST_LEVEL AS VARCHAR) AS HIGHEST_LEVEL,
+              CAST(HIGHEST_RESISTANCE_LEVEL AS VARCHAR) AS HIGHEST_RESISTANCE_LEVEL,
+              CAST(TX_CITATIONS AS VARCHAR) AS TX_CITATIONS,
+              CAST(LEVEL_Dx1 AS VARCHAR) AS LEVEL_Dx1,
+              CAST(LEVEL_Dx2 AS VARCHAR) AS LEVEL_Dx2,
+              CAST(LEVEL_Dx3 AS VARCHAR) AS LEVEL_Dx3,
+              CAST(HIGHEST_DX_LEVEL AS VARCHAR) AS HIGHEST_DX_LEVEL,
+              CAST(DX_CITATIONS AS VARCHAR) AS DX_CITATIONS,
+              CAST(LEVEL_Px1 AS VARCHAR) AS LEVEL_Px1,
+              CAST(LEVEL_Px2 AS VARCHAR) AS LEVEL_Px2,
+              CAST(LEVEL_Px3 AS VARCHAR) AS LEVEL_Px3,
+              CAST(HIGHEST_PX_LEVEL AS VARCHAR) AS HIGHEST_PX_LEVEL,
+              CAST(PX_CITATIONS AS VARCHAR) AS PX_CITATIONS,
+              CAST(MUTATION_EFFECT_CITATIONS AS VARCHAR) AS MUTATION_EFFECT_CITATIONS,
+              CAST(HIGHEST_SENSITIVE_LEVEL AS VARCHAR) AS HIGHEST_SENSITIVE_LEVEL
+          FROM oncokb_fusions;
+          .exit
+        volumeMounts:
+          - name: output-duckdb
+            mountPath: "/mnt/output/"
+          - name: oncokb-tsv-f
+            mountPath: "/mnt/input/oncokb/oncokb_fusions.tsv"

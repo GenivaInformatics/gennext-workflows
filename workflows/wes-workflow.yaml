@@ -1,0 +1,707 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: wes-workflow
+spec:
+  entrypoint: main
+  templates:
+    - name: wes-fastq-workflow
+      inputs:
+        parameters:
+          - name: user-id
+          - name: run-id
+          - name: run-data
+          - name: input-rel-dir
+          - name: ref-base-dir
+          - name: temp-rel-dir
+          - name: scratch-rel-dir
+          - name: output-rel-dir
+          - name: modules-base-dir
+          - name: annots-base-dir
+          - name: thread-count
+            default: "8"
+      outputs:
+        parameters:
+          - name: bam-output
+            valueFrom:
+              parameter: "{{tasks.elprep.outputs.parameters.output-bam}}"
+          # - name: vcf-hc-output
+          #   valueFrom:
+          #     parameter: "{{tasks.haplotypecaller.outputs.parameters.output-vcf}}"
+          - name: vcf-dv-output
+            valueFrom:
+              parameter: "{{tasks.deepvariant.outputs.parameters.output-vcf}}"
+      dag:
+        tasks:
+          - name: get-abs-ref-dirs
+            templateRef:
+              name: get-abs-ref-dirs
+              template: get-abs-ref-dirs
+            arguments:
+              parameters:
+                - name: ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}"
+                - name: ref-ver
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
+          - name: copy-fastq-to-scratch
+            templateRef:
+              name: copy-inputs-to-scratch
+              template: copy-fastq-to-scratch
+            arguments:
+              parameters:
+                - name: fq-r1
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR1.name')}}"
+                - name: fq-r2
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR2.name')}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+                  # - name: run-data
+                  #   value: "{{inputs.parameters.run-data}}"
+                  # - name: input-rel-dir
+                  #   value: "{{inputs.parameters.input-rel-dir}}"
+                  # - name: scratch-rel-dir
+                  #   value: "{{inputs.parameters.scratch-rel-dir}}"
+          - name: preprocess-fastq
+            templateRef:
+              name: preprocess-fastq
+              template: main
+            arguments:
+              parameters:
+                - name: sample-name
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: fq-r1
+                  value: "{{tasks.copy-fastq-to-scratch.outputs.parameters.fq-r1}}"
+                - name: fq-r2
+                  value: "{{tasks.copy-fastq-to-scratch.outputs.parameters.fq-r2}}"
+                - name: genome-ref
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+                - name: temp-abs-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+                - name: scratch-abs-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+            depends: "copy-fastq-to-scratch && get-abs-ref-dirs"
+          - name: elprep
+            templateRef:
+              name: elprep-template
+              template: elprep
+            arguments:
+              parameters:
+                - name: sample-name
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: genome-ref
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
+                - name: regions-file
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
+                - name: dbsnp-elsites-f
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-dbsnp-f}}.elsites"
+                - name: input-bam
+                  value: "{{tasks.preprocess-fastq.outputs.parameters.bam}}"
+                - name: output-bam
+                  value: "{{inputs.parameters.temp-rel-dir}}bam/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_recal.bam"
+                - name: metrics-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}metrics/"
+                - name: scratch-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+                - name: thread-count
+                  value: "{{=sprig.int(inputs.parameters['thread-count']) - 2}}"
+            depends: "preprocess-fastq"
+          - name: samtools-index
+            templateRef:
+              name: samtools-template
+              template: samtools-index
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{tasks.elprep.outputs.parameters.output-bam}}"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "elprep"
+          # - name: bed-split
+          #   templateRef:
+          #     name: bed-split-template
+          #     template: main
+          #   arguments:
+          #     parameters:
+          #       - name: regions-file
+          #         value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
+          #       - name: output-dir
+          #         value: "{{inputs.parameters.scratch-rel-dir}}bed-split/"
+          #       - name: thread-count
+          #         value: "{{inputs.parameters.thread-count}}"
+          #   depends: "copy-inputs-to-scratch"
+          - name: deepvariant
+            templateRef:
+              name: deepvariant-template
+              template: deepvariant
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{tasks.elprep.outputs.parameters.output-bam}}"
+                - name: genome-ref-f
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
+                - name: regions-file
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
+                - name: output-vcf
+                  value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_dv.vcf.gz"
+                - name: output-g-vcf
+                  value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_dv.g.vcf.gz"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+                - name: scratch-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+            depends: "elprep && samtools-index"
+          - name: manta
+            templateRef:
+              name: manta-template
+              template: manta
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: normal-bam
+                  value: "{{tasks.elprep.outputs.parameters.output-bam}}"
+                - name: ref-genome-f
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
+                - name: regions-file
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}vcf/"
+                - name: scratch-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}manta/"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "elprep && samtools-index"
+          - name: annotsv
+            templateRef:
+              name: annotsv-template
+              template: annotsv
+            arguments:
+              parameters:
+                - name: input-vcf-f
+                  value: "{{tasks.manta.outputs.parameters.output-diploid-vcf-f}}"
+                - name: output-annotsv-tsv-f
+                  value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_annotsv.tsv"
+                - name: ref-version
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
+                - name: annotsv-ref-dir
+                  value: "{{inputs.parameters.ref-base-dir}}{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/other/AnnotSV/"
+                - name: sv-min-size
+                  value: "50"
+            depends: "manta"
+            # depends: "elprep && bed-split"
+          # - name: haplotypecaller
+          #   templateRef:
+          #     name: haplotypecaller-wrapper-template
+          #     template: main
+          #   arguments:
+          #     parameters:
+          #       - name: input-bam
+          #         value: "{{tasks.elprep.outputs.parameters.output-bam}}"
+          #       - name: regions-files
+          #         value: "{{tasks.bed-split.outputs.parameters  .regions-files}}"
+          #       - name: genome-ref-f
+          #         value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
+          #       - name: dbsnp-f
+          #         value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-dbsnp-f}}"
+          #       - name: output-vcf-basename
+          #         value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_hc"
+          #       - name: scratch-dir
+          #         value: "{{inputs.parameters.scratch-rel-dir}}"
+          #   depends: "elprep && deepvariant"
+          - name: verifybamid
+            templateRef:
+              name: verifybamid-template
+              template: verifybamid-exome-wrapper
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{tasks.elprep.outputs.parameters.output-bam}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}metrics/verifybamid/"
+                - name: ref-version
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
+                - name: verifybamid-ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/other/verifybamid/"
+            depends: "elprep && samtools-index"
+          - name: mosdepth
+            templateRef:
+              name: mosdepth-template
+              template: mosdepth-exome
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: input-bam
+                  value: "{{tasks.elprep.outputs.parameters.output-bam}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}metrics/mosdepth/"
+                - name: regions-bed-f
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.exome-regions-bed-f}}"
+            depends: "elprep && get-abs-ref-dirs && verifybamid && samtools-index"
+          - name: multiqc
+            templateRef:
+              name: multiqc-template
+              template: main
+            arguments:
+              parameters:
+                - name: input-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}metrics/"
+            depends: "verifybamid && elprep && mosdepth"
+          - name: collect-qc-data
+            templateRef:
+              name: collect-qc-data-templates
+              template: collect-qc-data
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: sample-fqs-fnames
+                  # value: '["{{=jsonpath(inputs.parameters[''run-data''], ''$.samples[0].files.fqR1.name'')}}", "{{=jsonpath(inputs.parameters[''run-data''], ''$.samples[0].files.fqR2.name'')}}"]'
+                  value: '["{{=jsonpath(inputs.parameters[''run-data''], ''$.samples[0].files.fqR1.name'')}}", "{{=jsonpath(inputs.parameters[''run-data''], ''$.samples[0].files.fqR2.name'')}}"]'
+                - name: metrics-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}metrics/"
+            depends: "multiqc && mosdepth && verifybamid"
+          - name: copy-temp-to-output
+            templateRef:
+              name: copy-temp-to-output
+              template: copy-temp-to-output
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: output-rel-dir
+                  value: "{{inputs.parameters.output-rel-dir}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+            depends: "collect-qc-data && deepvariant && annotsv"
+          - name: cravat
+            templateRef:
+              name: cravat-templates
+              template: cravat-solo-template
+            arguments:
+              parameters:
+                - name: proband-vcf
+                  value: "{{tasks.copy-temp-to-output.outputs.parameters.output-vcf-dv}}"
+                - name: ref-version
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
+                - name: annotators
+                  value: "intervar cadd omim turkish_variome clinvar clinvar_acmg gme clinpred"
+                - name: modules-dir
+                  value: "{{inputs.parameters.modules-base-dir}}"
+                - name: output-dir # TODO: retrieve base cravat jobs directory
+                  value: "{{inputs.parameters.annots-base-dir}}/{{inputs.parameters.user-id}}/S_{{inputs.parameters.run-id}}"
+            depends: "copy-temp-to-output"
+          - name: clean-scratch
+            templateRef:
+              name: dir-clean-up
+              template: dir-clean-up
+            arguments:
+              parameters:
+                - name: directory
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+            depends: "copy-temp-to-output"
+    - name: wes-bam-workflow
+      inputs:
+        parameters:
+          - name: user-id
+          - name: run-id
+          - name: run-data
+          - name: input-rel-dir
+          - name: ref-base-dir
+          - name: temp-rel-dir
+          - name: scratch-rel-dir
+          - name: output-rel-dir
+          - name: modules-base-dir
+          - name: annots-base-dir
+          - name: thread-count
+            default: "8"
+      dag:
+        tasks:
+          - name: get-abs-ref-dirs
+            templateRef:
+              name: get-abs-ref-dirs
+              template: get-abs-ref-dirs
+            arguments:
+              parameters:
+                - name: ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}"
+                - name: ref-ver
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
+          - name: copy-bam-to-scratch
+            templateRef:
+              name: copy-inputs-to-scratch
+              template: copy-bam-to-scratch
+            arguments:
+              parameters:
+                - name: bam
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.bam.name')}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+          - name: alter-bam-contig-names
+            templateRef:
+              name: alter-bam-contig-names-template
+              template: alter-bam-contig-names
+            arguments:
+              - name: input-file
+                value: "{{tasks.copy-bam-to-scratch.outputs.parameters.bam}}"
+              - name: output-file
+                value: "{{inputs.parameters.scratch-rel-dir}}bam/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_chrPrefix.bam"
+          # - name: index-bam
+          #   templateRef:
+          #     name: samtools-index
+          #     template: samtools-index
+          #   arguments:
+          #     parameters:
+          #       - name: input-bam
+          #         value: "{{tasks.copy-bam-to-scratch.outputs.parameters.bam}}"
+          - name: elprep
+            templateRef:
+              name: elprep-template
+              template: elprep
+            arguments:
+              parameters:
+                - name: sample-name
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: genome-ref
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
+                - name: regions-file
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
+                - name: dbsnp-elsites-f
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-dbsnp-f}}.elsites"
+                - name: input-bam
+                  value: "{{tasks.alter-bam-contig-names.outputs.parameters.bam}}"
+                - name: output-bam
+                  value: "{{inputs.parameters.temp-rel-dir}}bam/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_recal.bam"
+                - name: metrics-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}metrics/"
+                - name: scratch-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+                - name: thread-count
+                  value: "{{=sprig.int(inputs.parameters['thread-count']) - 2}}"
+            depends: "copy-bam-to-scratch"
+          - name: samtools-index
+            templateRef:
+              name: samtools-template
+              template: samtools-index
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{tasks.elprep.outputs.parameters.output-bam}}"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "elprep"
+          - name: deepvariant
+            templateRef:
+              name: deepvariant-template
+              template: deepvariant
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{tasks.elprep.outputs.parameters.output-bam}}"
+                - name: genome-ref-f
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
+                - name: regions-file
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
+                - name: output-vcf
+                  value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_dv.vcf.gz"
+                - name: output-g-vcf
+                  value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_dv.g.vcf.gz"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+                - name: scratch-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+            depends: "elprep && samtools-index"
+          - name: manta
+            templateRef:
+              name: manta-template
+              template: manta
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: normal-bam
+                  value: "{{tasks.elprep.outputs.parameters.output-bam}}"
+                - name: ref-genome-f
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
+                - name: regions-file
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}vcf/"
+                - name: scratch-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}manta/"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "elprep && samtools-index"
+          - name: annotsv
+            templateRef:
+              name: annotsv-template
+              template: annotsv
+            arguments:
+              parameters:
+                - name: input-vcf-f
+                  value: "{{tasks.manta.outputs.parameters.output-diploid-vcf-f}}"
+                - name: output-annotsv-tsv-f
+                  value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_annotsv.tsv"
+                - name: ref-version
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
+                - name: annotsv-ref-dir
+                  value: "{{inputs.parameters.ref-base-dir}}{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/other/AnnotSV/"
+                - name: sv-min-size
+                  value: "50"
+            depends: "manta"
+            # depends: "elprep && bed-split"
+          # - name: haplotypecaller
+          #   templateRef:
+          #     name: haplotypecaller-wrapper-template
+          #     template: main
+          #   arguments:
+          #     parameters:
+          #       - name: input-bam
+          #         value: "{{tasks.elprep.outputs.parameters.output-bam}}"
+          #       - name: regions-files
+          #         value: "{{tasks.bed-split.outputs.parameters  .regions-files}}"
+          #       - name: genome-ref-f
+          #         value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
+          #       - name: dbsnp-f
+          #         value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-dbsnp-f}}"
+          #       - name: output-vcf-basename
+          #         value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_hc"
+          #       - name: scratch-dir
+          #         value: "{{inputs.parameters.scratch-rel-dir}}"
+          #   depends: "elprep && deepvariant"
+          - name: verifybamid
+            templateRef:
+              name: verifybamid-template
+              template: verifybamid-exome-wrapper
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{tasks.elprep.outputs.parameters.output-bam}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}metrics/verifybamid/"
+                - name: ref-version
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
+                - name: verifybamid-ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/other/verifybamid/"
+            depends: "elprep && samtools-index"
+          - name: mosdepth
+            templateRef:
+              name: mosdepth-template
+              template: mosdepth-exome
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: input-bam
+                  value: "{{tasks.elprep.outputs.parameters.output-bam}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}metrics/mosdepth/"
+                - name: regions-bed-f
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.exome-regions-bed-f}}"
+            depends: "elprep && get-abs-ref-dirs && verifybamid && samtools-index"
+          - name: multiqc
+            templateRef:
+              name: multiqc-template
+              template: main
+            arguments:
+              parameters:
+                - name: input-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}metrics/"
+            depends: "verifybamid && elprep && mosdepth"
+          - name: collect-qc-data
+            templateRef:
+              name: collect-qc-data-templates
+              template: collect-qc-data
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: sample-fqs-fnames
+                  # value: '["{{=jsonpath(inputs.parameters[''run-data''], ''$.samples[0].files.fqR1.name'')}}", "{{=jsonpath(inputs.parameters[''run-data''], ''$.samples[0].files.fqR2.name'')}}"]'
+                  value: '["{{=jsonpath(inputs.parameters[''run-data''], ''$.samples[0].files.fqR1.name'')}}", "{{=jsonpath(inputs.parameters[''run-data''], ''$.samples[0].files.fqR2.name'')}}"]'
+                - name: metrics-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}metrics/"
+            depends: "multiqc && mosdepth && verifybamid"
+          - name: copy-temp-to-output
+            templateRef:
+              name: copy-temp-to-output
+              template: copy-temp-to-output
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: output-rel-dir
+                  value: "{{inputs.parameters.output-rel-dir}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+            depends: "collect-qc-data && deepvariant && annotsv"
+          - name: cravat
+            templateRef:
+              name: cravat-templates
+              template: cravat-solo-template
+            arguments:
+              parameters:
+                - name: proband-vcf
+                  value: "{{tasks.copy-temp-to-output.outputs.parameters.output-vcf-dv}}"
+                - name: ref-version
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
+                - name: annotators
+                  value: "intervar cadd omim turkish_variome clinvar clinvar_acmg gme clinpred"
+                - name: modules-dir
+                  value: "{{inputs.parameters.modules-base-dir}}"
+                - name: output-dir # TODO: retrieve base cravat jobs directory
+                  value: "{{inputs.parameters.annots-base-dir}}/{{inputs.parameters.user-id}}/S_{{inputs.parameters.run-id}}"
+            depends: "copy-temp-to-output"
+          - name: clean-scratch
+            templateRef:
+              name: dir-clean-up
+              template: dir-clean-up
+            arguments:
+              parameters:
+                - name: directory
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+            depends: "copy-temp-to-output"
+
+    - name: wes-vcf-workflow
+      inputs:
+        parameters:
+          - name: user-id
+          - name: run-id
+          - name: run-data
+          - name: input-rel-dir
+          - name: ref-base-dir
+          - name: temp-rel-dir
+          - name: scratch-rel-dir
+          - name: output-rel-dir
+          - name: modules-base-dir
+          - name: annots-base-dir
+          - name: thread-count
+            default: "8"
+      dag:
+        tasks:
+          - name: get-abs-ref-dirs
+            templateRef:
+              name: get-abs-ref-dirs
+              template: get-abs-ref-dirs
+            arguments:
+              parameters:
+                - name: ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}"
+                - name: ref-ver
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
+          - name: copy-vcf-to-output
+            templateRef:
+              name: copy-inputs-to-scratch
+              template: copy-vcf-to-scratch
+            arguments:
+              parameters:
+                - name: vcf
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.vcf.name')}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.output-rel-dir}}/vcf/"
+          - name: cravat
+            templateRef:
+              name: cravat-templates
+              template: cravat-solo-template
+            arguments:
+              parameters:
+                - name: proband-vcf
+                  value: "{{tasks.copy-vcf-to-output.outputs.parameters.vcf}}"
+                - name: ref-version
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
+                - name: annotators
+                  value: "intervar cadd omim turkish_variome clinvar clinvar_acmg gme clinpred"
+                - name: modules-dir
+                  value: "{{inputs.parameters.modules-base-dir}}"
+                - name: output-dir # TODO: retrieve base cravat jobs directory
+                  value: "{{inputs.parameters.annots-base-dir}}/{{inputs.parameters.user-id}}/S_{{inputs.parameters.run-id}}"
+    - name: main
+      inputs:
+        parameters:
+          - name: user-id
+          - name: run-id
+          - name: run-data
+          - name: input-rel-dir
+          - name: ref-base-dir
+          - name: temp-rel-dir
+          - name: scratch-rel-dir
+          - name: output-rel-dir
+          - name: modules-base-dir
+          - name: annots-base-dir
+          - name: thread-count
+            default: "8"
+      dag:
+        tasks:
+          - name: wes-bam-workflow
+            when: "'{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].dataType')}}' == 'bam'"
+            template: wes-bam-workflow
+            arguments:
+              parameters:
+                - name: user-id
+                  value: "{{inputs.parameters.user-id}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: run-data
+                  value: "{{inputs.parameters.run-data}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+          - name: wes-fastq-workflow
+            when: "'{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].dataType')}}' == 'fastq'"
+            template: wes-fastq-workflow
+            arguments:
+              parameters:
+                - name: user-id
+                  value: "{{inputs.parameters.user-id}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: run-data
+                  value: "{{inputs.parameters.run-data}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+          - name: wes-vcf-workflow
+            when: "'{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].dataType')}}' == 'vcf'"
+            template: wes-vcf-workflow
+            arguments:
+              parameters:
+                - name: user-id
+                  value: "{{inputs.parameters.user-id}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: run-data
+                  value: "{{inputs.parameters.run-data}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"

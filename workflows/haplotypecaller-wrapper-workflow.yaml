@@ -28,6 +28,14 @@ spec:
           - name: output-vcf-basename
           - name: scratch-dir
           - name: dbsnp-f
+      outputs:
+        parameters:
+          - name: output-vcf
+            valueFrom:
+              parameter: "{{tasks.concat-vcf.outputs.parameters.output-vcf}}"
+          - name: output-g-vcf
+            valueFrom:
+              parameter: "{{tasks.concat-vcf.outputs.parameters.output-g-vcf}}"
       dag:
         tasks:
           - name: caller
@@ -78,6 +86,12 @@ spec:
                   value: "{{inputs.parameters.output-vcf-basename}}"
                 - name: scratch-dir
                   value: "{{inputs.parameters.scratch-dir}}"
+            outputs:
+              parameters:
+                - name: output-vcf
+                  value: "{{inputs.parameters.output-vcf-basename}}.vcf.gz"
+                - name: output-g-vcf
+                  value: "{{inputs.parameters.output-vcf-basename}}.g.vcf.gz"
             depends: "vcf-to-str && g-vcf-to-str"
     - name: to-str-template
       inputs:

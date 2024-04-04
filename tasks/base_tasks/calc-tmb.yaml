@@ -1,0 +1,44 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: calc-tmb-template
+  namespace: argo
+spec:
+  templates:
+    - name: calc-tmb
+      inputs:
+        parameters:
+          - name: input-vcf
+          - name: regions-file
+          - name: output-tmb-tsv
+      outputs:
+        parameters:
+          - name: output-tmb-tsv
+            value: "{{inputs.parameters.output-tmb-tsv}}"
+      volumes:
+        - name: input-vcf
+          hostPath:
+            path: "{{inputs.parameters.input-vcf}}"
+            type: File
+        - name: regions-file
+          hostPath:
+            path: "{{inputs.parameters.regions-file}}"
+            type: File
+        - name: output-tmb-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-tmb-tsv'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: "msisensor-pro-script"
+        image: pengjia1110/msisensor-pro:latest
+        command: [sh]
+        source: |
+          msisensor-pro pro \
+          -d /data/msisensor-pro/GRCh38.baseline_TCGA.tsv \
+          -t /mnt/input/Aligned_sorted.bam \
+          -o /mnt/output/{{inputs.parameters.sample-id}}_msi
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/mnt/input/"
+          - name: output-dir
+            mountPath: "/mnt/output/"

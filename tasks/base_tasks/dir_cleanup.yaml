@@ -1,0 +1,24 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: dir-clean-up
+spec:
+  templates:
+    - name: dir-clean-up
+      inputs:
+        parameters:
+          - name: directory
+      volumes:
+        - name: directory
+          hostPath:
+            path: "{{inputs.parameters.directory}}"
+            type: Directory
+      script:
+        name: "dir-clean-up"
+        image: alpine:latest
+        command: [sh]
+        source: |
+          rm -rf /mnt/dir/*
+        volumeMounts:
+          - name: directory
+            mountPath: "/mnt/dir/"

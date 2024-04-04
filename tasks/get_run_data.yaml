@@ -35,7 +35,12 @@ spec:
           json_f = (Path("/mnt/input/") / job_id).with_suffix(".json")
           with open(json_f, "r") as f:
             run_data = json.load(f)
-          print(json.dumps(run_data))
+          if (run_data['samples'][0]['files'] and type(run_data['samples'][0]['files']) == str):
+            run_data['samples'][0]['files'] = json.loads(run_data['samples'][0]['files'])
+          if "regionsFile" not in run_data['samples'][0]['files']:
+            run_data['samples'][0]['files']['regionsFile'] = {"name" : ""}
+          with open(json_f, "w") as f:
+            json.dump(run_data, f)
         volumeMounts:
           - name: input-rel-dir
             mountPath: /mnt/input

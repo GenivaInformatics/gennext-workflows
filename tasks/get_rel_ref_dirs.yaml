@@ -25,6 +25,9 @@ spec:
               path: "/tmp/ref-configmap/{{inputs.parameters.ref-ver}}.dbsnp"
           - name: regions-bed-rel-f
             valueFrom:
+              path: "/tmp/ref-configmap/{{inputs.parameters.ref-ver}}.regions.targeted"
+          - name: exome-regions-bed-rel-f
+            valueFrom:
               path: "/tmp/ref-configmap/{{inputs.parameters.ref-ver}}.regions.exome"
       volumes:
         - name: gennext-references

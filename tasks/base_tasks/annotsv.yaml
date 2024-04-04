@@ -1,0 +1,72 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: annotsv-template
+  namespace: argo
+spec:
+  entrypoint: annotsv
+  templates:
+    - name: annotsv
+      inputs:
+        parameters:
+          - name: input-vcf-f
+          - name: annotsv-ref-dir
+          - name: sv-min-size
+            value: "20"
+          - name: ref-version
+            value: "hg38"
+          - name: output-annotsv-tsv-f
+      outputs:
+        parameters:
+          - name: output-annotsv-tsv-f
+            value: "{{inputs.parameters.output-annotsv-tsv-f}}"
+      volumes:
+        - name: input-vcf-f
+          hostPath:
+            path: "{{inputs.parameters.input-vcf-f}}"
+            type: File
+        - name: output-annotsv-tsv-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-annotsv-tsv-f'])}}"
+            type: DirectoryOrCreate
+        - name: annotsv-ref-dir
+          hostPath:
+            path: "{{inputs.parameters.annotsv-ref-dir}}"
+            type: Directory
+      script:
+        name: "annotsv"
+        image: quay.io/biocontainers/annotsv:3.3.9--py312hdfd78af_0
+        command: [sh]
+        source: |
+          ref_version="{{inputs.parameters.ref-version}}"
+          if [ "$ref_version" = "hg38" ]; then
+              grch_ref_version="GRCh38"
+          elif [ "$ref_version" = "hg19" ]; then
+              grch_ref_version="GRCh37"
+          else
+              grch_ref_version=$ref_version
+          fi;
+
+          # extract input vcf if compressed
+          if [[ "/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}" == *.gz ]]; then
+            zcat "/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}" > "/tmp/input-vcf.vcf";
+          else
+            cp "/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}" "/tmp/input-vcf.vcf";
+          fi;
+
+          head -n5 /tmp/input-vcf.vcf;
+
+          AnnotSV \
+          -genomeBuild $grch_ref_version \
+          -annotationsDir "/mnt/ref/" \
+          -SVminSize {{inputs.parameters.sv-min-size}} \
+          -SVinputFile "/tmp/input-vcf.vcf" \
+          -outputFile "/output/tsv/{{=sprig.osBase(inputs.parameters['output-annotsv-tsv-f'])}}";
+
+        volumeMounts:
+          - name: input-vcf-f
+            mountPath: "/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}"
+          - name: output-annotsv-tsv-f
+            mountPath: "/output/tsv/"
+          - name: annotsv-ref-dir
+            mountPath: "/mnt/ref/"

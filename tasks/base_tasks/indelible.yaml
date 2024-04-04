@@ -1,0 +1,121 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: indelible-template
+  namespace: argo
+spec:
+  entrypoint: indelible
+  templates:
+    - name: indelible
+      inputs:
+        parameters:
+          - name: input-bam
+          - name: output-dir
+          - name: regions-file
+            value: ""
+          - name: ref-version
+            value: "hg38"
+          - name: thread-count
+            value: "10"
+      outputs:
+        parameters:
+          - name: output-tsv
+            valueFrom:
+              parameter: "{{steps.indelible-hg38.outputs.parameters.output-tsv}}"
+      steps:
+        - - name: indelible-hg38
+            template: indelible-base
+            # when: "{{inputs.parameters.ref-version == 'hg38'}}"
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{inputs.parameters.input-bam}}"
+                - name: config-f
+                  value: "config.hg38.yml"
+                - name: regions-file
+                  value: "{{inputs.parameters.regions-file}}"
+                - name: genome-ref-f
+                  value: "data/GRCh38_full_analysis_set.fa"
+                - name: 10k-priors-bed-f
+                  value: "data/Indelible_db_10k.hg38.bed"
+                - name: output-dir
+                  value: "{{inputs.parameters.output-dir}}"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+          # - name: indelible-hg19
+          #   template: indelible-base
+          #   when: "{{inputs.parameters.ref-version == 'hg19'}}"
+          #   arguments:
+          #     parameters:
+          #       - name: input-bam
+          #         value: "{{inputs.parameters.input-bam}}"
+          #       - name: config-f
+          #         value: "config.hg19.yml"
+          #       - name: regions-file
+          #         value: "{{inputs.parameters.regions-file}}"
+          #       - name: genome-ref-f
+          #         value: "data/hs37d5.fa"
+          #       - name: 10k-priors-bed-f
+          #         value: "data/Indelible_db_10k.bed"
+          #       - name: output-dir
+          #         value: "{{inputs.parameters.output-dir}}"
+          #       - name: thread-count
+          #         value: "{{inputs.parameters.thread-count}}"
+    - name: indelible-base
+      inputs:
+        parameters:
+          - name: input-bam
+          - name: config-f
+          - name: genome-ref-f
+          - name: 10k-priors-bed-f
+          - name: regions-file
+          - name: output-dir
+          - name: thread-count
+      outputs:
+        parameters:
+          - name: output-tsv
+            value: "{{inputs.parameters.output-dir}}/{{=sprig.osBase(inputs.parameters['input-bam'])}}.indelible.tsv"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: regions-file
+          hostPath:
+            path: "{{inputs.parameters.regions-file}}"
+            type: File
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: "indelible"
+        image: mercury/indelible
+        command: [sh]
+        source: |
+
+          regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
+          10kPriorsBedFile="{{inputs.parameters.10k-priors-bed-f}}";
+
+          if [ ${regionsFile} -e '' ]
+          then
+              regionsFile=${10kPriorsBedFile};
+          else
+              regionsFile="/mnt/ref/regions_file.bed";
+          fi
+
+          ls /mnt/output/; # No output dir error fixed with this?
+          python indelible.py complete \
+              --config {{inputs.parameters.config-f}} \
+              --i /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+              --o /mnt/output/ \
+              --r {{inputs.parameters.genome-ref-f}} \
+              --priors ${regionsFile} \
+              --tb {{inputs.parameters.thread-count}}
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/mnt/input/bam/"
+          - name: output-dir
+            mountPath: "/mnt/output/"
+          - name: regions-file
+            mountPath: "/mnt/ref/regions_file.bed"

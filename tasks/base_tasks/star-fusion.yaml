@@ -1,0 +1,89 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: star-fusion-template
+spec:
+  templates:
+    - name: star-fusion
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: fq-r1
+          - name: fq-r2
+            value: ""
+          - name: ctat-genome-lib-build-dir
+          - name: output-bam
+          - name: output-fusions-tsv
+          - name: output-chimeric-out-fusions
+          - name: scratch-dir
+          - name: thread-count
+      outputs:
+        parameters:
+          - name: output-bam
+            value: "{{inputs.parameters.output-bam}}"
+            # value: "{{inputs.parameters.output-dir}}/bam/{{inputs.parameters.sample-id}}_RNA.bam"
+          - name: output-fusions-tsv
+            value: "{{inputs.parameters.output-fusions-tsv}}"
+            # value: "{{inputs.parameters.output-dir}}/results/fusions/{{inputs.parameters.sample-id}}_fusions.tsv"
+          - name: output-chimeric-out-fusions
+            value: "{{inputs.parameters.output-chimeric-out-fusions}}"
+      volumes:
+        - name: fq-r1
+          hostPath:
+            path: "{{inputs.parameters.fq-r1}}"
+            type: File
+        - name: fq-r2
+          hostPath:
+            path: "{{inputs.parameters.fq-r2}}"
+            type: File
+        - name: output-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-bam'])}}"
+            type: DirectoryOrCreate
+        - name: scratch-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['scratch-dir'])}}"
+            type: DirectoryOrCreate
+        - name: output-fusions-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-fusions-tsv'])}}"
+            type: DirectoryOrCreate
+        - name: output-chimeric-out-fusions
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-chimeric-out-fusions'])}}"
+            type: DirectoryOrCreate
+        - name: ctat-genome-lib-build-dir
+          hostPath:
+            path: "{{inputs.parameters.ctat-genome-lib-build-dir}}"
+            type: Directory
+      script:
+        name: "star-fusion"
+        image: trinityctat/starfusion
+        command: [sh]
+        source: |
+          fqR1="{{=sprig.osBase(inputs.parameters['fq-r1'])}}";
+          fqR2="{{=sprig.osBase(inputs.parameters['fq-r2'])}}";
+          STAR-Fusion \
+          --genome_lib_dir /mnt/ref/ctat-lib/ \
+          --left_fq /mnt/input/r1/$fqR1 \
+          $(if [ ! -z "$fqR2" ]; then echo "--right_fq /mnt/input/r2/$fqR2"; fi) \
+          --output_dir /mnt/scratch/ \
+          --CPU {{inputs.parameters.thread-count}};
+          mv /mnt/scratch/Aligned.out.bam /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}};
+          mv /mnt/scratch/star-fusion.fusion_predictions.tsv /mnt/output/fusions/{{=sprig.osBase(inputs.parameters['output-fusions-tsv'])}};
+          mv /mnt/scratch/Chimeric.out.junction /mnt/output/chimeric/{{=sprig.osBase(inputs.parameters['output-chimeric-out-fusions'])}}
+        volumeMounts:
+          - name: fq-r1
+            mountPath: "/mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}"
+          - name: fq-r2
+            mountPath: "/mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}"
+          - name: output-bam
+            mountPath: "/mnt/output/bam/"
+          - name: output-fusions-tsv
+            mountPath: "/mnt/output/fusions/"
+          - name: output-chimeric-out-fusions
+            mountPath: "/mnt/output/chimeric/"
+          - name: scratch-dir
+            mountPath: "/mnt/scratch/"
+          - name: ctat-genome-lib-build-dir
+            mountPath: "/mnt/ref/ctat-lib/"

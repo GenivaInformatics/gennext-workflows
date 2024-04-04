@@ -1,0 +1,115 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: manta-template
+  namespace: argo
+spec:
+  entrypoint: manta
+  templates:
+    - name: manta
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: normal-bam
+            value: "."
+          - name: tumor-bam
+            value: "."
+          - name: regions-file
+            value: "."
+          - name: ref-genome-f
+          - name: output-dir
+          - name: scratch-dir
+          - name: thread-count
+            value: "10"
+      outputs:
+        parameters:
+          - name: output-dir
+            value: "{{inputs.parameters.output-dir}}"
+          # - name: output-vcf-f-basenames
+          #   valueFrom:
+          #     path: "/tmp/output-vcf-f-basenames"
+          - name: output-tumor-vcf-f
+            value: "{{inputs.parameters.output-dir}}/{{inputs.parameters.sample-id}}_tumorSV.vcf.gz"
+          - name: output-diploid-vcf-f
+            value: "{{inputs.parameters.output-dir}}/{{inputs.parameters.sample-id}}_diploidSV.vcf.gz"
+      volumes:
+        - name: normal-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['normal-bam'])}}"
+            type: Directory
+        - name: tumor-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['tumor-bam'])}}"
+            type: Directory
+        - name: ref-genome-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['ref-genome-f'])}}"
+            type: Directory
+        - name: regions-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['regions-file'])}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+        - name: scratch-dir
+          hostPath:
+            path: "{{inputs.parameters.scratch-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: "manta"
+        image: quay.io/biocontainers/manta:1.6.0--h9ee0642_2
+        command: [sh]
+        source: |
+
+          sampleId="{{inputs.parameters.sample-id}}";
+          normalBam="{{=sprig.osBase(inputs.parameters['normal-bam'])}}";
+          tumorBam="{{=sprig.osBase(inputs.parameters['tumor-bam'])}}";
+          regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
+          refGenomeFile="{{=sprig.osBase(inputs.parameters['ref-genome-f'])}}";
+
+          options="";
+
+          # sprig.osBase returns "." if the path is empty
+          # mind the whitespace before '--'
+          if [ ! "." = "$normalBam" ]; then options+=" --normalBam=/mnt/input/normal_bam/$normalBam"; fi
+          if [ ! "." = "$tumorBam" ]; then options+=" --tumorBam=/mnt/input/tumor_bam/$tumorBam"; fi
+          if [ ! "." = "$regionsFile" ]; then options+=" --exome"; fi
+          if [ ! "." = "$regionsFile" ]; then options+=" --callRegions=/mnt/ref/regions/$regionsFile.gz"; fi
+
+          echo $sampleId;
+          echo $options;
+
+          configManta.py \
+          --referenceFasta=/ref/genome/$refGenomeFile \
+           $options --runDir=/mnt/scratch/ && \
+          /mnt/scratch/runWorkflow.py -m local -j {{inputs.parameters.thread-count}};
+          for f in /mnt/scratch/results/variants/*
+          do
+            mv "/mnt/scratch/results/variants/$(basename ${f})" "/mnt/scratch/results/variants/${sampleId}_$(basename ${f})"
+          done;
+          ls /mnt/scratch/results/variants;
+          for f in /mnt/scratch/results/stats/*
+          do
+            mv "/mnt/scratch/results/stats/$(basename ${f})" "/mnt/scratch/results/stats/${sampleId}_$(basename ${f})"
+          done;
+          cp /mnt/scratch/results/variants/* /mnt/output/ &&
+          cp /mnt/scratch/results/stats /mnt/output/;
+          rm -rf /mnt/scratch/results/;
+          # touch /tmp/output-vcf-f-basenames;
+          # list output vcf.gz file basenames in the /tmp/output-vcf-f-basenames
+          # find /mnt/output/ -name "*.vcf.gz" | xargs -I {} basename {} >> /tmp/output-vcf-f-basenames
+        volumeMounts:
+          - name: normal-bam
+            mountPath: "/mnt/input/normal_bam/"
+          - name: tumor-bam
+            mountPath: "/mnt/input/tumor_bam/"
+          - name: ref-genome-f
+            mountPath: "/ref/genome/"
+          - name: regions-file
+            mountPath: "/mnt/ref/regions/"
+          - name: output-dir
+            mountPath: "/mnt/output/"
+          - name: scratch-dir
+            mountPath: "/mnt/scratch/"

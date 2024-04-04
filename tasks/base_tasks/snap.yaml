@@ -52,7 +52,7 @@ spec:
           -hc \
           -t {{inputs.parameters.thread-count}} \
           -R "{{inputs.parameters.read-group-str}}" \
-          -o /mnt/output/{{=sprig.osBase(inputs.parameters['bam'])}}
+          -o "/mnt/output/{{=sprig.osBase(inputs.parameters['bam'])}}"
 
         volumeMounts:
           - name: fq-r1

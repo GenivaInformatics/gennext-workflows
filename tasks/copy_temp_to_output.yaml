@@ -1,0 +1,76 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: copy-temp-to-output
+  namespace: argo
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: copy-temp-to-output
+  # arguments:
+  #   parameters:
+  #     - name: job-id
+  #     - name: input-rel-dir
+  templates:
+    - name: copy-temp-to-output
+      volumes:
+        - name: output-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.output-rel-dir}}"
+            type: DirectoryOrCreate
+        - name: temp-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.temp-rel-dir}}"
+            type: Directory
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: output-rel-dir
+          - name: temp-rel-dir
+      outputs:
+        parameters:
+          # - name: bam
+          #   valueFrom:
+          #     parameter: "{{steps.copy-bam-to-temp.outputs.parameters.bam}}"
+          - name: output-vcf-dv
+            value: "{{inputs.parameters.output-rel-dir}}vcf/{{inputs.parameters.sample-id}}_dv.vcf.gz"
+          - name: output-g-vcf-dv
+            value: "{{inputs.parameters.output-rel-dir}}vcf/{{inputs.parameters.sample-id}}_dv.g.vcf.gz"
+          - name: bam-recal
+            value: "{{inputs.parameters.output-rel-dir}}bam/{{inputs.parameters.sample-id}}_recal.bam"
+      script:
+        image: eeacms/rsync:latest
+        command: [sh]
+        source: |
+          #!/bin/sh
+          rsync -r /mnt/temp/ /mnt/output/ && rm -r /mnt/temp/*
+        volumeMounts:
+          - name: output-rel-dir
+            mountPath: "/mnt/output/"
+          - name: temp-rel-dir
+            mountPath: "/mnt/temp/"
+    - name: copy-temp-to-output-no-out
+      volumes:
+        - name: output-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.output-rel-dir}}"
+            type: DirectoryOrCreate
+        - name: temp-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.temp-rel-dir}}"
+            type: Directory
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: output-rel-dir
+          - name: temp-rel-dir
+      script:
+        image: eeacms/rsync:latest
+        command: [sh]
+        source: |
+          #!/bin/sh
+          rsync -a /mnt/temp/ /mnt/output/ && rm -r /mnt/temp/*
+        volumeMounts:
+          - name: output-rel-dir
+            mountPath: "/mnt/output/"
+          - name: temp-rel-dir
+            mountPath: "/mnt/temp/"

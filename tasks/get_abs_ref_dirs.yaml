@@ -30,7 +30,58 @@ spec:
               path: "/tmp/{{inputs.parameters.ref-ver}}.dbsnp"
           - name: regions-bed-f
             valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.regions.targeted"
+          - name: exome-regions-bed-f
+            valueFrom:
               path: "/tmp/{{inputs.parameters.ref-ver}}.regions.exome"
+          - name: annovar-dir
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.other.annovar"
+          - name: gnomad-af-f
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.other.gnomad-af"
+          - name: 1000g-pon-f
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.other.1000g-pon"
+          - name: canonical-chroms-regions
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.regions.canonical-chrs"
+          - name: somtest-A3416642-geneslists-sv-cnv
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.somtest.A3416642.geneslists.sv-cnv"
+          - name: somtest-A3416642-geneslists-sv-translocation
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.somtest.A3416642.geneslists.sv-translocation"
+          - name: somtest-A3416642-geneslists-sv-fusion
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.somtest.A3416642.geneslists.sv-fusion"
+          - name: somtest-A3416642-regions-snv
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.somtest.A3416642.regions.snv"
+          - name: somtest-A3416642-regions-sv-cnv
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.somtest.A3416642.regions.sv-cnv"
+          - name: somtest-A3416642-regions-sv-translocation
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.somtest.A3416642.regions.sv-translocation"
+          - name: somtest-A3416642-regions-sv-merged
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.somtest.A3416642.regions.sv-merged"
+          - name: somtest-A3416642-regions-all-tracks
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.somtest.A3416642.regions.all-tracks"
+          - name: somtest-A3370051-regions-fusions
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.somtest-A3370051-regions-fusions"
+          - name: somtest-A3370051-regions-covered-fusions
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.somtest-A3370051-regions-covered-fusions"
+          - name: ctat-genome-lib-build-dir
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.rna.ctat-genome-lib-build-dir"
+          - name: msisensor-pro-baseline
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.rna.msisensor-pro.baseline"
       volumes:
         - name: gennext-references
           configMap:

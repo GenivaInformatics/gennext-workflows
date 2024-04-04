@@ -40,7 +40,7 @@ spec:
           trim_galore \
           --cores {{inputs.parameters.thread-count}} \
           --paired \
-          --basename {{inputs.parameters.sample-name}} \
+          --basename "{{inputs.parameters.sample-name}}" \
           --phred33 \
           "/mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}" \
           "/mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}" \

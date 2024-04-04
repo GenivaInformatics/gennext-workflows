@@ -1,0 +1,120 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: oncokb-templates
+  namespace: argo
+spec:
+  templates:
+    - name: oncokb-snv
+      inputs:
+        parameters:
+          - name: annovar-maf-f
+          - name: annovar-oncokb-maf-f
+          - name: ref-version
+      outputs:
+        parameters:
+          - name: annovar-oncokb-maf-f
+            value: "{{inputs.parameters.annovar-oncokb-maf-f}}"
+      volumes:
+        - name: annovar-maf-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['annovar-maf-f'])}}"
+            type: Directory
+        - name: annovar-oncokb-maf-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['annovar-oncokb-maf-f'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: oncokb-snv-script
+        image: bergun/oncokb-annotator:v0.0.1
+        workingDir: /app/oncokb/
+        command: [sh]
+        source: |
+          ref_version="{{inputs.parameters.ref-version}}"
+          if [ "$ref_version" = "hg38" ]; then
+              grch_ref_version="GRCh38"
+          elif [ "$ref_version" = "hg19" ]; then
+              grch_ref_version="GRCh37"
+          else
+              grch_ref_version=$ref_version
+          fi;
+          python ./MafAnnotator.py -i /mnt/input/{{=sprig.osBase(inputs.parameters['annovar-maf-f'])}} -o /mnt/output/{{=sprig.osBase(inputs.parameters['annovar-oncokb-maf-f'])}} -r $grch_ref_version -b ${ONCOKB_API_TOKEN}
+        volumeMounts:
+          - name: annovar-maf-f
+            mountPath: "/mnt/input/"
+          - name: annovar-oncokb-maf-f
+            mountPath: "/mnt/output/"
+        env:
+          - name: ONCOKB_API_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: oncokb-secrets
+                key: oncokb_api_token
+    - name: oncokb-sv
+      inputs:
+        parameters:
+          - name: oncokb-sv-in-f
+          - name: oncokb-sv-out-f
+      outputs:
+        parameters:
+          - name: oncokb-sv-out-f
+            value: "{{inputs.parameters.oncokb-sv-out-f}}"
+      volumes:
+        - name: oncokb-sv-in-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['oncokb-sv-in-f'])}}"
+            type: Directory
+        - name: oncokb-sv-out-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['oncokb-sv-out-f'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: oncokb-sv-script
+        image: bergun/oncokb-annotator:v0.0.1
+        command: [sh]
+        source: python ./StructuralVariantAnnotator.py -i /mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-sv-in-f'])}} -o /mnt/output/{{=sprig.osBase(inputs.parameters['oncokb-sv-out-f'])}} -b ${ONCOKB_API_TOKEN}
+        volumeMounts:
+          - name: oncokb-sv-in-f
+            mountPath: "/mnt/input/"
+          - name: oncokb-sv-out-f
+            mountPath: "/mnt/output/"
+        env:
+          - name: ONCOKB_API_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: oncokb-secrets
+                key: oncokb_api_token
+    - name: oncokb-fusions
+      inputs:
+        parameters:
+          - name: oncokb-fusions-in-f
+          - name: oncokb-fusions-out-f
+      outputs:
+        parameters:
+          - name: oncokb-fusions-out-f
+            value: "{{inputs.parameters.oncokb-fusions-out-f}}"
+      volumes:
+        - name: oncokb-fusions-in-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['oncokb-fusions-in-f'])}}"
+            type: Directory
+        - name: oncokb-fusions-out-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['oncokb-fusions-out-f'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: oncokb-fusions-script
+        image: bergun/oncokb-annotator:v0.0.1
+        command: [sh]
+        source: python ./FusionAnnotator.py -i /mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-fusions-in-f'])}} -o /mnt/output/{{=sprig.osBase(inputs.parameters['oncokb-fusions-out-f'])}} -b ${ONCOKB_API_TOKEN}
+        volumeMounts:
+          - name: oncokb-fusions-in-f
+            mountPath: "/mnt/input/"
+          - name: oncokb-fusions-out-f
+            mountPath: "/mnt/output/"
+        env:
+          - name: ONCOKB_API_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: oncokb-secrets
+                key: oncokb_api_token

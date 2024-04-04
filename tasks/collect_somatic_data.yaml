@@ -1,0 +1,245 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: collect-somatic-data-templates
+spec:
+  templates:
+    - name: collect-somatic-data
+      inputs:
+        parameters:
+          - name: sample-id # not Uuid but user defined String value.
+          - name: run-id
+          - name: cancervar-in-f
+          - name: msisensorpro-in-f
+          - name: snv-regions-bed-f
+      dag:
+        tasks:
+          - name: collect-tmb-data
+            template: collect-tmb-data
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: cancervar-in-f
+                  value: "{{inputs.parameters.cancervar-in-f}}"
+                - name: snv-regions-bed-f
+                  value: "{{inputs.parameters.snv-regions-bed-f}}"
+          - name: collect-msi-data
+            template: collect-msi-data
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: msisensorpro-in-f
+                  value: "{{inputs.parameters.msisensorpro-in-f}}"
+    - name: collect-msi-data
+      inputs:
+        parameters:
+          - name: run-id
+          - name: sample-id # not Uuid but user defined String value.
+          - name: msisensorpro-in-f
+      volumes:
+        - name: msisensorpro-in-f
+          hostPath:
+            path: "{{inputs.parameters.msisensorpro-in-f}}"
+            type: File
+      script:
+        name: "collect-msi-data"
+        image: demisto/pandas:1.0.0.80782
+        # includes 'requests' package
+        workingDir: /mnt/input/
+        volumeMounts:
+          - name: msisensorpro-in-f
+            mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['msisensorpro-in-f'])}}
+        command: [python]
+        source: |
+          import pandas as pd
+          import os, requests
+
+          # cluster info
+          token = os.environ["GENNEXT_CLUSTER_TOKEN"]
+          addr = "gennext-backend.gennext-prod.svc.cluster.local:3030"
+          url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/somatic"
+
+          # collect input data
+          sample_id = "{{inputs.parameters.sample-id}}"
+          msisensorpro_in_f = "/mnt/input/{{=sprig.osBase(inputs.parameters['msisensorpro-in-f'])}}"
+
+          # collect msisensor data
+          msi_data_df = pd.read_csv(msisensorpro_in_f, sep="\t")
+          msi_data_dict = msi_data_df.to_dict(orient="list")
+
+          for key in msi_data_dict:
+              msi_data_dict[key] = msi_data_dict[key][0]
+
+
+          msi_data = {
+            "msiTotalNumberOfSites": int(msi_data_dict["Total_Number_of_Sites"]),
+            "msiNumberOfSomaticSites": int(msi_data_dict["Number_of_Somatic_Sites"]),
+            "msiPercentage": str(f'{float(msi_data_dict["%"]):.2f}'),
+            "msiValue": str(f'{(float(msi_data_dict["%"]) / 100):.3f}'),
+            }
+
+          print(msi_data)
+          payload = {"runId": "{{inputs.parameters.run-id}}", "sampleId": "{{inputs.parameters.sample-id}}", "somaticData": msi_data, "token": token }
+
+          res = requests.post(url, json=payload)
+
+          if res.status_code != 200:
+              raise Exception(dict(res))
+        env:
+          - name: GENNEXT_CLUSTER_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: gennext-cluster-secrets
+                key: gennext_cluster_token
+    - name: collect-tmb-data
+      inputs:
+        parameters:
+          - name: run-id
+          - name: sample-id
+          - name: cancervar-in-f
+          - name: snv-regions-bed-f
+      volumes:
+        - name: cancervar-in-f
+          hostPath:
+            path: "{{inputs.parameters.cancervar-in-f}}"
+            type: File
+        - name: snv-regions-bed-f
+          hostPath:
+            path: "{{inputs.parameters.snv-regions-bed-f}}"
+            type: File
+      script:
+        name: "collect-tmb-data"
+        image: demisto/pandas:1.0.0.80782
+        # includes 'requests' package
+        workingDir: /mnt/input/
+        volumeMounts:
+          - name: cancervar-in-f
+            mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['cancervar-in-f'])}}
+          - name: snv-regions-bed-f
+            mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['snv-regions-bed-f'])}}
+        command: [python]
+        source: |
+          import pandas as pd
+          import os, requests
+
+          # cluster info
+          token = os.environ["GENNEXT_CLUSTER_TOKEN"]
+          addr = "gennext-backend.gennext-dev.svc.cluster.local:3030"
+          url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/somatic"
+
+          # collect input data
+          sample_id = "{{inputs.parameters.sample-id}}"
+          cancervar_in_f = "/mnt/input/{{=sprig.osBase(inputs.parameters['cancervar-in-f'])}}"
+          snv_regions_bed_f = "/mnt/input/{{=sprig.osBase(inputs.parameters['snv-regions-bed-f'])}}"
+
+          nonsynonymous_variant_labels = ['nonsynonymous SNV', 'stopgain', 'stoploss', 'startgain', 'startloss']
+
+          # collect cancervar nonysynonymous variants count
+          cancervar_df = pd.read_csv(cancervar_in_f, sep='\t')
+          exonic_variant_counts: dict = cancervar_df['ExonicFunc.refGene'].value_counts().to_dict()
+          nonsynoymous_variant_count: int = sum(map(lambda x: exonic_variant_counts.get(x, 0), nonsynonymous_variant_labels))
+
+          def merge_intervals(intervals):
+              """
+              Merge overlapping intervals and return the merged list.
+              Assumes intervals is sorted by the start position.
+              """
+              merged = []
+              for interval in intervals:
+                  # If the list of merged intervals is empty or if the current
+                  # interval does not overlap with the previous, simply append it.
+                  if not merged or merged[-1][1] < interval[0]:
+                      merged.append(interval)
+                  else:
+                      # Otherwise, there is overlap, so we merge the current and previous intervals.
+                      merged[-1][1] = max(merged[-1][1], interval[1])
+              return merged
+
+          def load_and_process_bed(file_path):
+              """
+              Load a BED file, merge overlapping intervals, and calculate the total length.
+              """
+              intervals = {}
+              with open(file_path, 'r') as bed_file:
+                  for line in bed_file:
+                      parts = line.strip().split()
+                      chrom, start, end = parts[0], int(parts[1]), int(parts[2])
+                      if chrom not in intervals:
+                          intervals[chrom] = []
+                      intervals[chrom].append([start, end])
+
+              total_length_bp = 0
+              for chrom in intervals.keys():
+                  sorted_intervals = sorted(intervals[chrom], key=lambda x: x[0])
+                  merged_intervals = merge_intervals(sorted_intervals)
+                  for interval in merged_intervals:
+                      total_length_bp += interval[1] - interval[0]
+
+              return total_length_bp
+
+          bed_file_path = snv_regions_bed_f
+          total_length_bp = load_and_process_bed(bed_file_path)
+          total_length_mb = total_length_bp / 1_000_000
+
+          tmb_value = nonsynoymous_variant_count / total_length_mb
+
+          tmb_data = {
+              "tmbValue": str(f'{tmb_value:.2f}'),
+              "tmbVariantCount": int(nonsynoymous_variant_count),
+              "tmbTargetRegionSize": int(total_length_bp)
+          }
+
+          payload = {"runId": "{{inputs.parameters.run-id}}", "sampleId": "{{inputs.parameters.sample-id}}", "somaticData": tmb_data, "token": token }
+          print(payload)
+
+          res = requests.post(url, json=payload)
+          if res.status_code != 200:
+              raise Exception(res.text)
+
+        env:
+          - name: GENNEXT_CLUSTER_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: gennext-cluster-secrets
+                key: gennext_cluster_token
+    - name: collect-somatic-data-on-node
+      nodeSelector:
+        kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      inputs:
+        parameters:
+          - name: sample-id # not Uuid but user defined String value.
+          - name: run-id
+          - name: cancervar-in-f
+          - name: msisensorpro-in-f
+          - name: snv-regions-bed-f
+          - name: node-name
+      dag:
+        tasks:
+          - name: collect-tmb-data
+            template: collect-tmb-data
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: cancervar-in-f
+                  value: "{{inputs.parameters.cancervar-in-f}}"
+                - name: snv-regions-bed-f
+                  value: "{{inputs.parameters.snv-regions-bed-f}}"
+          - name: collect-msi-data
+            template: collect-msi-data
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: msisensorpro-in-f
+                  value: "{{inputs.parameters.msisensorpro-in-f}}"

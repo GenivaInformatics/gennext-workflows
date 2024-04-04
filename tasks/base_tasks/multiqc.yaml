@@ -1,0 +1,38 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: multiqc-template
+  namespace: argo
+spec:
+  templates:
+    - name: main
+      inputs:
+        parameters:
+          - name: input-dir
+          - name: output-dir
+      outputs:
+        parameters:
+          - name: output-dir
+            value: "{{inputs.parameters.output-dir}}"
+      volumes:
+        - name: input-dir
+          hostPath:
+            path: "{{inputs.parameters.input-dir}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}metrics/"
+            type: DirectoryOrCreate
+      script:
+        name: multiqc-script
+        image: quay.io/biocontainers/multiqc:1.17--pyhdfd78af_1
+        command: [sh]
+        source: |
+          multiqc \
+          /mnt/input/ \
+          -o /mnt/output/
+        volumeMounts:
+          - name: input-dir
+            mountPath: "/mnt/input/"
+          - name: output-dir
+            mountPath: "/mnt/output/"

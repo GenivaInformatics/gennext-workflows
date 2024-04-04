@@ -1,0 +1,74 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: get-base-node-config
+  namespace: argo
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: get-base-node-config
+  arguments:
+    parameters:
+      - name: node-name
+  templates:
+    - name: get-base-node-config
+      inputs:
+        parameters:
+          - name: node-name
+      outputs:
+        parameters:
+          # REL -> relative
+          - name: input-base-dir
+            valueFrom:
+              path: /tmp/INPUT_BASE_DIR
+          - name: output-base-dir
+            valueFrom:
+              path: /tmp/OUTPUT_BASE_DIR
+          - name: ref-base-dir
+            valueFrom:
+              path: /tmp/REF_BASE_DIR
+          - name: temp-base-dir
+            valueFrom:
+              path: /tmp/TEMP_BASE_DIR
+          - name: scratch-base-dir
+            valueFrom:
+              path: /tmp/SCRATCH_BASE_DIR
+          - name: modules-base-dir
+            valueFrom:
+              path: /tmp/MODULES_BASE_DIR
+          - name: annots-base-dir
+            valueFrom:
+              path: /tmp/ANNOTS_BASE_DIR
+          - name: thread-count
+            valueFrom:
+              path: /tmp/THREAD_COUNT
+      script:
+        image: bitnami/kubectl:latest
+        command: [bash]
+        # X_REL_DIR env var's are not relative but the files written are
+        source: |
+          NODE_NAME="{{inputs.parameters.node-name}}"
+          clean_path() {
+          sed -E 's#/+#/#g; s#([^/])$#\1/#';
+          }
+          join_paths() {
+          echo "${1:+$1/}$2" | clean_path
+          }
+          kubectl get node $NODE_NAME -o jsonpath='
+          {"INPUT_BASE_DIR="}{.metadata.annotations.gennext\.bio/input-base-dir}
+          {"\nOUTPUT_BASE_DIR="}{.metadata.annotations.gennext\.bio/output-base-dir}
+          {"\nREF_BASE_DIR="}{.metadata.annotations.gennext\.bio/ref-base-dir}
+          {"\nTEMP_BASE_DIR="}{.metadata.annotations.gennext\.bio/temp-base-dir}
+          {"\nSCRATCH_BASE_DIR="}{.metadata.annotations.gennext\.bio/scratch-base-dir}
+          {"\nMODULES_BASE_DIR="}{.metadata.annotations.gennext\.bio/modules-base-dir}
+          {"\nANNOTS_BASE_DIR="}{.metadata.annotations.gennext\.bio/annots-base-dir}
+          {"\nTHREAD_COUNT="}{.metadata.annotations.gennext\.bio/thread-count}
+          ' > /tmp/keypaths_tmp0
+          while IFS='=' read -r key val
+          do
+            if [[ $key = "THREAD_COUNT" ]]
+            then
+              echo "$val" > "/tmp/$key"
+            else
+              echo "$val" | clean_path > "/tmp/$key"
+            fi
+          done < /tmp/keypaths_tmp0

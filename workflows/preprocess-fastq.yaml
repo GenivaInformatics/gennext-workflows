@@ -14,6 +14,7 @@ spec:
           - name: genome-ref
           - name: thread-count
           - name: temp-abs-dir
+          - name: scratch-abs-dir
       outputs:
         parameters:
           - name: bam
@@ -33,7 +34,6 @@ spec:
                   value: "{{inputs.parameters.fq-r2}}"
                 - name: output-dir
                   value: "{{inputs.parameters.temp-abs-dir}}metrics/fastqc/pre-trim/"
-
           - name: trim-galore
             templateRef:
               name: trim-galore-template
@@ -49,7 +49,7 @@ spec:
                 - name: thread-count
                   value: "{{=sprig.int(inputs.parameters['thread-count']) - 2}}"
                 - name: output-dir
-                  value: "{{inputs.parameters.temp-abs-dir}}trimmed_reads/"
+                  value: "{{inputs.parameters.scratch-abs-dir}}trimmed_reads/"
           # - name: post-fastqc
           #   templateRef:
           #     name: fastqc-template
@@ -62,7 +62,7 @@ spec:
           #         value: "{{tasks.trim-galore.outputs.parameters.fq-r2}}"
           #       - name: output-dir
           #         value: "{{inputs.parameters.temp-abs-dir}}/metrics/fastqc/post-trim/"
-          #   dependencies: [trim-galore]
+          #   depends: "trim-galore"
           - name: compose-read-group-str
             templateRef:
               name: compose-read-group-str
@@ -88,7 +88,97 @@ spec:
                 - name: thread-count
                   value: "{{=sprig.int(inputs.parameters['thread-count']) - 2}}"
                 - name: bam
-                  value: "{{inputs.parameters.temp-abs-dir}}bam/{{inputs.parameters.sample-name}}.bam"
+                  value: "{{inputs.parameters.scratch-abs-dir}}bam/{{inputs.parameters.sample-name}}.bam"
                 - name: read-group-str
                   value: "{{tasks.compose-read-group-str.outputs.parameters.read-group-str}}"
+            depends: "trim-galore && compose-read-group-str"
+    - name: preprocess-bwa-mem-2
+      inputs:
+        parameters:
+          - name: sample-name
+          - name: fq-r1
+          - name: fq-r2
+          - name: genome-ref
+          - name: thread-count
+          - name: temp-abs-dir
+          - name: scratch-abs-dir
+      outputs:
+        parameters:
+          - name: bam
+            valueFrom:
+              parameter: "{{tasks.bwa-mem2.outputs.parameters.bam}}"
+      dag:
+        tasks:
+          - name: pre-fastqc
+            templateRef:
+              name: fastqc-template
+              template: fastqc
+            arguments:
+              parameters:
+                - name: fq-r1
+                  value: "{{inputs.parameters.fq-r1}}"
+                - name: fq-r2
+                  value: "{{inputs.parameters.fq-r2}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.temp-abs-dir}}metrics/fastqc/pre-trim/"
+          - name: trim-galore
+            templateRef:
+              name: trim-galore-template
+              template: trim-galore
+            arguments:
+              parameters:
+                - name: sample-name
+                  value: "{{inputs.parameters.sample-name}}"
+                - name: fq-r1
+                  value: "{{inputs.parameters.fq-r1}}"
+                - name: fq-r2
+                  value: "{{inputs.parameters.fq-r2}}"
+                - name: thread-count
+                  value: "{{=sprig.int(inputs.parameters['thread-count']) - 2}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.scratch-abs-dir}}trimmed_reads/"
+          # - name: post-fastqc
+          #   templateRef:
+          #     name: fastqc-template
+          #     template: fastqc
+          #   arguments:
+          #     parameters:
+          #       - name: fq-r1
+          #         value: "{{tasks.trim-galore.outputs.parameters.fq-r1}}"
+          #       - name: fq-r2
+          #         value: "{{tasks.trim-galore.outputs.parameters.fq-r2}}"
+          #       - name: output-dir
+          #         value: "{{inputs.parameters.temp-abs-dir}}/metrics/fastqc/post-trim/"
+          #   depends: "trim-galore"
+          - name: compose-read-group-str
+            templateRef:
+              name: compose-read-group-str
+              template: compose-read-group-str-from-fq
+            arguments:
+              parameters:
+                - name: fq-r1
+                  value: "{{inputs.parameters.fq-r1}}"
+                - name: sample-name
+                  value: "{{inputs.parameters.sample-name}}"
+          - name: bwa-mem2
+            templateRef:
+              name: bwa-mem2-template
+              template: bwa-mem2
+            arguments:
+              parameters:
+                - name: fq-r1
+                  value: "{{tasks.trim-galore.outputs.parameters.fq-r1}}"
+                - name: fq-r2
+                  value: "{{tasks.trim-galore.outputs.parameters.fq-r2}}"
+                - name: genome-ref
+                  value: "{{inputs.parameters.genome-ref}}"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+                - name: bam
+                  value: "{{inputs.parameters.scratch-abs-dir}}bam/{{inputs.parameters.sample-name}}.bam"
+                - name: scratch-dir
+                  value: "{{inputs.parameters.scratch-abs-dir}}bwa-tmp/"
+                - name: read-group-str
+                  value: "{{tasks.compose-read-group-str.outputs.parameters.read-group-str}}"
+            # depends: "trim-galore && compose-read-group-str"
             depends: "trim-galore && compose-read-group-str"

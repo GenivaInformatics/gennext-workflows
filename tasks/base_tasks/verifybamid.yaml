@@ -1,0 +1,123 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: verifybamid-template
+  namespace: argo
+spec:
+  templates:
+    - name: verifybamid-genome-wrapper
+      inputs:
+        parameters:
+          - name: input-bam
+          - name: ref-version
+          - name: verifybamid-ref-base-dir
+          - name: output-dir
+      steps:
+        - - name: hg38
+            template: verifybamid
+            when: "{{inputs.parameters.ref-version}} == 'hg38'"
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{inputs.parameters.input-bam}}"
+                - name: verifybamid-ref-dir
+                  value: "{{inputs.parameters.verifybamid-ref-base-dir}}genome/GRCh38_full_analysis_set_plus_decoy_hla.fa"
+                - name: verifybamid-svd-files
+                  value: "{{inputs.parameters.verifybamid-ref-base-dir}}svd/1000g.phase3.10k.b38.vcf.gz.dat"
+                - name: output-dir
+                  value: "{{inputs.parameters.output-dir}}"
+          - name: hg19
+            template: verifybamid
+            when: "{{inputs.parameters.ref-version}} == 'hg19'"
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{inputs.parameters.input-bam}}"
+                - name: verifybamid-ref-dir
+                  value: "{{inputs.parameters.verifybamid-ref-base-dir}}genome/human_g1k_v37_chr_prefix.fasta.gz"
+                - name: verifybamid-svd-files
+                  value: "{{inputs.parameters.verifybamid-ref-base-dir}}svd/1000g.phase3.10k.b37.vcf.gz.chrPrefix.dat"
+                - name: output-dir
+                  value: "{{inputs.parameters.output-dir}}"
+    - name: verifybamid-exome-wrapper
+      inputs:
+        parameters:
+          - name: input-bam
+          - name: ref-version
+          - name: verifybamid-ref-base-dir
+          - name: output-dir
+      steps:
+        - - name: hg38
+            template: verifybamid
+            when: "{{inputs.parameters.ref-version}} == 'hg38'"
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{inputs.parameters.input-bam}}"
+                - name: verifybamid-ref-dir
+                  value: "{{inputs.parameters.verifybamid-ref-base-dir}}genome/GRCh38_full_analysis_set_plus_decoy_hla.fa"
+                - name: verifybamid-svd-files
+                  value: "{{inputs.parameters.verifybamid-ref-base-dir}}svd/1000g.phase3.10k.b38.exome.vcf.gz.dat"
+                - name: output-dir
+                  value: "{{inputs.parameters.output-dir}}"
+          - name: hg19
+            template: verifybamid
+            when: "{{inputs.parameters.ref-version}} == 'hg19'"
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{inputs.parameters.input-bam}}"
+                - name: verifybamid-ref-dir
+                  value: "{{inputs.parameters.verifybamid-ref-base-dir}}genome/human_g1k_v37_chr_prefix.fasta"
+                - name: verifybamid-svd-files
+                  value: "{{inputs.parameters.verifybamid-ref-base-dir}}svd/1000g.phase3.10k.b37.exome.vcf.gz.dat"
+                - name: output-dir
+                  value: "{{inputs.parameters.output-dir}}"
+    - name: verifybamid
+      inputs:
+        parameters:
+          - name: input-bam
+          - name: verifybamid-ref-dir
+          - name: verifybamid-svd-files
+          - name: output-dir
+      outputs:
+        parameters:
+          - name: output-dir
+            value: "{{inputs.parameters.output-dir}}"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+        - name: verifybamid-ref-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['verifybamid-ref-dir'])}}"
+            type: Directory
+        - name: verifybamid-svd-files
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['verifybamid-svd-files'])}}"
+            type: Directory
+      script:
+        name: verifybamid-script
+        image: griffan/verifybamid2:latest
+        workingDir: /mnt/output/
+        command: [sh]
+        source: |
+          VerifyBamID \
+          --SVDPrefix /mnt/ref/svd/{{=sprig.osBase(inputs.parameters['verifybamid-svd-files'])}} \
+          --Reference /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['verifybamid-ref-dir'])}} \
+          --BamFile /mnt/input/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+          --DisableSanityCheck
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/mnt/input/"
+          - name: verifybamid-ref-dir
+            mountPath: "/mnt/ref/genome/"
+          - name: verifybamid-svd-files
+            mountPath: "/mnt/ref/svd/"
+          - name: output-dir
+            mountPath: "/mnt/output/"

@@ -1,0 +1,98 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: bcftools-template
+  namespace: argo
+spec:
+  templates:
+    - name: bcftools-merge-sort
+      inputs:
+        parameters:
+          - name: input-vcf-fs-dir
+          - name: input-vcf-f-basenames
+          - name: output-vcf-f
+      outputs:
+        parameters:
+          - name: output-vcf-f
+            value: "{{inputs.parameters.output-vcf-f}}"
+      volumes:
+        - name: input-vcf-fs-dir
+          hostPath:
+            path: "{{inputs.parameters.input-vcf-fs-dir}}"
+            type: Directory
+        - name: output-vcf-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-vcf-f'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: bcftools-merge
+        image: quay.io/biocontainers/bcftools:1.17--h3cc50cf_1
+        command: [sh]
+        source: |
+          bcftools merge {{inputs.parameters.input-vcf-f-basenames}} | \
+          bcftools sort -Oz -o /mnt/output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf-f'])}};
+          tabix -p vcf /mnt/output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf-f'])}};
+        workingDir: "/mnt/input/vcf/"
+        volumeMounts:
+          - name: input-vcf-fs-dir
+            mountPath: "/mnt/input/vcf/"
+          - name: output-vcf-f
+            mountPath: "/mnt/output/vcf/"
+    - name: bcftools-filter-and-bed
+      inputs:
+        parameters:
+          - name: input-vcf-f
+          - name: output-vcf-f
+          - name: do-filter
+            value: "PASS"
+          - name: regions-file
+            value: ""
+      outputs:
+        parameters:
+          - name: output-vcf-f
+            value: "{{inputs.parameters.output-vcf-f}}"
+      volumes:
+        - name: input-vcf-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-vcf-f'])}}"
+            type: Directory
+        - name: output-vcf-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-vcf-f'])}}"
+            type: DirectoryOrCreate
+        - name: regions-file
+          hostPath:
+            path: "{{inputs.parameters.regions-file}}"
+            type: File
+      script:
+        name: annovar-script
+        image: quay.io/biocontainers/bcftools:1.17--h3cc50cf_1
+        command: [sh]
+        source: |
+          regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
+          doFilter="{{inputs.parameters.do-filter}}"
+
+          options=()
+          if [ ! "." = "$regionsFile" ]; then options+=("-R /mnt/input/regions/$regionsFile"); fi
+          if [ ! -z "$doFilter" ]; then options+=("-f $doFilter"); fi
+
+          bcftools index -t /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}};
+          # Filter for only PASS variants
+          # Remove duplicate variants
+          # Sort for duplicate variant removal due to bed region overlap
+          # Compress
+          # Index
+          bcftools view \
+          /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}} \
+           ${options[@]} \
+          | bcftools sort \
+          | bcftools norm -d none - \
+          | bgzip -c > /mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf-f'])}};
+          bcftools index -t /mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf-f'])}}
+        volumeMounts:
+          - name: input-vcf-f
+            mountPath: "/mnt/input/vcf/"
+          - name: output-vcf-f
+            mountPath: "/mnt/output/"
+          - name: regions-file
+            mountPath: "/mnt/input/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}}"

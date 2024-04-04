@@ -1,0 +1,187 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: no-filter-mutect2-calls
+spec:
+  templates:
+    - name: no-filter-mutect2-calls
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: base-dir
+          - name: temp-dir
+          - name: annovar-db-dir
+            default: "/runspace/gennext/data/ref/hg38/other/annovardb"
+          - name: snv-regions-file
+            default: "/runspace/gennext/data/ref/hg38/regions/A3416642_SNV_AllTracks.bed"
+          - name: thread-count
+            default: "20"
+          - name: ref-version
+            default: "hg38"
+      dag:
+        tasks:
+          - name: mutect2-calls
+            templateRef:
+              name: mutect2-template
+              template: mutect2-tumor-only
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{inputs.parameters.base-dir}}bam/{{inputs.parameters.sample-id}}_recal.bam"
+                - name: output-vcf
+                  value: "{{inputs.parameters.temp-dir}}snv/vcf/{{inputs.parameters.sample-id}}_mutect2.vcf.gz"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+                - name: ref-genome-f
+                  value: "/runspace/gennext/data/ref/hg38/genome/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set.fa"
+                - name: gnomad-data-f
+                  value: "/runspace/gennext/data/ref/hg38/other/gnomad/af-only-gnomad.hg38.vcf.gz"
+                - name: 1000g-pon-data-f
+                  value: "/runspace/gennext/data/ref/hg38/other/1000g/1000g_pon.hg38.vcf.gz"
+                - name: regions-file
+                  value: "{{inputs.parameters.snv-regions-file}}"
+          - name: mutect2-filter
+            templateRef:
+              name: mutect2-template
+              template: mutect2-mark-calls
+            arguments:
+              parameters:
+                - name: input-unfiltered-vcf
+                  value: "{{tasks.mutect2-calls.outputs.parameters.output-vcf}}"
+                  # value: "{{inputs.parameters.temp-dir}}snv/vcf/{{inputs.parameters.sample-id}}_mutect2.vcf.gz"
+                - name: output-marked-vcf
+                  value: "{{inputs.parameters.base-dir}}snv/vcf/{{inputs.parameters.sample-id}}_mutect2_marked.vcf.gz"
+                - name: ref-genome-f
+                  value: "/runspace/gennext/data/ref/hg38/genome/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set.fa"
+                - name: regions-file
+                  value: "{{inputs.parameters.snv-regions-file}}"
+            depends: "mutect2-calls"
+          - name: bcftools-filter
+            templateRef:
+              name: bcftools-template
+              template: bcftools-filter-and-bed
+            arguments:
+              parameters:
+                - name: do-filter
+                  value: ""
+                - name: input-vcf-f
+                  value: "{{tasks.mutect2-filter.outputs.parameters.output-marked-vcf}}"
+                - name: output-vcf-f
+                  value: "{{inputs.parameters.base-dir}}/snv/vcf/{{inputs.parameters.sample-id}}_mutect2_filtered.vcf.gz"
+                - name: regions-file
+                  value: "{{inputs.parameters.snv-regions-file}}"
+            depends: "mutect2-filter"
+          - name: vlod
+            templateRef:
+              name: vlod-template
+              template: vlod
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{inputs.parameters.base-dir}}bam/{{inputs.parameters.sample-id}}_recal.bam"
+                - name: input-vcf
+                  value: "{{tasks.bcftools-filter.outputs.parameters.output-vcf-f}}"
+                - name: vlod-out-tsv
+                  value: "{{inputs.parameters.temp-dir}}results/snv/{{inputs.parameters.sample-id}}_vlod.tsv.gz"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "bcftools-filter"
+          - name: vlod-merge-with-vcf
+            templateRef:
+              name: vlod-template
+              template: vlod-merge-with-vcf
+            arguments:
+              parameters:
+                - name: input-vcf
+                  value: "{{tasks.bcftools-filter.outputs.parameters.output-vcf-f}}"
+                - name: input-vlod-tsv
+                  value: "{{tasks.vlod.outputs.parameters.vlod-out-tsv}}"
+                - name: vlod-merged-output-vcf
+                  value: "{{inputs.parameters.base-dir}}results/snv/{{inputs.parameters.sample-id}}_mutect2_vlod.vcf" # output returns .gz
+            depends: "bcftools-filter && vlod"
+          - name: annovar
+            templateRef:
+              name: annovar-template
+              template: annovar
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: input-vcf-f
+                  value: "{{tasks.vlod-merge-with-vcf.outputs.parameters.vlod-merged-output-vcf}}"
+                  # value: "{{inputs.parameters.base-dir}}results/snv/{{inputs.parameters.sample-id}}_mutect2_vlod.vcf.gz"
+                - name: ref-version
+                  value: "hg38"
+                - name: output-dir
+                  value: "{{inputs.parameters.base-dir}}results/snv/"
+                - name: annovardb-dir
+                  value: "{{inputs.parameters.annovar-db-dir}}"
+            depends: "vlod-merge-with-vcf"
+          - name: cancervar
+            templateRef:
+              name: cancervar-template
+              template: cancervar
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: input-vcf-f
+                  value: "{{tasks.vlod-merge-with-vcf.outputs.parameters.vlod-merged-output-vcf}}"
+                  # value: "{{inputs.parameters.base-dir}}results/snv/{{inputs.parameters.sample-id}}_mutect2_vlod.vcf.gz"
+                - name: output-dir
+                  value: "{{inputs.parameters.base-dir}}results/snv/"
+                - name: annovardb-dir
+                  value: "{{inputs.parameters.annovar-db-dir}}"
+            depends: "annovar"
+          - name: annovar-to-maf
+            templateRef:
+              name: annovar-to-maf-template
+              template: annovar-to-maf
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: annovar-out-f
+                  value: "{{tasks.annovar.outputs.parameters.annovar-out-f}}"
+            depends: "annovar"
+          - name: oncokb-snv
+            templateRef:
+              name: oncokb-templates
+              template: oncokb-snv
+            arguments:
+              parameters:
+                - name: annovar-maf-f
+                  value: "{{tasks.annovar-to-maf.outputs.parameters.annovar-maf-f}}"
+                - name: annovar-oncokb-maf-f
+                  value: "{{inputs.parameters.base-dir}}results/snv/{{inputs.parameters.sample-id}}_oncokb.maf"
+                - name: ref-version
+                  value: "{{inputs.parameters.ref-version}}"
+            depends: "annovar-to-maf"
+          - name: get-otherinfo-columns
+            templateRef:
+              name: duckdb-template
+              template: determine-otherinfo-column
+            arguments:
+              parameters:
+                - name: annovar-oncokb-maf
+                  value: "{{tasks.oncokb-snv.outputs.parameters.annovar-oncokb-maf-f}}"
+            depends: "oncokb-snv"
+          - name: duckdb-snv
+            templateRef:
+              name: duckdb-template
+              template: duckdb-snv
+            arguments:
+              parameters:
+                - name: annovar-oncokb-maf
+                  value: "{{tasks.oncokb-snv.outputs.parameters.annovar-oncokb-maf-f}}"
+                - name: cancervar-tsv
+                  value: "{{tasks.cancervar.outputs.parameters.cancervar-out-f}}"
+                - name: vlod-column-name
+                  value: "{{tasks.get-otherinfo-columns.outputs.parameters.vlod-column-name}}"
+                - name: filter-column-name
+                  value: "{{tasks.get-otherinfo-columns.outputs.parameters.filter-column-name}}"
+                - name: sample-column-name
+                  value: "{{tasks.get-otherinfo-columns.outputs.parameters.sample-column-name}}"
+                - name: output-duckdb
+                  value: "{{inputs.parameters.base-dir}}results/db/{{inputs.parameters.sample-id}}_results.duckdb"
+            depends: "oncokb-snv && cancervar && get-otherinfo-columns"

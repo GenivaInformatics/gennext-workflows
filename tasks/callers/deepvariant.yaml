@@ -14,7 +14,7 @@ spec:
           - name: genome-ref-f
             # value: ""
           - name: regions-file
-            # value: ""
+            default: "."
           - name: output-vcf
             # value: ""
           - name: output-g-vcf
@@ -26,9 +26,9 @@ spec:
       outputs:
         parameters:
           - name: output-vcf
-            value: "{{=sprig.osBase(inputs.parameters['output-vcf'])}}"
+            value: "{{inputs.parameters.output-vcf}}"
           - name: output-g-vcf
-            value: "{{=sprig.osBase(inputs.parameters['output-g-vcf'])}}"
+            value: "{{inputs.parameters.output-g-vcf}}"
       volumes:
         - name: input-bam
           hostPath:
@@ -44,8 +44,8 @@ spec:
             type: DirectoryOrCreate
         - name: regions-file
           hostPath:
-            path: "{{inputs.parameters.regions-file}}"
-            type: File
+            path: "{{=sprig.osDir(inputs.parameters['regions-file'])}}"
+            type: Directory
         - name: genome-ref-f
           hostPath:
             path: "{{=sprig.osDir(inputs.parameters['genome-ref-f'])}}"
@@ -54,19 +54,45 @@ spec:
           hostPath:
             path: "{{inputs.parameters.scratch-dir}}"
             type: Directory
+      # nodeSelector:
+      #   # by hostname
+      #   kubernetes.io/hostname: acurare-01
       script:
         name: "deepvariant-wes"
         # image: google/deepvariant:1.5.0-gpu
         # image: gcr.io/deepvariant-docker/deepvariant:1.5.0-gpu
-        image: gcr.io/deepvariant-docker/deepvariant:1.5.0
+        image: gcr.io/deepvariant-docker/deepvariant:1.5.0-gpu
+        resources:
+          # don't use requests for GPUs: https://kubernetes.io/docs/tasks/manage-gpus/scheduling-gpus/
+          limits:
+            nvidia.com/gpu: 1 # requesting 1 GPU
+        # env:
+        #   - name: LD_LIBRARY_PATH
+        #     value: "/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cublas/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cudnn/lib"
         command: [sh]
         source: |
+
+          regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
+          options="";
+
+          # sprig.osBase returns "." if the path is empty
+          # if regionsFile is provided set model_type to WES, else WGS
+          if [ ! "." = "$regionsFile" ]
+            then
+              options="$options --model_type WES"
+            else
+              options="$options --model_type WGS"
+          fi
+          # mind the whitespace before --regions
+          if [ ! "." = "$regionsFile" ]
+            then
+              options+=" --regions /mnt/ref/regions/$regionsFile"
+          fi
+
           samtools index -@{{inputs.parameters.thread-count}} /input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}};
           /opt/deepvariant/bin/run_deepvariant \
-          --model_type WES \
-          --reads /input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+          $options --reads /input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
           --ref /input/ref/{{=sprig.osBase(inputs.parameters['genome-ref-f'])}} \
-          --regions /input/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}} \
           --num_shards {{inputs.parameters.thread-count}} \
           --intermediate_results_dir /scratch/ \
           --output_vcf /output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf'])}} \

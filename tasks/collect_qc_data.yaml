@@ -1,0 +1,182 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: collect-qc-data-templates
+spec:
+  templates:
+    - name: collect-qc-data
+      inputs:
+        parameters:
+          - name: sample-id # not Uuid but user defined String value.
+          - name: run-id
+          - name: sample-fqs-fnames
+          - name: metrics-dir
+      volumes:
+        - name: metrics-dir
+          hostPath:
+            path: "{{inputs.parameters.metrics-dir}}"
+            type: Directory
+      script:
+        name: "collect-qc-data"
+        image: demisto/pandas:1.0.0.80782
+        # includes 'requests' package
+        workingDir: /mnt/metrics/
+        volumeMounts:
+          - name: metrics-dir
+            mountPath: /mnt/metrics/
+        command: [python]
+        source: |
+          import os
+          import pandas as pd
+          import json
+          import requests
+
+          # cluster info
+          token = os.environ["GENNEXT_CLUSTER_TOKEN"]
+          addr = "gennext-backend.gennext-dev.svc.cluster.local:3030"
+          url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/quality"
+
+          # collect input data
+          sample_id = "{{inputs.parameters.sample-id}}"
+          multiqc_data = pd.read_csv("multiqc_data/multiqc_general_stats.txt", sep="\t")
+          fqs_fnames_str = '{{inputs.parameters.sample-fqs-fnames}}'
+
+          qc_data = {
+              "1x_coverage": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth_mqc-generalstats-mosdepth-1_x_pc'].values[0],
+              "5x_coverage": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth_mqc-generalstats-mosdepth-5_x_pc'].values[0],
+              "10x_coverage": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth_mqc-generalstats-mosdepth-10_x_pc'].values[0],
+              "30x_coverage": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth_mqc-generalstats-mosdepth-30_x_pc'].values[0],
+              "50x_coverage": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth_mqc-generalstats-mosdepth-50_x_pc'].values[0],
+              "mean_coverage": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth_mqc-generalstats-mosdepth-mean_coverage'].values[0],
+              "median_coverage": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth_mqc-generalstats-mosdepth-median_coverage'].values[0],
+              "contamination": multiqc_data[multiqc_data['Sample'] == sample_id]['VerifyBAMID_mqc-generalstats-verifybamid-FREEMIX'].values[0],
+          }
+
+          qc_data_dict = {
+              "1X": str(f'{qc_data["1x_coverage"]:.2f}'),
+              "5X": str(f'{qc_data["5x_coverage"]:.2f}'),
+              "10X": str(f'{qc_data["10x_coverage"]:.2f}'),
+              "30X": str(f'{qc_data["30x_coverage"]:.2f}'),
+              "50X": str(f'{qc_data["50x_coverage"]:.2f}'),
+              "meanCoverage": str(f'{qc_data["mean_coverage"]:.2f}'),
+              "medianCoverage": str(f'{qc_data["median_coverage"]:.2f}'),
+              "contamination": str(f'{qc_data["contamination"]:.5f}'),
+              "totalReads": None,
+              "avgReadLength": None,
+              "gender": None, #TODO
+              "roh": None # TODO
+          }
+
+          if fqs_fnames_str != "":
+              fqs_fnames = json.loads(fqs_fnames_str)
+              fqs_bnames  = list(map(lambda fq: ".".join(fq.split(".")[:-2]) if fq.endswith(".gz") else ".".join(fq.split(".")[:-1]), fqs_fnames))
+              qc_data_fqs = {
+                  "total_sequences": int(sum(multiqc_data[multiqc_data['Sample'].isin(fqs_bnames)]['FastQC_mqc-generalstats-fastqc-total_sequences'])/len(fqs_bnames)),
+                  "avg_sequence_length": sum(multiqc_data[multiqc_data['Sample'].isin(fqs_bnames)]['FastQC_mqc-generalstats-fastqc-avg_sequence_length'])/len(fqs_bnames)
+              }
+              qc_data_dict['totalReads'] = int(qc_data_fqs["total_sequences"])
+              qc_data_dict['avgReadLength'] = str(f'{qc_data_fqs["avg_sequence_length"]:.2f}')
+
+          # qc_data_json = json.dumps(qc_data_dict)
+
+          print(json.dumps({"runId": "{{inputs.parameters.run-id}}", "sampleId": "{{inputs.parameters.sample-id}}", "qcData": qc_data_dict, "token": token }))
+
+          res = requests.post(url, json={"runId": "{{inputs.parameters.run-id}}", "sampleId": "{{inputs.parameters.sample-id}}", "qcData": qc_data_dict, "token": token })
+          if res.status_code != 200:
+              raise Exception(res.text)
+        env:
+          - name: GENNEXT_CLUSTER_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: gennext-cluster-secrets
+                key: gennext_cluster_token
+    # - name: collect-qc-data-on-node
+    #   nodeSelector:
+    #     kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+    #   inputs:
+    #     parameters:
+    #       - name: sample-id # not Uuid but user defined String value.
+    #       - name: run-id
+    #       - name: sample-fqs-fnames
+    #         default: ""
+    #       - name: metrics-dir
+    #       - name: node-name
+    #   volumes:
+    #     - name: metrics-dir
+    #       hostPath:
+    #         path: "{{inputs.parameters.metrics-dir}}"
+    #         type: Directory
+    #   script:
+    #     name: "collect-qc-data"
+    #     image: demisto/pandas:1.0.0.80782
+    #     # includes 'requests' package
+    #     workingDir: /mnt/metrics/
+    #     volumeMounts:
+    #       - name: metrics-dir
+    #         mountPath: /mnt/metrics/
+    #     command: [python]
+    #     source: |
+    #       import os
+    #       import pandas as pd
+    #       import json
+    #       import requests
+
+    #       # cluster info
+    #       token = os.environ["GENNEXT_CLUSTER_TOKEN"]
+    #       addr = "gennext-backend.gennext-dev.svc.cluster.local:3030"
+    #       url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/quality"
+
+    #       # collect input data
+    #       sample_id = "{{inputs.parameters.sample-id}}"
+    #       multiqc_data = pd.read_csv("multiqc_data/multiqc_general_stats.txt", sep="\t")
+    #       fqs_fnames_str = '{{inputs.parameters.sample-fqs-fnames}}'
+
+    #       qc_data = {
+    #           "1x_coverage": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth_mqc-generalstats-mosdepth-1_x_pc'].values[0],
+    #           "5x_coverage": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth_mqc-generalstats-mosdepth-5_x_pc'].values[0],
+    #           "10x_coverage": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth_mqc-generalstats-mosdepth-10_x_pc'].values[0],
+    #           "30x_coverage": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth_mqc-generalstats-mosdepth-30_x_pc'].values[0],
+    #           "50x_coverage": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth_mqc-generalstats-mosdepth-50_x_pc'].values[0],
+    #           "mean_coverage": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth_mqc-generalstats-mosdepth-mean_coverage'].values[0],
+    #           "median_coverage": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth_mqc-generalstats-mosdepth-median_coverage'].values[0],
+    #           "contamination": multiqc_data[multiqc_data['Sample'] == sample_id]['VerifyBAMID_mqc-generalstats-verifybamid-FREEMIX'].values[0],
+    #       }
+
+    #       qc_data_dict = {
+    #           "1X": f'{qc_data["1x_coverage"]:.2f}',
+    #           "5X": f'{qc_data["5x_coverage"]:.2f}',
+    #           "10X": f'{qc_data["10x_coverage"]:.2f}',
+    #           "30X": f'{qc_data["30x_coverage"]:.2f}',
+    #           "50X": f'{qc_data["50x_coverage"]:.2f}',
+    #           "meanCoverage": f'{qc_data["mean_coverage"]:.2f}',
+    #           "medianCoverage": f'{qc_data["median_coverage"]:.2f}',
+    #           "contamination": f'{qc_data["contamination"]:.5f}',
+    #           "totalReads": None,
+    #           "avgReadLength": None,
+    #           "gender": None, #TODO
+    #           "roh": None # TODO
+    #       }
+
+    #       if fqs_fnames_str != "":
+    #           fqs_fnames = json.loads(fqs_fnames_str)
+    #           fqs_bnames  = list(map(lambda fq: ".".join(fq.split(".")[:-2]) if fq.endswith(".gz") else ".".join(fq.split(".")[:-1]), fqs_fnames))
+    #           qc_data_fqs = {
+    #               "total_sequences": int(sum(multiqc_data[multiqc_data['Sample'].isin(fqs_bnames)]['FastQC_mqc-generalstats-fastqc-total_sequences'])/len(fqs_bnames)),
+    #               "avg_sequence_length": sum(multiqc_data[multiqc_data['Sample'].isin(fqs_bnames)]['FastQC_mqc-generalstats-fastqc-avg_sequence_length'])/len(fqs_bnames)
+    #           }
+    #           qc_data_dict['totalReads'] = int(qc_data_fqs["total_sequences"])
+    #           qc_data_dict['avgReadLength'] = f'{qc_data_fqs["avg_sequence_length"]:.2f}'
+
+    #       # qc_data_json = json.dumps(qc_data_dict)
+
+    #       print(json.dumps({"runId": "{{inputs.parameters.run-id}}", "sampleId": "{{inputs.parameters.sample-id}}", "qcData": qc_data_dict, "token": token }))
+
+    #       res = requests.post(url, json={"runId": "{{inputs.parameters.run-id}}", "sampleId": "{{inputs.parameters.sample-id}}", "qcData": qc_data_dict, "token": token })
+    #       if res.status_code != 200:
+    #           raise Exception(res.text)
+    #     env:
+    #       - name: GENNEXT_CLUSTER_TOKEN
+    #         valueFrom:
+    #           secretKeyRef:
+    #             name: gennext-cluster-secrets
+    #             key: gennext_cluster_token

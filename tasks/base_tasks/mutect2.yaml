@@ -1,0 +1,124 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: mutect2-template
+  namespace: argo
+spec:
+  templates:
+    - name: mutect2-mark-calls
+      inputs:
+        parameters:
+          - name: input-unfiltered-vcf
+          - name: output-marked-vcf
+          - name: ref-genome-f
+          - name: regions-file
+            value: ""
+      outputs:
+        parameters:
+          - name: output-marked-vcf
+            value: "{{inputs.parameters.output-marked-vcf}}"
+      volumes:
+        - name: input-unfiltered-vcf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-unfiltered-vcf'])}}"
+            type: Directory
+        - name: output-marked-vcf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-marked-vcf'])}}"
+            type: DirectoryOrCreate
+        - name: ref-genome-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['ref-genome-f'])}}"
+            type: Directory
+        - name: regions-file
+          hostPath:
+            path: "{{inputs.parameters.regions-file}}"
+            type: File
+      script:
+        name: mutect2-mark-calls-script
+        image: broadinstitute/gatk:4.3.0.0
+        command: [sh]
+        source: |
+          regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
+          gatk --java-options "-Xmx16G" FilterMutectCalls \
+          -R /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['ref-genome-f'])}} \
+          -V /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-unfiltered-vcf'])}} \
+          -O /mnt/output/{{=sprig.osBase(inputs.parameters['output-marked-vcf'])}} \
+          $(if [ ! -z "$regionsFile" ]; then echo "-L /mnt/input/regions/$regionsFile"; fi)
+        volumeMounts:
+          - name: input-unfiltered-vcf
+            mountPath: "/mnt/input/vcf/"
+          - name: output-marked-vcf
+            mountPath: "/mnt/output/"
+          - name: ref-genome-f
+            mountPath: "/mnt/ref/genome/"
+          - name: regions-file
+            mountPath: "/mnt/input/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}}"
+    - name: mutect2-tumor-only
+      inputs:
+        parameters:
+          - name: input-bam
+          - name: ref-genome-f
+          - name: regions-file
+            value: ""
+          - name: output-vcf
+          - name: gnomad-data-f
+          - name: 1000g-pon-data-f
+          - name: thread-count
+            value: "4"
+      outputs:
+        parameters:
+          - name: output-vcf
+            value: "{{inputs.parameters.output-vcf}}"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: output-vcf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-vcf'])}}"
+            type: DirectoryOrCreate
+        - name: ref-genome-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['ref-genome-f'])}}"
+            type: Directory
+        - name: gnomad-data-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['gnomad-data-f'])}}"
+            type: Directory
+        - name: 1000g-pon-data-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['1000g-pon-data-f'])}}"
+            type: Directory
+        - name: regions-file
+          hostPath:
+            path: "{{inputs.parameters.regions-file}}"
+            type: File
+      script:
+        name: mutect2-tumor-only
+        image: broadinstitute/gatk:4.3.0.0
+        command: [sh]
+        source: |
+          regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
+          gatk --java-options "-Xmx16G" Mutect2 \
+          --native-pair-hmm-threads {{inputs.parameters.thread-count}} \
+          -R /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['ref-genome-f'])}} \
+          -I /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+          $(if [ ! -z "$regionsFile" ]; then echo "-L /mnt/input/regions/$regionsFile"; fi) \
+          --germline-resource /mnt/ref/gnomad/{{=sprig.osBase(inputs.parameters['gnomad-data-f'])}} \
+          --panel-of-normals /mnt/ref/1000g/{{=sprig.osBase(inputs.parameters['1000g-pon-data-f'])}} \
+          -O /mnt/output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf'])}}
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/mnt/input/bam/"
+          - name: output-vcf
+            mountPath: "/mnt/output/vcf/"
+          - name: regions-file
+            mountPath: "/mnt/input/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}}"
+          - name: ref-genome-f
+            mountPath: "/mnt/ref/genome/"
+          - name: gnomad-data-f
+            mountPath: "/mnt/ref/gnomad/"
+          - name: 1000g-pon-data-f
+            mountPath: "/mnt/ref/1000g/"

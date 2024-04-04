@@ -1,0 +1,50 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: arriba-to-oncokb-template
+  namespace: argo
+spec:
+  templates:
+    - name: arriba-to-oncokb
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: arriba-tsv
+          - name: arriba-oncokb-tsv
+      outputs:
+        parameters:
+          - name: arriba-oncokb-tsv
+            value: "{{inputs.parameters.arriba-oncokb-tsv}}"
+      volumes:
+        - name: arriba-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['arriba-tsv'])}}"
+            type: Directory
+        - name: arriba-oncokb-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['arriba-oncokb-tsv'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: arriba-to-oncokb-script
+        image: python:3.11-alpine3.18
+        workingDir: /mnt/input/
+        command: [python]
+        source: |
+          sample_id = "{{inputs.parameters.sample-id}}"
+
+          with open("/mnt/input/{{=sprig.osBase(inputs.parameters['arriba-tsv'])}}", 'rt') as f_in:
+              header = f_in.readline().strip('\n').split('\t')
+              with open("/mnt/output/{{=sprig.osBase(inputs.parameters['arriba-oncokb-tsv'])}}", 'wt') as f_out:
+                  header_rest_str = '\t'.join(header[2:])
+                  f_out.write(f"Tumor_Sample_Barcode\tFusion\t{header_rest_str}\n")
+                  for line in f_in:
+                      line = line.strip('\n').split('\t')
+                      line_rest_str = '\t'.join(line[2:])
+                      gene1, gene2 = line[:2]
+                      f_out.write(f"{sample_id}\t{gene1}-{gene2}\t{line_rest_str}\n")
+
+        volumeMounts:
+          - name: arriba-tsv
+            mountPath: "/mnt/input/"
+          - name: arriba-oncokb-tsv
+            mountPath: "/mnt/output/"

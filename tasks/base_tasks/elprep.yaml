@@ -11,6 +11,7 @@ spec:
           - name: sample-name
           - name: genome-ref
           - name: regions-file
+            default: "."
           - name: dbsnp-elsites-f
           - name: input-bam
           - name: output-bam
@@ -44,8 +45,8 @@ spec:
             type: File
         - name: regions-file
           hostPath:
-            path: "{{inputs.parameters.regions-file}}"
-            type: File
+            path: "{{=sprig.osDir(inputs.parameters['regions-file'])}}"
+            type: Directory
         - name: genome-ref-dir
           hostPath:
             path: "{{=sprig.osDir(inputs.parameters['genome-ref'])}}"
@@ -55,10 +56,16 @@ spec:
             path: "{{inputs.parameters.scratch-dir}}"
             type: DirectoryOrCreate
       script:
-        name: ""
+        name: elprep-script
         image: dceoy/elprep:latest
         command: [sh]
         source: |
+
+          regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
+
+          options=()
+          if [ ! "." = "$regionsFile" ]; then options+=("--target-regions /mnt/input/regions/$regionsFile"); fi
+
           elprep sfm /mnt/input/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
           /mnt/output/{{=sprig.osBase(inputs.parameters['output-bam'])}} \
           --nr-of-threads {{inputs.parameters.thread-count}} \
@@ -67,6 +74,7 @@ spec:
           --bqsr /mnt/output/metrics/{{inputs.parameters.sample-name}}.bqsr.metrics \
           --known-sites /mnt/known-sites/{{=sprig.osBase(inputs.parameters['dbsnp-elsites-f'])}} \
           --reference /mnt/ref/{{=sprig.osBase(inputs.parameters['genome-ref'])}}.elfasta \
+          ${options[@]} \
           --tmp-path /mnt/scratch/ \
           --log-path /mnt/scratch/
         volumeMounts:
@@ -83,4 +91,4 @@ spec:
           - name: genome-ref-dir
             mountPath: "/mnt/ref/"
           - name: regions-file
-            mountPath: "/mnt/input/bed/{{=sprig.osBase(inputs.parameters['regions-file'])}}"
+            mountPath: "/mnt/input/regions/"

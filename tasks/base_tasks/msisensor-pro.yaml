@@ -1,0 +1,48 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: msisensor-pro-template
+  namespace: argo
+spec:
+  entrypoint: msisensor-pro
+  templates:
+    - name: msisensor-pro
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: tcga-baseline
+          - name: input-bam
+          - name: output-dir
+      outputs:
+        parameters:
+          - name: output-tsv
+            value: "{{inputs.parameters.output-dir}}/{{inputs.parameters.sample-id}}_fusions_msi"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+        - name: tcga-baseline
+          hostPath:
+            path: "{{inputs.parameters.tcga-baseline}}"
+            type: File
+      script:
+        name: "msisensor-pro-script"
+        image: pengjia1110/msisensor-pro:latest
+        command: [sh]
+        source: |
+          msisensor-pro pro \
+          -d /ref/msisensor-pro/{{=sprig.osBase(inputs.parameters['tcga-baseline'])}} \
+          -t /mnt/input/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+          -o /mnt/output/{{inputs.parameters.sample-id}}_fusions_msi
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/mnt/input/"
+          - name: output-dir
+            mountPath: "/mnt/output/"
+          - name: tcga-baseline
+            mountPath: "/ref/msisensor-pro/{{=sprig.osBase(inputs.parameters['tcga-baseline'])}}"

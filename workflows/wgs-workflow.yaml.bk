@@ -18,7 +18,6 @@ spec:
           - name: output-rel-dir
           - name: modules-base-dir
           - name: annots-base-dir
-          - name: ref-ver
           - name: thread-count
             default: "8"
       outputs:
@@ -44,10 +43,10 @@ spec:
                   value: "{{inputs.parameters.ref-base-dir}}"
                 - name: ref-ver
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
-          - name: copy-inputs-to-scratch
+          - name: copy-fastq-to-scratch
             templateRef:
               name: copy-inputs-to-scratch
-              template: copy-inputs-to-scratch
+              template: copy-fastq-to-scratch
             arguments:
               parameters:
                 - name: run-data
@@ -146,7 +145,7 @@ spec:
                   value: "{{inputs.parameters.thread-count}}"
                 - name: scratch-dir
                   value: "{{inputs.parameters.scratch-rel-dir}}"
-            depends: "elprep && samtools-index"
+              depeds: "elprep && samtools-index"
             # depends: "elprep && bed-split"
           # - name: haplotypecaller
           #   templateRef:
@@ -186,7 +185,7 @@ spec:
           - name: mosdepth
             templateRef:
               name: mosdepth-template
-              template: mosdepth-exome
+              template: mosdepth-genome
             arguments:
               parameters:
                 - name: sample-id
@@ -195,9 +194,7 @@ spec:
                   value: "{{tasks.elprep.outputs.parameters.output-bam}}"
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}metrics/mosdepth/"
-                - name: regions-bed-f
-                  value: "{{tasks.copy-inputs-to-scratch.outputs.parameters.regions-file}}"
-            depends: "elprep && samtools-index && copy-inputs-to-scratch && verifybamid"
+            depends: "elprep && verifybamid && samtools-index"
           - name: multiqc
             templateRef:
               name: multiqc-template
@@ -207,7 +204,7 @@ spec:
                 - name: input-dir
                   value: "{{inputs.parameters.temp-rel-dir}}"
                 - name: output-dir
-                  value: "{{inputs.parameters.temp-rel-dir}}metrics/"
+                  value: "{{inputs.parameters.output-rel-dir}}metrics/"
             depends: "verifybamid && elprep && mosdepth"
           - name: copy-temp-to-output
             templateRef:
@@ -222,14 +219,20 @@ spec:
                 - name: temp-rel-dir
                   value: "{{inputs.parameters.temp-rel-dir}}"
             depends: "verifybamid && mosdepth && multiqc && deepvariant"
-          - name: clean-scratch
+          - name: collect-qc-data
             templateRef:
-              name: dir-clean-up
-              template: dir-clean-up
+              name: collect-qc-data-templates
+              template: collect-qc-data
             arguments:
               parameters:
-                - name: directory
-                  value: "{{inputs.parameters.scratch-rel-dir}}"
+                - name: sample-id
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: sample-fqs-fnames
+                  value: "[\"{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR1.name')}}\", \"{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR2.name')}}\"]"
+                - name: metrics-dir
+                  value: "{{inputs.parameters.output-rel-dir}}metrics/"
             depends: "copy-temp-to-output"
           - name: cravat
             templateRef:
@@ -247,4 +250,13 @@ spec:
                   value: "{{inputs.parameters.modules-base-dir}}"
                 - name: output-dir # TODO: retrieve base cravat jobs directory
                   value: "/opt/open-cravat/cravat/jobs/{{inputs.parameters.user-id}}/S_{{inputs.parameters.run-id}}"
+            depends: "copy-temp-to-output"
+          - name: clean-scratch
+            templateRef:
+              name: dir-clean-up
+              template: dir-clean-up
+            arguments:
+              parameters:
+                - name: directory
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
             depends: "copy-temp-to-output"

@@ -1,0 +1,90 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: vlod-template
+  namespace: argo
+spec:
+  templates:
+    - name: vlod
+      inputs:
+        parameters:
+          - name: input-bam
+          - name: input-vcf
+          - name: vlod-out-tsv
+          - name: thread-count
+      outputs:
+        parameters:
+          - name: vlod-out-tsv
+            value: "{{inputs.parameters.vlod-out-tsv}}"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: input-vcf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-vcf'])}}"
+            type: Directory
+        - name: vlod-out-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['vlod-out-tsv'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: "vlod-script"
+        image: bergun/vlod:v0.0.1
+        command: [sh]
+        source: |
+          python LOD_edit.py \
+          --input-vcf /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf'])}} \
+          --input-bam /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+          --input-bam-index /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}.bai \
+          --output /mnt/output/{{=sprig.osBase(inputs.parameters['vlod-out-tsv'])}} \
+          --num-processes {{inputs.parameters.thread-count}}
+        volumeMounts:
+          - name: input-vcf
+            mountPath: "/mnt/input/vcf/"
+          - name: input-bam
+            mountPath: "/mnt/input/bam/"
+          - name: vlod-out-tsv
+            mountPath: "/mnt/output/"
+    - name: vlod-merge-with-vcf
+      inputs:
+        parameters:
+          - name: input-vcf
+          - name: input-vlod-tsv
+          - name: vlod-merged-output-vcf
+      outputs:
+        parameters:
+          - name: vlod-merged-output-vcf
+            value: "{{inputs.parameters.vlod-merged-output-vcf}}.gz"
+      volumes:
+        - name: input-vcf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-vcf'])}}"
+            type: Directory
+        - name: input-vlod-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-vlod-tsv'])}}"
+            type: Directory
+        - name: vlod-merged-output-vcf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['vlod-merged-output-vcf'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: "vlod-merge-with-vcf-script"
+        image: bergun/vlod:v0.0.1
+        command: [sh]
+        source: |
+          python merge_vcf_lod.py \
+          /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf'])}} \
+          /mnt/input/vlod/{{=sprig.osBase(inputs.parameters['input-vlod-tsv'])}} \
+          /mnt/output/{{=sprig.osBase(inputs.parameters['vlod-merged-output-vcf'])}};
+          bgzip -f /mnt/output/{{=sprig.osBase(inputs.parameters['vlod-merged-output-vcf'])}};
+          tabix -f -p vcf /mnt/output/{{=sprig.osBase(inputs.parameters['vlod-merged-output-vcf'])}}.gz;
+        volumeMounts:
+          - name: input-vcf
+            mountPath: "/mnt/input/vcf/"
+          - name: input-vlod-tsv
+            mountPath: "/mnt/input/vlod/"
+          - name: vlod-merged-output-vcf
+            mountPath: "/mnt/output/"

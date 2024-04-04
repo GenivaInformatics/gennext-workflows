@@ -2,6 +2,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
   name: complete-workflow-test
+
   namespace: argo
 spec:
   serviceAccountName: gennext-workflows
@@ -12,6 +13,10 @@ spec:
       - name: user-id
       - name: job-id
       - name: process-type
+  podGC:
+    strategy: OnPodSuccess
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node-name}}"
   templates:
     - name: complete-workflow-test
       dag:
@@ -28,20 +33,65 @@ spec:
                   value: "{{workflow.parameters.user-id}}"
                 - name: job-id
                   value: "{{workflow.parameters.job-id}}"
-          - name: hostpath-example
+          - name: get-run-data
             templateRef:
-              name: hostpath-example
+              name: get-run-data
+              template: get-run-data
+            arguments:
+              parameters:
+                - name: job-id
+                  value: "{{workflow.parameters.job-id}}"
+                - name: input-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.input-rel-dir}}"
+            depends: "get-node-config"
+          - name: ces-workflow
+            templateRef:
+              name: ces-workflow
               template: main
             arguments:
               parameters:
-                - name: hostpath-dir
+                - name: run-data
+                  value: "{{tasks.get-run-data.outputs.parameters.run-data}}"
+                - name: input-rel-dir
                   value: "{{tasks.get-node-config.outputs.parameters.input-rel-dir}}"
-            dependencies: [get-node-config]
-  #   volumeMounts:
-  #   - name: my-volume
-  #     mountPath: /mnt
-  # volumes:
-  # - name: my-volume
-  #   emptyDir: {}
-  nodeSelector:
-    kubernetes.io/hostname: "{{workflow.parameters.node-name}}"
+                - name: temp-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.scratch-rel-dir}}"
+                - name: output-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.output-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.ref-base-dir}}"
+                - name: job-id
+                  value: "{{workflow.parameters.job-id}}"
+                - name: thread-count
+                  value: "{{tasks.get-node-config.outputs.parameters.thread-count}}"
+            depends: "get-run-data && get-node-config"
+          - name: cravat
+            templateRef:
+              name: cravat-templates
+              template: cravat-solo-template
+            arguments:
+              parameters:
+                - name: proband-vcf
+                  value: "{{tasks.ces-workflow.outputs.parameters.vcf-dv-output}}"
+                - name: ref-version
+                  value: "{{=jsonpath(tasks['get-run-data'].outputs.parameters['run-data'], '$.refVersion')}}"
+                - name: annotators
+                  value: "intervar cadd"
+                - name: modules-dir
+                  value: "/opt/open-cravat/cravat/modules/"
+                - name: output-dir # TODO: retrieve base cravat jobs directory
+                  value: "/opt/open-cravat/cravat/jobs/{{workflow.parameters.user-id}}/S_{{workflow.parameters.job-id}}"
+            depends: "ces-workflow && get-run-data"
+          - name: set-state-completed
+            templateRef:
+              name: change-run-state-template
+              template: change-run-state
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{workflow.parameters.job-id}}"
+                - name: run-state
+                  value: "completed"
+            depends: "cravat"

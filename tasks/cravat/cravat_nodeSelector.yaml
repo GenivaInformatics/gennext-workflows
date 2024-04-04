@@ -1,0 +1,165 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cravat-templates-nodeselect
+spec:
+  templates:
+    - name: cravat-solo-template-nodeselect
+      nodeSelector:
+          kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      inputs:
+        parameters:
+          - name: proband-vcf
+          - name: ref-version
+          - name: annotators
+          - name: modules-dir
+            default: "/opt/open-cravat/cravat/modules"
+          - name: node-name
+          - name: output-dir
+      volumes:
+        - name: proband-vcf
+          hostPath:
+            path: "{{inputs.parameters.proband-vcf}}"
+            type: File
+        - name: modules-dir
+          hostPath:
+            path: "{{inputs.parameters.modules-dir}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: cravat-solo
+        image: bergun/gennext-cravat:0.1.7a-alpha
+        command: [sh]
+        source: |
+          #!/bin/sh
+          for ext in crg crm crs crv crx err status.json filter_session.json log sqlite var; do rm {{inputs.parameters.output-dir}}/*.$ext; done;
+          oc run \
+          "/mnt/input/{{=sprig.osBase(inputs.parameters['proband-vcf'])}}" \
+          -a {{inputs.parameters.annotators}} \
+          -l {{inputs.parameters.ref-version}} \
+          --skip reporter \
+          --temp-files \
+          --cleanrun \
+          -d "{{inputs.parameters.output-dir}}"
+        volumeMounts:
+          - name: proband-vcf
+            mountPath: "/mnt/input/{{=sprig.osBase(inputs.parameters['proband-vcf'])}}"
+          - name: output-dir
+            mountPath: "{{inputs.parameters.output-dir}}"
+          - name: modules-dir
+            mountPath: "/opt/open-cravat/cravat/modules"
+    # - name: cravat-duo-template
+    #   inputs:
+    #     parameters:
+    #       - name: proband-vcf
+    #       - name: case-vcf
+    #       - name: ref-version
+    #       - name: annotators
+    #       - name: modules-dir
+    #         default: "/opt/open-cravat/cravat/modules"
+    #       - name: output-dir
+    #   volumes:
+    #     - name: proband-vcf
+    #       hostPath:
+    #         path: "{{inputs.parameters.proband-vcf}}"
+    #         type: File
+    #     - name: case-vcf
+    #       hostPath:
+    #         path: "{{inputs.parameters.case-vcf}}"
+    #         type: File
+    #     - name: modules-dir
+    #       hostPath:
+    #         path: "{{inputs.parameters.modules-dir}}"
+    #         type: Directory
+    #     - name: output-dir
+    #       hostPath:
+    #         path: "{{inputs.parameters.output-dir}}"
+    #         type: DirectoryOrCreate
+    #   script:
+    #     name: cravat-duo
+    #     image: bergun/gennext-cravat:0.1.7a-alpha
+    #     command: [sh]
+    #     source: |
+    #       #!/bin/sh
+    #       for ext in crg crm crs crv crx err status.json filter_session.json log sqlite var; do rm {{inputs.parameters.output-dir}}/*.$ext; done;
+    #       oc run \
+    #       "/mnt/input/{{=sprig.osBase(inputs.parameters['case-vcf'])}}" \
+    #       "/mnt/input/{{=sprig.osBase(inputs.parameters['proband-vcf'])}}" \
+    #       -a {{inputs.parameters.annotators}} \
+    #       -l {{inputs.parameters.ref-version}} \
+    #       --skip reporter \
+    #       --temp-files \
+    #       --cleanrun \
+    #       -d "{{inputs.parameters.output-dir}}"
+    #     volumeMounts:
+    #       - name: proband-vcf
+    #         mountPath: "/mnt/input/{{=sprig.osBase(inputs.parameters['proband-vcf'])}}"
+    #       - name: case-vcf
+    #         mountPath: "/mnt/input/{{=sprig.osBase(inputs.parameters['case-vcf'])}}"
+    #       - name: output-dir
+    #         mountPath: "{{inputs.parameters.output-dir}}"
+    #       - name: modules-dir
+    #         mountPath: "/opt/open-cravat/cravat/modules"
+    # - name: cravat-trio-template
+    #   inputs:
+    #     parameters:
+    #       - name: proband-vcf
+    #       - name: mother-vcf
+    #       - name: father-vcf
+    #       - name: ref-version
+    #       - name: annotators
+    #       - name: modules-dir
+    #         default: "/opt/open-cravat/cravat/modules"
+    #       - name: output-dir
+    #   volumes:
+    #     - name: proband-vcf
+    #       hostPath:
+    #         path: "{{inputs.parameters.proband-vcf}}"
+    #         type: File
+    #     - name: mother-vcf
+    #       hostPath:
+    #         path: "{{inputs.parameters.mother-vcf}}"
+    #         type: File
+    #     - name: father-vcf
+    #       hostPath:
+    #         path: "{{inputs.parameters.father-vcf}}"
+    #         type: File
+    #     - name: modules-dir
+    #       hostPath:
+    #         path: "{{inputs.parameters.modules-dir}}"
+    #         type: Directory
+    #     - name: output-dir
+    #       hostPath:
+    #         path: "{{inputs.parameters.output-dir}}"
+    #         type: DirectoryOrCreate
+    #   script:
+    #     name: cravat-trio
+    #     image: bergun/gennext-cravat:0.1.7a-alpha
+    #     command: [sh]
+    #     source: |
+    #       #!/bin/sh
+    #       for ext in crg crm crs crv crx err status.json filter_session.json log sqlite var; do rm {{inputs.parameters.output-dir}}/*.$ext; done;
+    #       oc run \
+    #       "/mnt/input/{{=sprig.osBase(inputs.parameters['father-vcf'])}}" \
+    #       "/mnt/input/{{=sprig.osBase(inputs.parameters['mother-vcf'])}}" \
+    #       "/mnt/input/{{=sprig.osBase(inputs.parameters['proband-vcf'])}}" \
+    #       -a {{inputs.parameters.annotators}} \
+    #       -l {{inputs.parameters.ref-version}} \
+    #       --skip reporter \
+    #       --temp-files \
+    #       --cleanrun \
+    #       -d "{{inputs.parameters.output-dir}}"
+    #     volumeMounts:
+    #       - name: proband-vcf
+    #         mountPath: "/mnt/input/{{=sprig.osBase(inputs.parameters['proband-vcf'])}}"
+    #       - name: mother-vcf
+    #         mountPath: "/mnt/input/{{=sprig.osBase(inputs.parameters['mother-vcf'])}}"
+    #       - name: father-vcf
+    #         mountPath: "/mnt/input/{{=sprig.osBase(inputs.parameters['father-vcf'])}}"
+    #       - name: output-dir
+    #         mountPath: "{{inputs.parameters.output-dir}}"
+    #       - name: modules-dir
+    #         mountPath: "/opt/open-cravat/cravat/modules"

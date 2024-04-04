@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: change-run-state-template
+spec:
+  templates:
+    - name: change-run-state
+      inputs:
+        parameters:
+          - name: run-id
+          - name: run-state
+
+      script:
+        name: "change-run-state"
+        image: blairy/requests
+        command: [python]
+        source: |
+          import os
+          token = os.environ["GENNEXT_CLUSTER_TOKEN"]
+          addr = "gennext-backend.gennext-dev.svc.cluster.local:3030"
+          url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/state"
+          import requests
+          res = requests.post(url, json={"state": "{{inputs.parameters.run-state}}", "token": token })
+          if res.status_code != 200:
+            raise Exception(res.text)
+        env:
+          - name: GENNEXT_CLUSTER_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: gennext-cluster-secrets
+                key: gennext_cluster_token
