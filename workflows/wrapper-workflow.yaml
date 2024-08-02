@@ -83,7 +83,8 @@ spec:
           - name: wes-workflow
             when: "'{{workflow.parameters.process-type}}' == 'wes'"
             templateRef:
-              name: wes-workflow
+              # name: wes-workflow
+              name: germline-wes-gpu-workflow
               template: main
             arguments:
               parameters:
@@ -116,9 +117,12 @@ spec:
             depends: "get-run-data && get-node-config"
           - name: wgs-workflow
             when: "'{{workflow.parameters.process-type}}' == 'wgs'"
+            # templateRef:
+            #   name: wgs-workflow
+            #   template: main
             templateRef:
-              name: wgs-workflow
-              template: main
+              name: germline-wgs-gpu-workflow
+              template: germline-wgs-gpu-fastq
             arguments:
               parameters:
                 - name: user-id
@@ -152,7 +156,7 @@ spec:
             when: "'{{workflow.parameters.process-type}}' == 'som-test-tumor'"
             templateRef:
               name: somatic-testing-workflow
-              template: somatic-testing-tumor
+              template: main-dna
             arguments:
               parameters:
                 - name: user-id
@@ -178,7 +182,10 @@ spec:
             when: "'{{workflow.parameters.process-type}}' == 'som-test-rna'"
             templateRef:
               name: somatic-testing-workflow
-              template: somatic-testing-rna
+              template: main-rna
+            # templateRef:
+            #   name: somatic-testing-workflow
+            #   template: somatic-testing-rna
             arguments:
               parameters:
                 - name: user-id
@@ -204,7 +211,8 @@ spec:
             when: "'{{workflow.parameters.process-type}}' == 'som-test-tumor-rna'"
             templateRef:
               name: somatic-testing-workflow
-              template: somatic-testing-tumor-rna
+              # template: somatic-testing-tumor-rna
+              template: main-dna-rna
             arguments:
               parameters:
                 - name: user-id

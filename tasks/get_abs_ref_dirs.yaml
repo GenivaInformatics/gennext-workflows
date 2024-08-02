@@ -82,6 +82,12 @@ spec:
           - name: msisensor-pro-baseline
             valueFrom:
               path: "/tmp/{{inputs.parameters.ref-ver}}.rna.msisensor-pro.baseline"
+          - name: chrom-sizes
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.chrom.sizes"
+          - name: gene-annotation-gtf
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.genes.annotation"
       volumes:
         - name: gennext-references
           configMap:

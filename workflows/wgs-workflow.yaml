@@ -5,7 +5,7 @@ metadata:
 spec:
   entrypoint: main
   templates:
-    - name: main
+    - name: wgs-fastq-workflow
       inputs:
         parameters:
           - name: user-id
@@ -174,7 +174,7 @@ spec:
                   value: "{{inputs.parameters.scratch-rel-dir}}manta/"
                 - name: thread-count
                   value: "{{inputs.parameters.thread-count}}"
-            depends: "elprep && samtools-index"
+            depends: "deepvariant && elprep && samtools-index"
           - name: annotsv
             templateRef:
               name: annotsv-template
@@ -306,3 +306,157 @@ spec:
                 - name: directory
                   value: "{{inputs.parameters.scratch-rel-dir}}"
             depends: "copy-temp-to-output"
+    - name: wgs-vcf-workflow
+      inputs:
+        parameters:
+          - name: user-id
+          - name: run-id
+          - name: run-data
+          - name: input-rel-dir
+          - name: ref-base-dir
+          - name: temp-rel-dir
+          - name: scratch-rel-dir
+          - name: output-rel-dir
+          - name: modules-base-dir
+          - name: annots-base-dir
+          - name: thread-count
+            default: "8"
+      dag:
+        tasks:
+          # - name: get-abs-ref-dirs
+          #   templateRef:
+          #     name: get-abs-ref-dirs
+          #     template: get-abs-ref-dirs
+          #   arguments:
+          #     parameters:
+          #       - name: ref-base-dir
+          #         value: "{{inputs.parameters.ref-base-dir}}"
+          #       - name: ref-ver
+          #         value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
+          - name: copy-vcf-to-output
+            templateRef:
+              name: copy-inputs-to-scratch
+              template: copy-vcf-to-scratch
+            arguments:
+              parameters:
+                - name: vcf
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.vcf.name')}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.output-rel-dir}}/vcf/"
+          - name: cravat
+            templateRef:
+              name: cravat-templates
+              template: cravat-solo-template
+            arguments:
+              parameters:
+                - name: proband-vcf
+                  value: "{{tasks.copy-vcf-to-output.outputs.parameters.vcf}}"
+                - name: ref-version
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
+                - name: annotators
+                  value: "intervar cadd omim turkish_variome clinvar clinvar_acmg gme clinpred"
+                - name: modules-dir
+                  value: "{{inputs.parameters.modules-base-dir}}"
+                - name: output-dir # TODO: retrieve base cravat jobs directory
+                  value: "{{inputs.parameters.annots-base-dir}}/{{inputs.parameters.user-id}}/S_{{inputs.parameters.run-id}}"
+            depends: "copy-vcf-to-output"
+    - name: main
+      inputs:
+        parameters:
+          - name: user-id
+          - name: run-id
+          - name: run-data
+          - name: input-rel-dir
+          - name: ref-base-dir
+          - name: temp-rel-dir
+          - name: scratch-rel-dir
+          - name: output-rel-dir
+          - name: modules-base-dir
+          - name: annots-base-dir
+          - name: thread-count
+            default: "8"
+      dag:
+        tasks:
+          # - name: wgs-bam-workflow
+          #   when: "{{=jsonpath(inputs.parameters['run-data'], '$.dataType')}} == 'bam'"
+          #   template: wgs-bam-workflow
+          #   arguments:
+          #     parameters:
+          #       - name: user-id
+          #         value: "{{inputs.parameters.user-id}}"
+          #       - name: run-id
+          #         value: "{{inputs.parameters.run-id}}"
+          #       - name: run-data
+          #         value: "{{inputs.parameters.run-data}}"
+          #       - name: input-rel-dir
+          #         value: "{{inputs.parameters.input-rel-dir}}"
+          #       - name: ref-base-dir
+          #         value: "{{inputs.parameters.ref-base-dir}}"
+          #       - name: temp-rel-dir
+          #         value: "{{inputs.parameters.temp-rel-dir}}"
+          #       - name: scratch-rel-dir
+          #         value: "{{inputs.parameters.scratch-rel-dir}}"
+          #       - name: output-rel-dir
+          #         value: "{{inputs.parameters.output-rel-dir}}"
+          #       - name: modules-base-dir
+          #         value: "{{inputs.parameters.modules-base-dir}}"
+          #       - name: annots-base-dir
+          #         value: "{{inputs.parameters.annots-base-dir}}"
+          #       - name: thread-count
+          #         value: "{{inputs.parameters.thread-count}}"
+          - name: wgs-fastq-workflow
+            when: "{{=jsonpath(inputs.parameters['run-data'], '$.dataType')}} == 'fastq'"
+            template: wgs-fastq-workflow
+            arguments:
+              parameters:
+                - name: user-id
+                  value: "{{inputs.parameters.user-id}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: run-data
+                  value: "{{inputs.parameters.run-data}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+                - name: output-rel-dir
+                  value: "{{inputs.parameters.output-rel-dir}}"
+                - name: modules-base-dir
+                  value: "{{inputs.parameters.modules-base-dir}}"
+                - name: annots-base-dir
+                  value: "{{inputs.parameters.annots-base-dir}}"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+          - name: wgs-vcf-workflow
+            when: "{{=jsonpath(inputs.parameters['run-data'], '$.dataType')}} == 'vcf'"
+            template: wgs-vcf-workflow
+            arguments:
+              parameters:
+                - name: user-id
+                  value: "{{inputs.parameters.user-id}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: run-data
+                  value: "{{inputs.parameters.run-data}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+                - name: output-rel-dir
+                  value: "{{inputs.parameters.output-rel-dir}}"
+                - name: modules-base-dir
+                  value: "{{inputs.parameters.modules-base-dir}}"
+                - name: annots-base-dir
+                  value: "{{inputs.parameters.annots-base-dir}}"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"

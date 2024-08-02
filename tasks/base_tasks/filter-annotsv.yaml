@@ -104,7 +104,7 @@ spec:
                         values = line.strip().split('\t')
                         values[svtype_idx+1:svtype_idx+1] = ['','','']
                         gene = values[gene_idx]
-                        if values[annot_mode_idx] == 'split' and gene not in sv_genes_list:
+                        if values[annot_mode_idx] == 'split'and gene not in sv_genes_list:
                             continue
                         values[chrom_idx] = 'chr' + values[chrom_idx]
 
@@ -131,3 +131,105 @@ spec:
             mountPath: "/mnt/output/filtered/"
           - name: annotsv-oncokb-out-tsv
             mountPath: "/mnt/output/oncokb/"
+    - name: annotsv-to-oncokb-format
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: annotsv-tsv
+          - name: annotsv-filtered-out-tsv
+          - name: annotsv-oncokb-out-tsv
+      outputs:
+        parameters:
+          - name: annotsv-filtered-out-tsv
+            value: "{{inputs.parameters.annotsv-filtered-out-tsv}}"
+          - name: annotsv-oncokb-out-tsv
+            value: "{{inputs.parameters.annotsv-oncokb-out-tsv}}"
+      volumes:
+        - name: annotsv-tsv
+          hostPath:
+            path: "{{inputs.parameters.annotsv-tsv}}"
+            type: File
+        - name: annotsv-filtered-out-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['annotsv-filtered-out-tsv'])}}"
+            type: DirectoryOrCreate
+        - name: annotsv-oncokb-out-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['annotsv-oncokb-out-tsv'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: filter-annotsv-script
+        image: quay.io/biocontainers/pyranges:0.0.129--pyh7cba7a3_0
+        workingDir: /mnt/input/
+        command: [python]
+        source: |
+          import pandas as pd
+
+          sample_id = "{{inputs.parameters.sample-id}}"
+          tsv_file = "/mnt/input/annotsv/{{=sprig.osBase(inputs.parameters['annotsv-tsv'])}}"
+          tsv_filtered_file = "/mnt/output/filtered/{{=sprig.osBase(inputs.parameters['annotsv-filtered-out-tsv'])}}"
+          tsv_oncokb_file = "/mnt/output/oncokb/{{=sprig.osBase(inputs.parameters['annotsv-oncokb-out-tsv'])}}"
+
+
+          annotsv_to_oncokb_mapping = {
+                  "DEL": "DELETION",
+                  "INS": "INSERTION",
+                  "DUP": "DUPLICATION",
+                  "INV": "INVERSION",
+                  "CNV": "UNKNOWN",  # or DUPLICATION, depending on the context
+                  "BND": "UNKNOWN",  # or TRANSLOCATION/FUSION, depending on the context
+                  "LINE1": "UNKNOWN",
+                  "SVA": "UNKNOWN",
+                  "ALU": "UNKNOWN"
+          }
+
+
+          # select columns for oncokb annotation, filter by genes lists
+          with open(tsv_file, 'r') as tsvfile:
+            with open(tsv_filtered_file, 'w') as filtered_tsvfile:
+                with open(tsv_oncokb_file, 'w') as oncokb_tsvfile:
+                    header = tsvfile.readline().strip().split("\t")
+                    svtype_idx = header.index('SV_type')
+                    header[svtype_idx+1:svtype_idx+1] = ['Paired_Reads', 'Split_Reads', 'Split_Reads_Mates']
+                    svtype_idx = header.index('SV_type')
+                    annotsv_id_idx = header.index('AnnotSV_ID')
+                    chrom_idx = header.index('SV_chrom')
+                    sample_data_idx = header.index(sample_id)
+                    annot_mode_idx = header.index('Annotation_mode')
+                    gene_idx = header.index('Gene_name')
+                    format_idx = header.index('FORMAT')
+                    pr_idx = header.index('Paired_Reads')
+                    sr_idx = header.index('Split_Reads')
+                    srm_idx = header.index('Split_Reads_Mates')
+
+                    oncokb_out_header_cols = ['AnnotSV_ID', 'GeneA', 'GeneB', 'Sv_Type']
+                    oncokb_tsvfile.write("\t".join(oncokb_out_header_cols) + "\n")
+
+                    header[sample_data_idx] = "SAMPLE_DATA"
+                    filtered_tsvfile.write("\t".join(header) + "\n")
+
+                    while line := tsvfile.readline():
+                        values = line.strip().split('\t')
+                        values[svtype_idx+1:svtype_idx+1] = ['','','']
+                        gene = values[gene_idx]
+                        values[chrom_idx] = 'chr' + values[chrom_idx]
+
+                        evidence_format = values[format_idx].split(":")
+                        evidence_data = values[sample_data_idx].split(":")
+                        evidence_dict = dict(zip(evidence_format, evidence_data))
+
+                        values[pr_idx] = evidence_dict.get('PR', '')
+                        values[sr_idx] = evidence_dict.get('SR', '')
+                        values[srm_idx] = evidence_dict.get('SRM', '')
+
+                        if values[annot_mode_idx] == 'split':
+                          oncokb_tsvfile.write("\t".join([values[annotsv_id_idx], gene, gene, annotsv_to_oncokb_mapping.get(values[svtype_idx], "UNKNOWN")]) + "\n")
+                        filtered_tsvfile.write("\t".join(values) + "\n")
+
+        volumeMounts:
+          - name: annotsv-tsv
+            mountPath: "/mnt/input/annotsv/{{=sprig.osBase(inputs.parameters['annotsv-tsv'])}}"
+          - name: annotsv-oncokb-out-tsv
+            mountPath: "/mnt/output/oncokb/"
+          - name: annotsv-filtered-out-tsv
+            mountPath: "/mnt/output/filtered/"

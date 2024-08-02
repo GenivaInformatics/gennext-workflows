@@ -176,47 +176,49 @@ spec:
           CREATE TABLE cancervar_snv AS FROM read_csv_auto('/mnt/input/cancervar_snv.tsv', header=True, sep='\t', sample_size=-1);
           CREATE VIEW combined_snv AS
           SELECT
-            CONCAT('chr', cancervar_snv."#Chr") AS Chrom,
-            cancervar_snv."Start",
-            cancervar_snv."End",
+            cancervar_snv_with_row_ids."row_id",
+            CONCAT('chr', cancervar_snv_with_row_ids."#Chr") AS Chrom,
+            cancervar_snv_with_row_ids."Start",
+            cancervar_snv_with_row_ids."End",
             oncokb_snv."Reference_Allele" AS Ref,
-            cancervar_snv."Alt",
-            oncokb_snv."{{inputs.parameters.filter-column-name}}" AS "Filter",
-            cancervar_snv."Ref.Gene" AS "Gene.refGene",
-            cancervar_snv."Func.refGene",
-            cancervar_snv."ExonicFunc.refGene",
+            cancervar_snv_with_row_ids."Alt",
+            oncokb_snv."Otherinfo10" AS "Filter",
+            -- STRING_SPLIT(oncokb_snv."Otherinfo10", ';') AS "Filter",
+            cancervar_snv_with_row_ids."Ref.Gene" AS "Gene.refGene",
+            cancervar_snv_with_row_ids."Func.refGene",
+            cancervar_snv_with_row_ids."ExonicFunc.refGene",
             oncokb_snv."tx",
             oncokb_snv."exon",
             oncokb_snv."txChange",
             oncokb_snv."aaChange",
             oncokb_snv."Variant_Type",
             oncokb_snv."avsnp150",
-            cancervar_snv."clinvar: Clinvar",
-            cancervar_snv."CancerVar: CancerVar and Evidence",
+            cancervar_snv_with_row_ids."clinvar: Clinvar",
+            cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence",
             REPLACE(
             SUBSTRING(
-                cancervar_snv."CancerVar: CancerVar and Evidence"
-                FROM POSITION('#' IN cancervar_snv."CancerVar: CancerVar and Evidence") + 1
-                FOR POSITION(' ' IN SUBSTRING(cancervar_snv."CancerVar: CancerVar and Evidence" FROM POSITION('#' IN cancervar_snv."CancerVar: CancerVar and Evidence"))) - 1
+                cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence"
+                FROM POSITION('#' IN cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence") + 1
+                FOR POSITION(' ' IN SUBSTRING(cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence" FROM POSITION('#' IN cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence"))) - 1
             ),
             '_', ' '
             ) AS "CancerVar: Tier",
             (
             SELECT STRING_AGG(DISTINCT CONCAT('CBP', i + 1), ', ')
             FROM generate_series(0, 11) as gs(i)
-            WHERE TRIM(SPLIT_PART(SPLIT_PART(SPLIT_PART(cancervar_snv."CancerVar: CancerVar and Evidence", 'EVS=[', 2), ']', 1), ',', gs.i+1)) ~ '^[0-9]+$' AND
-                    CAST(TRIM(SPLIT_PART(SPLIT_PART(SPLIT_PART(cancervar_snv."CancerVar: CancerVar and Evidence", 'EVS=[', 2), ']', 1), ',', gs.i+1)) AS INTEGER) > 0
+            WHERE TRIM(SPLIT_PART(SPLIT_PART(SPLIT_PART(cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence", 'EVS=[', 2), ']', 1), ',', gs.i+1)) ~ '^[0-9]+$' AND
+                    CAST(TRIM(SPLIT_PART(SPLIT_PART(SPLIT_PART(cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence", 'EVS=[', 2), ']', 1), ',', gs.i+1)) AS INTEGER) > 0
             ) AS "CancerVar: Evidence",
-            cancervar_snv."cosmic91",
+            cancervar_snv_with_row_ids."cosmic91",
             oncokb_snv."ICGC_Id",
-            SPLIT_PART(oncokb_snv."{{inputs.parameters.sample-column-name}}", ':', 1) AS GT,
-            SPLIT_PART(oncokb_snv."{{inputs.parameters.sample-column-name}}", ':', 2) AS AD,
-            SPLIT_PART(oncokb_snv."{{inputs.parameters.sample-column-name}}", ':', 3) AS AF,
-            SPLIT_PART(oncokb_snv."{{inputs.parameters.sample-column-name}}", ':', 4) AS DP,
-            SPLIT_PART(SPLIT_PART(oncokb_snv."{{inputs.parameters.vlod-column-name}}", 'DET=', 2), ';', 1) AS DET,
+            SPLIT_PART(oncokb_snv."Otherinfo13", ':', 1) AS GT,
+            SPLIT_PART(oncokb_snv."Otherinfo13", ':', 2) AS AD,
+            SPLIT_PART(oncokb_snv."Otherinfo13", ':', 3) AS AF,
+            SPLIT_PART(oncokb_snv."Otherinfo13", ':', 4) AS DP,
+            SPLIT_PART(SPLIT_PART(oncokb_snv."Otherinfo11", 'DET=', 2), ';', 1) AS DET,
             CASE
-              WHEN TRIM(SPLIT_PART(SPLIT_PART(oncokb_snv."{{inputs.parameters.vlod-column-name}}", 'DETS=', 2), ';', 1)) = '' THEN NULL
-              ELSE CAST(SPLIT_PART(SPLIT_PART(oncokb_snv."{{inputs.parameters.vlod-column-name}}", 'DETS=', 2), ';', 1) AS FLOAT)
+              WHEN TRIM(SPLIT_PART(SPLIT_PART(oncokb_snv."Otherinfo11", 'DETS=', 2), ';', 1)) = '' THEN NULL
+              ELSE CAST(SPLIT_PART(SPLIT_PART(oncokb_snv."Otherinfo11", 'DETS=', 2), ';', 1) AS FLOAT)
             END AS DETS,
             oncokb_snv."GENE_IN_ONCOKB",
             oncokb_snv."ONCOGENIC",
@@ -232,22 +234,25 @@ spec:
             oncokb_snv."HIGHEST_RESISTANCE_LEVEL",
             oncokb_snv."TX_CITATIONS",
           FROM
-            cancervar_snv
-          INNER JOIN oncokb_snv ON cancervar_snv."#Chr" = SUBSTRING(oncokb_snv."Chromosome" FROM 4)
-                        AND cancervar_snv."Start" = oncokb_snv."Start_Position"
-                        AND cancervar_snv."End" = oncokb_snv."End_Position"
-                        AND cancervar_snv."Alt" = oncokb_snv."Tumor_Seq_Allele2";
+                      (SELECT ROW_NUMBER() OVER () AS "row_id", * FROM cancervar_snv) AS cancervar_snv_with_row_ids
+                    INNER JOIN oncokb_snv ON cancervar_snv_with_row_ids."#Chr" = SUBSTRING(oncokb_snv."Chromosome" FROM 4)
+                                  AND cancervar_snv_with_row_ids."Start" = oncokb_snv."Start_Position"
+                                  AND cancervar_snv_with_row_ids."End" = oncokb_snv."End_Position"
+                                  AND cancervar_snv_with_row_ids."Alt" = oncokb_snv."Tumor_Seq_Allele2"
+                                  AND cancervar_snv_with_row_ids."Ref" = oncokb_snv."Reference_Allele";
           CREATE VIEW advanced_combined_snv AS
           SELECT
-            CONCAT('chr', cancervar_snv."#Chr") AS Chrom,
-            cancervar_snv."Start",
-            cancervar_snv."End",
+          cancervar_snv_with_row_ids."row_id",
+            CONCAT('chr', cancervar_snv_with_row_ids."#Chr") AS Chrom,
+            cancervar_snv_with_row_ids."Start",
+            cancervar_snv_with_row_ids."End",
             oncokb_snv."Reference_Allele" AS Ref,
-            cancervar_snv."Alt",
-            oncokb_snv."{{inputs.parameters.filter-column-name}}" AS "Filter",
-            cancervar_snv."Ref.Gene" AS "Gene.refGene",
-            cancervar_snv."Func.refGene",
-            cancervar_snv."ExonicFunc.refGene",
+            cancervar_snv_with_row_ids."Alt",
+            oncokb_snv."Otherinfo10" AS "Filter",
+            -- STRING_SPLIT(oncokb_snv."Otherinfo10", ';') AS "Filter",
+            cancervar_snv_with_row_ids."Ref.Gene" AS "Gene.refGene",
+            cancervar_snv_with_row_ids."Func.refGene",
+            cancervar_snv_with_row_ids."ExonicFunc.refGene",
             oncokb_snv."GeneDetail.refGene",
             oncokb_snv."Gene.ensGene",
             oncokb_snv."Func.ensGene",
@@ -259,41 +264,43 @@ spec:
             oncokb_snv."aaChange",
             oncokb_snv."Variant_Type",
             oncokb_snv."avsnp150",
-            cancervar_snv."clinvar: Clinvar",
-            cancervar_snv."CancerVar: CancerVar and Evidence",
+            cancervar_snv_with_row_ids."clinvar: Clinvar",
+            cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence",
             REPLACE(
             SUBSTRING(
-                cancervar_snv."CancerVar: CancerVar and Evidence"
-                FROM POSITION('#' IN cancervar_snv."CancerVar: CancerVar and Evidence") + 1
-                FOR POSITION(' ' IN SUBSTRING(cancervar_snv."CancerVar: CancerVar and Evidence" FROM POSITION('#' IN cancervar_snv."CancerVar: CancerVar and Evidence"))) - 1
+                cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence"
+                FROM POSITION('#' IN cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence") + 1
+                FOR POSITION(' ' IN SUBSTRING(cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence" FROM POSITION('#' IN cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence"))) - 1
             ),
             '_', ' '
             ) AS "CancerVar: Tier",
             (
             SELECT STRING_AGG(DISTINCT CONCAT('CBP', i + 1), ', ')
             FROM generate_series(0, 11) as gs(i)
-            WHERE TRIM(SPLIT_PART(SPLIT_PART(SPLIT_PART(cancervar_snv."CancerVar: CancerVar and Evidence", 'EVS=[', 2), ']', 1), ',', gs.i+1)) ~ '^[0-9]+$' AND
-                    CAST(TRIM(SPLIT_PART(SPLIT_PART(SPLIT_PART(cancervar_snv."CancerVar: CancerVar and Evidence", 'EVS=[', 2), ']', 1), ',', gs.i+1)) AS INTEGER) > 0
+            WHERE TRIM(SPLIT_PART(SPLIT_PART(SPLIT_PART(cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence", 'EVS=[', 2), ']', 1), ',', gs.i+1)) ~ '^[0-9]+$' AND
+                    CAST(TRIM(SPLIT_PART(SPLIT_PART(SPLIT_PART(cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence", 'EVS=[', 2), ']', 1), ',', gs.i+1)) AS INTEGER) > 0
             ) AS "CancerVar: Evidence",
-            cancervar_snv."cosmic91",
+            cancervar_snv_with_row_ids."cosmic91",
             oncokb_snv."ICGC_Id",
-            SPLIT_PART(oncokb_snv."{{inputs.parameters.sample-column-name}}", ':', 1) AS GT,
-            SPLIT_PART(oncokb_snv."{{inputs.parameters.sample-column-name}}", ':', 2) AS AD,
-            SPLIT_PART(oncokb_snv."{{inputs.parameters.sample-column-name}}", ':', 3) AS AF,
-            SPLIT_PART(oncokb_snv."{{inputs.parameters.sample-column-name}}", ':', 4) AS DP,
-            SPLIT_PART(SPLIT_PART(oncokb_snv."{{inputs.parameters.vlod-column-name}}", 'DET=', 2), ';', 1) AS DET,
+            SPLIT_PART(oncokb_snv."Otherinfo13", ':', 1) AS GT,
+            SPLIT_PART(oncokb_snv."Otherinfo13", ':', 2) AS AD,
+            SPLIT_PART(oncokb_snv."Otherinfo13", ':', 3) AS AF,
+            SPLIT_PART(oncokb_snv."Otherinfo13", ':', 4) AS DP,
+            oncokb_snv."Otherinfo7" AS "vcf_ref",
+            oncokb_snv."Otherinfo8" AS "vcf_alt",
+            SPLIT_PART(SPLIT_PART(oncokb_snv."Otherinfo11", 'DET=', 2), ';', 1) AS DET,
             CASE
-                WHEN TRIM(SPLIT_PART(SPLIT_PART(oncokb_snv."{{inputs.parameters.vlod-column-name}}", 'DETS=', 2), ';', 1)) = '' THEN NULL
-                ELSE CAST(SPLIT_PART(SPLIT_PART(oncokb_snv."{{inputs.parameters.vlod-column-name}}", 'DETS=', 2), ';', 1) AS FLOAT)
+                WHEN TRIM(SPLIT_PART(SPLIT_PART(oncokb_snv."Otherinfo11", 'DETS=', 2), ';', 1)) = '' THEN NULL
+                ELSE CAST(SPLIT_PART(SPLIT_PART(oncokb_snv."Otherinfo11", 'DETS=', 2), ';', 1) AS FLOAT)
             END AS DETS,
-            cancervar_snv."OMIM",
-            cancervar_snv."Phenotype_MIM",
-            cancervar_snv."OrphaNumber",
-            cancervar_snv."Orpha",
-            cancervar_snv."Pathway",
-            cancervar_snv."Therap_list",
-            cancervar_snv."Diag_list",
-            cancervar_snv."Prog_list",
+            cancervar_snv_with_row_ids."OMIM",
+            cancervar_snv_with_row_ids."Phenotype_MIM",
+            cancervar_snv_with_row_ids."OrphaNumber",
+            cancervar_snv_with_row_ids."Orpha",
+            cancervar_snv_with_row_ids."Pathway",
+            cancervar_snv_with_row_ids."Therap_list",
+            cancervar_snv_with_row_ids."Diag_list",
+            cancervar_snv_with_row_ids."Prog_list",
             oncokb_snv."esp6500siv2_all",
             oncokb_snv."1000g2015aug_all",
             oncokb_snv."ExAC_ALL",
@@ -431,11 +438,12 @@ spec:
             oncokb_snv."HIGHEST_DX_LEVEL",
             oncokb_snv."PX_CITATIONS",
           FROM
-            cancervar_snv
-          INNER JOIN oncokb_snv ON cancervar_snv."#Chr" = SUBSTRING(oncokb_snv."Chromosome" FROM 4)
-                        AND cancervar_snv."Start" = oncokb_snv."Start_Position"
-                        AND cancervar_snv."End" = oncokb_snv."End_Position"
-                        AND cancervar_snv."Alt" = oncokb_snv."Tumor_Seq_Allele2";
+            (SELECT ROW_NUMBER() OVER () AS "row_id", * FROM cancervar_snv) AS cancervar_snv_with_row_ids
+          INNER JOIN oncokb_snv ON cancervar_snv_with_row_ids."#Chr" = SUBSTRING(oncokb_snv."Chromosome" FROM 4)
+                        AND cancervar_snv_with_row_ids."Start" = oncokb_snv."Start_Position"
+                        AND cancervar_snv_with_row_ids."End" = oncokb_snv."End_Position"
+                        AND cancervar_snv_with_row_ids."Alt" = oncokb_snv."Tumor_Seq_Allele2"
+                        AND cancervar_snv_with_row_ids."Ref" = oncokb_snv."Reference_Allele";
           .exit
         volumeMounts:
           - name: annovar-oncokb-maf
@@ -490,7 +498,7 @@ spec:
               annotsv_sv.Tx,
               annotsv_sv.Tx_start,
               annotsv_sv.Tx_end,
-              annotsv_sv.OMIM_ID,
+              CAST(annotsv_sv.OMIM_ID AS VARCHAR) AS OMIM_ID,
               annotsv_sv.OMIM_phenotype,
               annotsv_sv.OMIM_inheritance,
               annotsv_sv.GnomAD_pLI,
@@ -639,7 +647,7 @@ spec:
               annotsv_sv.GenCC_moi,
               annotsv_sv.GenCC_classification,
               annotsv_sv.GenCC_pmid,
-              annotsv_sv.OMIM_ID,
+              CAST(annotsv_sv.OMIM_ID AS VARCHAR) AS OMIM_ID,
               annotsv_sv.OMIM_phenotype,
               annotsv_sv.OMIM_inheritance,
               annotsv_sv.OMIM_morbid,

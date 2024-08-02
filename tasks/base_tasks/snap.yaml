@@ -50,6 +50,7 @@ spec:
           /mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}} \
           /mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}} \
           -hc \
+          -so \
           -t {{inputs.parameters.thread-count}} \
           -R "{{inputs.parameters.read-group-str}}" \
           -o "/mnt/output/{{=sprig.osBase(inputs.parameters['bam'])}}"

@@ -40,6 +40,8 @@ spec:
         command: [sh]
         source: |
           regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
+          gatk IndexFeatureFile \
+          -I /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-unfiltered-vcf'])}};
           gatk --java-options "-Xmx16G" FilterMutectCalls \
           -R /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['ref-genome-f'])}} \
           -V /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-unfiltered-vcf'])}} \

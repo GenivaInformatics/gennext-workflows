@@ -44,6 +44,7 @@ spec:
         volumeMounts:
           - name: input-rel-dir
             mountPath: /mnt/input
+            type: Directory
       volumes:
         - name: input-rel-dir
           hostPath:

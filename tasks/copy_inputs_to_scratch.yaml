@@ -102,6 +102,7 @@ spec:
             type: DirectoryOrCreate
       inputs:
         parameters:
+          - name: sample-id
           - name: fq-r1
           - name: fq-r2
           - name: input-rel-dir
@@ -117,8 +118,8 @@ spec:
         command: [sh]
         source: |
           #!/bin/sh
-          cp /mnt/input/{{inputs.parameters.fq-r1}} /mnt/scratch/
-          cp /mnt/input/{{inputs.parameters.fq-r2}} /mnt/scratch/
+          cp "/mnt/input/{{inputs.parameters.fq-r1}}" /mnt/scratch/
+          cp "/mnt/input/{{inputs.parameters.fq-r2}}" /mnt/scratch/
         volumeMounts:
           - name: input-rel-dir
             mountPath: /mnt/input/
@@ -147,13 +148,12 @@ spec:
         command: [sh]
         source: |
           #!/bin/sh
-          cp /mnt/input/{{inputs.parameters.vcf}} /mnt/scratch/
+          cp "/mnt/input/{{inputs.parameters.vcf}}" /mnt/scratch/
         volumeMounts:
           - name: input-rel-dir
             mountPath: /mnt/input/
           - name: scratch-rel-dir
             mountPath: /mnt/scratch/
-
     - name: copy-bam-to-scratch
       volumes:
         - name: input-rel-dir
@@ -177,7 +177,7 @@ spec:
         command: [sh]
         source: |
           #!/bin/sh
-          cp /mnt/input/{{inputs.parameters.bam}} /mnt/scratch/
+          cp "/mnt/input/{{inputs.parameters.bam}}" /mnt/scratch/
         volumeMounts:
           - name: input-rel-dir
             mountPath: /mnt/input
@@ -206,7 +206,7 @@ spec:
         command: [sh]
         source: |
           #!/bin/sh
-          cp /mnt/input/{{inputs.parameters.regions-file}} /mnt/scratch/
+          cp "/mnt/input/{{inputs.parameters.regions-file}}" /mnt/scratch/
         volumeMounts:
           - name: input-rel-dir
             mountPath: /mnt/input/

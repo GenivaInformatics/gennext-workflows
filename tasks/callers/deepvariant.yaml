@@ -4,8 +4,207 @@ metadata:
   name: deepvariant-template
   namespace: argo
 spec:
-  entrypoint: deepvariant
   templates:
+    # - name: deepvariant
+    #   inputs:
+    #     parameters:
+    #       - name: input-bam
+    #         # value: ""
+    #       - name: genome-ref-f
+    #         # value: ""
+    #       - name: regions-file
+    #         default: "."
+    #       - name: output-vcf
+    #         # value: ""
+    #       - name: output-g-vcf
+    #         # value: ""
+    #       - name: thread-count
+    #         value: "8"
+    #       - name: scratch-dir
+    #         # value: ""
+    #   outputs:e
+    #     parameters:
+    #       - name: output-vcf
+    #         value: "{{inputs.parameters.output-vcf}}"
+    #       - name: output-g-vcf
+    #         value: "{{inputs.parameters.output-g-vcf}}"
+    #   volumes:
+    #     - name: input-bam
+    #       hostPath:
+    #         path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+    #         type: Directory
+    #     - name: output-vcf
+    #       hostPath:
+    #         path: "{{=sprig.osDir(inputs.parameters['output-vcf'])}}"
+    #         type: DirectoryOrCreate
+    #     - name: output-g-vcf
+    #       hostPath:
+    #         path: "{{=sprig.osDir(inputs.parameters['output-g-vcf'])}}"
+    #         type: DirectoryOrCreate
+    #     - name: regions-file
+    #       hostPath:
+    #         path: "{{=sprig.osDir(inputs.parameters['regions-file'])}}"
+    #         type: Directory
+    #     - name: genome-ref-f
+    #       hostPath:
+    #         path: "{{=sprig.osDir(inputs.parameters['genome-ref-f'])}}"
+    #         type: Directory
+    #     - name: scratch-dir
+    #       hostPath:
+    #         path: "{{inputs.parameters.scratch-dir}}"
+    #         type: Directory
+    #   # nodeSelector:
+    #   #   # by hostname
+    #   #   kubernetes.io/hostname: acurare-01
+    #   script:
+    #     name: "deepvariant-wes"
+    #     # image: google/deepvariant:1.5.0-gpu
+    #     # image: gcr.io/deepvariant-docker/deepvariant:1.5.0-gpu
+    #     image: gcr.io/deepvariant-docker/deepvariant:1.5.0-gpu
+    #     resources:
+    #       # don't use requests for GPUs: https://kubernetes.io/docs/tasks/manage-gpus/scheduling-gpus/
+    #       limits:
+    #         nvidia.com/gpu: 1 # requesting 1 GPU
+    #     # env:
+    #     #   - name: LD_LIBRARY_PATH
+    #     #     value: "/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cublas/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cudnn/lib"
+    #     command: [sh]
+    #     source: |
+
+    #       regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
+    #       options="";
+
+    #       # sprig.osBase returns "." if the path is empty
+    #       # if regionsFile is provided set model_type to WES, else WGS
+    #       if [ ! "." = "$regionsFile" ]
+    #         then
+    #           options="$options --model_type WES"
+    #         else
+    #           options="$options --model_type WGS"
+    #       fi
+    #       # mind the whitespace before --regions
+    #       if [ ! "." = "$regionsFile" ]
+    #         then
+    #           options+=" --regions /mnt/ref/regions/$regionsFile"
+    #       fi
+
+    #       samtools index -@{{inputs.parameters.thread-count}} /input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}};
+    #       /opt/deepvariant/bin/run_deepvariant \
+    #       $options --reads /input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+    #       --ref /input/ref/{{=sprig.osBase(inputs.parameters['genome-ref-f'])}} \
+    #       --num_shards {{inputs.parameters.thread-count}} \
+    #       --intermediate_results_dir /scratch/ \
+    #       --output_vcf /output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf'])}} \
+    #       --output_gvcf /output/gvcf/{{=sprig.osBase(inputs.parameters['output-g-vcf'])}};
+    #     volumeMounts:
+    #       - name: input-bam
+    #         mountPath: "/input/bam/"
+    #       - name: output-vcf
+    #         mountPath: "/output/vcf/"
+    #       - name: output-g-vcf
+    #         mountPath: "/output/gvcf/"
+    #       - name: regions-file
+    #         mountPath: "/input/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}}"
+    #       - name: genome-ref-f
+    #         mountPath: "/input/ref/"
+    #       - name: scratch-dir
+    #         mountPath: "/scratch/"
+    - name: deepvariant-wgs-gpu
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      inputs:
+        parameters:
+          - name: input-bam
+            # value: ""
+          - name: genome-ref-f
+            # value: ""
+          - name: regions-file
+            default: "."
+          - name: output-vcf
+            # value: ""
+          - name: output-g-vcf
+            # value: ""
+          - name: thread-count
+            value: "8"
+          - name: scratch-dir
+            # value: ""
+      outputs:
+        parameters:
+          - name: output-vcf
+            value: "{{inputs.parameters.output-vcf}}"
+          - name: output-g-vcf
+            value: "{{inputs.parameters.output-g-vcf}}"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: output-vcf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-vcf'])}}"
+            type: DirectoryOrCreate
+        - name: output-g-vcf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-g-vcf'])}}"
+            type: DirectoryOrCreate
+        - name: regions-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['regions-file'])}}"
+            type: Directory
+        - name: genome-ref-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['genome-ref-f'])}}"
+            type: Directory
+        - name: scratch-dir
+          hostPath:
+            path: "{{inputs.parameters.scratch-dir}}"
+            type: Directory
+      # nodeSelector:
+      #   # by hostname
+      #   kubernetes.io/hostname: acurare-01
+      script:
+        name: "deepvariant-wgs-gpu"
+        image: google/deepvariant:1.5.0-gpu
+        # image: gcr.io/deepvariant-docker/deepvariant:1.5.0-gpu
+        # image: gcr.io/deepvariant-docker/deepvariant:1.5.0
+        resources:
+          # don't use requests for GPUs: https://kubernetes.io/docs/tasks/manage-gpus/scheduling-gpus/
+          limits:
+            nvidia.com/gpu: 1 # requesting 1 GPU
+        # env:
+        #   - name: LD_LIBRARY_PATH
+        #     value: "/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cublas/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cudnn/lib"
+        command: [sh]
+        source: |
+
+          if [ ! -f /input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}.bai ]; then
+              echo "Index not found for input, indexing!";
+              samtools index -@{{inputs.parameters.thread-count}} /input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}};
+          fi
+
+          /opt/deepvariant/bin/run_deepvariant \
+          --model_type WGS \
+          --reads /input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+          --ref /input/ref/{{=sprig.osBase(inputs.parameters['genome-ref-f'])}} \
+          --num_shards {{inputs.parameters.thread-count}} \
+          --intermediate_results_dir /scratch/ \
+          --output_vcf /output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf'])}} \
+          --output_gvcf /output/gvcf/{{=sprig.osBase(inputs.parameters['output-g-vcf'])}};
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/input/bam/"
+          - name: output-vcf
+            mountPath: "/output/vcf/"
+          - name: output-g-vcf
+            mountPath: "/output/gvcf/"
+          - name: regions-file
+            mountPath: "/input/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}}"
+          - name: genome-ref-f
+            mountPath: "/input/ref/"
+          - name: scratch-dir
+            mountPath: "/scratch/"
     - name: deepvariant
       inputs:
         parameters:
@@ -58,14 +257,14 @@ spec:
       #   # by hostname
       #   kubernetes.io/hostname: acurare-01
       script:
-        name: "deepvariant-wes"
-        # image: google/deepvariant:1.5.0-gpu
+        name: "deepvariant-wes-nogpu"
+        image: google/deepvariant:1.5.0-gpu
         # image: gcr.io/deepvariant-docker/deepvariant:1.5.0-gpu
-        image: gcr.io/deepvariant-docker/deepvariant:1.5.0-gpu
-        resources:
-          # don't use requests for GPUs: https://kubernetes.io/docs/tasks/manage-gpus/scheduling-gpus/
-          limits:
-            nvidia.com/gpu: 1 # requesting 1 GPU
+        # image: gcr.io/deepvariant-docker/deepvariant:1.5.0
+        # resources:
+        #   # don't use requests for GPUs: https://kubernetes.io/docs/tasks/manage-gpus/scheduling-gpus/
+        #   limits:
+        #     nvidia.com/gpu: 1 # requesting 1 GPU
         # env:
         #   - name: LD_LIBRARY_PATH
         #     value: "/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cublas/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cudnn/lib"
@@ -93,6 +292,106 @@ spec:
           /opt/deepvariant/bin/run_deepvariant \
           $options --reads /input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
           --ref /input/ref/{{=sprig.osBase(inputs.parameters['genome-ref-f'])}} \
+          --num_shards {{inputs.parameters.thread-count}} \
+          --intermediate_results_dir /scratch/ \
+          --output_vcf /output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf'])}} \
+          --output_gvcf /output/gvcf/{{=sprig.osBase(inputs.parameters['output-g-vcf'])}};
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/input/bam/"
+          - name: output-vcf
+            mountPath: "/output/vcf/"
+          - name: output-g-vcf
+            mountPath: "/output/gvcf/"
+          - name: regions-file
+            mountPath: "/input/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}}"
+          - name: genome-ref-f
+            mountPath: "/input/ref/"
+          - name: scratch-dir
+            mountPath: "/scratch/"
+    - name: deepvariant-wes-gpu
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      inputs:
+        parameters:
+          - name: input-bam
+            # value: ""
+          - name: genome-ref-f
+            # value: ""
+          - name: regions-file
+            default: "."
+          - name: output-vcf
+            # value: ""
+          - name: output-g-vcf
+            # value: ""
+          - name: thread-count
+            value: "8"
+          - name: scratch-dir
+            # value: ""
+      outputs:
+        parameters:
+          - name: output-vcf
+            value: "{{inputs.parameters.output-vcf}}"
+          - name: output-g-vcf
+            value: "{{inputs.parameters.output-g-vcf}}"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: output-vcf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-vcf'])}}"
+            type: DirectoryOrCreate
+        - name: output-g-vcf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-g-vcf'])}}"
+            type: DirectoryOrCreate
+        - name: regions-file
+          hostPath:
+            path: "{{inputs.parameters.regions-file}}"
+            type: File
+        - name: genome-ref-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['genome-ref-f'])}}"
+            type: Directory
+        - name: scratch-dir
+          hostPath:
+            path: "{{inputs.parameters.scratch-dir}}"
+            type: Directory
+      # nodeSelector:
+      #   # by hostname
+      #   kubernetes.io/hostname: acurare-01
+      script:
+        name: "deepvariant-wes-gpu"
+        image: google/deepvariant:1.5.0-gpu
+        # image: gcr.io/deepvariant-docker/deepvariant:1.5.0-gpu
+        # image: gcr.io/deepvariant-docker/deepvariant:1.5.0
+        resources:
+          # don't use requests for GPUs: https://kubernetes.io/docs/tasks/manage-gpus/scheduling-gpus/
+          limits:
+            nvidia.com/gpu: 1 # requesting 1 GPU
+        # env:
+        #   - name: LD_LIBRARY_PATH
+        #     value: "/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cublas/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cudnn/lib"
+        command: [sh]
+        source: |
+
+          regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
+
+          if [ ! -f /input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}.bai ]; then
+              echo "Index not found for input, indexing!";
+              samtools index -@{{inputs.parameters.thread-count}} /input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}};
+          fi
+
+          samtools index -@{{inputs.parameters.thread-count}} /input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}};
+          /opt/deepvariant/bin/run_deepvariant \
+          $options --reads /input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+          --ref /input/ref/{{=sprig.osBase(inputs.parameters['genome-ref-f'])}} \
+          --model_type WES \
+          --regions /input/regions/$regionsFile \
           --num_shards {{inputs.parameters.thread-count}} \
           --intermediate_results_dir /scratch/ \
           --output_vcf /output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf'])}} \

@@ -33,6 +33,8 @@ spec:
           #     parameter: "{{steps.copy-bam-to-temp.outputs.parameters.bam}}"
           - name: output-vcf-dv
             value: "{{inputs.parameters.output-rel-dir}}vcf/{{inputs.parameters.sample-id}}_dv.vcf.gz"
+          - name: output-vcf-filtered-dv
+            value: "{{inputs.parameters.output-rel-dir}}vcf/{{inputs.parameters.sample-id}}_filtered_dv.vcf.gz"
           - name: output-g-vcf-dv
             value: "{{inputs.parameters.output-rel-dir}}vcf/{{inputs.parameters.sample-id}}_dv.g.vcf.gz"
           - name: bam-recal
@@ -68,7 +70,7 @@ spec:
         command: [sh]
         source: |
           #!/bin/sh
-          rsync -a /mnt/temp/ /mnt/output/ && rm -r /mnt/temp/*
+          rsync -av --no-owner --no-group /mnt/temp/ /mnt/output/ && rm -r /mnt/temp/*
         volumeMounts:
           - name: output-rel-dir
             mountPath: "/mnt/output/"

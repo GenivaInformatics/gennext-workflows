@@ -46,7 +46,7 @@ spec:
           - name: do-filter
             value: "PASS"
           - name: regions-file
-            value: ""
+            value: "."
       outputs:
         parameters:
           - name: output-vcf-f
@@ -62,29 +62,28 @@ spec:
             type: DirectoryOrCreate
         - name: regions-file
           hostPath:
-            path: "{{inputs.parameters.regions-file}}"
-            type: File
+            path: "{{=sprig.osDir(inputs.parameters['regions-file'])}}"
+            type: Directory
       script:
         name: annovar-script
-        image: quay.io/biocontainers/bcftools:1.17--h3cc50cf_1
+        image: quay.io/biocontainers/bcftools:1.20--h8b25389_1
         command: [sh]
         source: |
           regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
           doFilter="{{inputs.parameters.do-filter}}"
 
-          options=()
-          if [ ! "." = "$regionsFile" ]; then options+=("-R /mnt/input/regions/$regionsFile"); fi
-          if [ ! -z "$doFilter" ]; then options+=("-f $doFilter"); fi
+          options=""
+          if [ ! "." = "$regionsFile" ]; then options+=" -R /mnt/input/regions/$regionsFile"; fi
+          if [ ! -z "$doFilter" ]; then options+=" -f $doFilter"; fi
 
           bcftools index -t /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}};
-          # Filter for only PASS variants
           # Remove duplicate variants
           # Sort for duplicate variant removal due to bed region overlap
           # Compress
           # Index
           bcftools view \
           /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}} \
-           ${options[@]} \
+           $options \
           | bcftools sort \
           | bcftools norm -d none - \
           | bgzip -c > /mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf-f'])}};
@@ -95,4 +94,112 @@ spec:
           - name: output-vcf-f
             mountPath: "/mnt/output/"
           - name: regions-file
-            mountPath: "/mnt/input/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}}"
+            mountPath: "/mnt/input/regions/"
+    - name: bcftools-filter-vcf
+      inputs:
+        parameters:
+          - name: input-vcf-f
+          - name: output-vcf-f
+          - name: regions-file
+      outputs:
+        parameters:
+          - name: output-vcf-f
+            value: "{{inputs.parameters.output-vcf-f}}"
+      volumes:
+        - name: input-vcf-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-vcf-f'])}}"
+            type: Directory
+        - name: output-vcf-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-vcf-f'])}}"
+            type: DirectoryOrCreate
+        - name: regions-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['regions-file'])}}"
+            type: Directory
+      script:
+        name: bcftools-filter-vcf-script
+        image: quay.io/biocontainers/bcftools:1.20--h8b25389_1
+        command: [sh]
+        source: |
+          regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
+
+          options=""
+          if [ ! "." = "$regionsFile" ]; then options+=" -R /mnt/input/regions/$regionsFile"; fi
+
+          bcftools index -t /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}};
+          # Filter for PASS, '.' variants
+          # Filter for min DP > 10 and GQ > 15
+          # Remove duplicate variants
+          # Sort for duplicate variant removal due to bed region overlap
+          # Compress
+          # Index
+          bcftools view \
+          /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}} \
+          $options \
+          --include "(FILTER='PASS' | FILTER='.') & (FMT/DP>10) & (FMT/GQ>15)" \
+          | bcftools sort \
+          | bcftools norm -d none - \
+          | bgzip -c > /mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf-f'])}};
+          bcftools index -t /mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf-f'])}}
+        volumeMounts:
+          - name: input-vcf-f
+            mountPath: "/mnt/input/vcf/"
+          - name: output-vcf-f
+            mountPath: "/mnt/output/"
+          - name: regions-file
+            mountPath: "/mnt/input/regions/"
+    - name: bcftools-bgzip-and-index
+      inputs:
+        parameters:
+          - name: input-vcf-f
+      outputs:
+        parameters:
+          - name: output-vcf-gz-f
+            value: "{{inputs.parameters.input-vcf-f}}.gz"
+      volumes:
+        - name: input-vcf-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-vcf-f'])}}"
+            type: Directory
+      script:
+        name: bcftools-bgzip-and-index
+        image: quay.io/biocontainers/bcftools:1.20--h8b25389_1
+        command: [sh]
+        source: |
+          bgzip /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}};
+          bcftools index -t /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}.gz;
+        volumeMounts:
+          - name: input-vcf-f
+            mountPath: "/mnt/input/vcf/"
+    - name: bcftools-bed-bgzip-and-index
+      inputs:
+        parameters:
+          - name: input-bed-f
+          - name: output-bed-gz-f
+      outputs:
+        parameters:
+          - name: output-bed-gz-f
+            value: "{{inputs.parameters.output-bed-gz-f}}"
+      volumes:
+        - name: input-bed-f
+          hostPath:
+            path: "{{inputs.parameters.input-bed-f}}"
+            type: File
+        - name: output-bed-gz-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-bed-gz-f'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: bcftools-bed-bgzip-and-index
+        image: quay.io/biocontainers/bcftools:1.20--h8b25389_1
+        command: [sh]
+        source: |
+          bgzip -c /mnt/input/bed/{{=sprig.osBase(inputs.parameters['input-bed-f'])}} > /mnt/output/bed/{{=sprig.osBase(inputs.parameters['output-bed-gz-f'])}};
+          tabix -p bed /mnt/output/bed/{{=sprig.osBase(inputs.parameters['output-bed-gz-f'])}};
+        volumeMounts:
+          - name: input-bed-f
+            mountPath: "/mnt/input/bed/{{=sprig.osBase(inputs.parameters['input-bed-f'])}}"
+          - name: output-bed-gz-f
+            mountPath: "/mnt/output/bed/"

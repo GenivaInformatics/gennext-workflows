@@ -31,7 +31,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: cravat-solo
-        image: bergun/gennext-cravat:0.1.7a-alpha
+        image: bergun/gennext-cravat:0.2.3-alpha-no_mu
         command: [sh]
         source: |
           #!/bin/sh

@@ -61,3 +61,37 @@ spec:
             mountPath: "/mnt/input/bam/"
           - name: output-bam
             mountPath: "/mnt/output/bam/"
+    - name: samtools-readname-sort
+      inputs:
+        parameters:
+          - name: input-bam
+          - name: output-bam
+          - name: thread-count
+      outputs:
+        parameters:
+          - name: output-bam
+            value: "{{inputs.parameters.output-bam}}"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: output-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-bam'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: "samtools-readname-sort-script"
+        image: quay.io/biocontainers/samtools:1.18--h50ea8bc_1
+        command: [sh]
+        source: |
+          samtools sort \
+          -n \
+          -@{{inputs.parameters.thread-count}} \
+          /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+          -o /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/mnt/input/bam/"
+          - name: output-bam
+            mountPath: "/mnt/output/bam/"
