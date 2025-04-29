@@ -35,6 +35,20 @@ spec:
                   value: "{{inputs.parameters.ref-base-dir}}"
                 - name: ref-ver
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
+          - name: check-file-path
+            templateRef:
+              name: check-file-path
+              template: check-file-path
+            arguments:
+              parameters:
+                - name: input-file-1
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR1RNA.name')}}"
+                - name: input-file-2
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR2RNA.name')}}"
+                - name: input-file-3
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.regionsFileRNA.name')}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
           - name: copy-fastq-to-scratch
             templateRef:
               name: copy-inputs-to-scratch
@@ -42,27 +56,62 @@ spec:
             arguments:
               parameters:
                 - name: fq-r1
-                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR1RNA.name')}}"
+                  # value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR1.name')}}"
+                  value: "{{tasks.check-file-path.outputs.parameters.output-file-1}}"
                 - name: fq-r2
-                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR2RNA.name')}}"
+                  # value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR2.name')}}"
+                  value: "{{tasks.check-file-path.outputs.parameters.output-file-2}}"
                 - name: input-rel-dir
-                  value: "{{inputs.parameters.input-rel-dir}}"
+                  # value: "{{inputs.parameters.input-rel-dir}}"
+                  value: "{{tasks.check-file-path.outputs.parameters.input-rel-dir-1}}"
                 - name: scratch-rel-dir
-                  value: "{{inputs.parameters.scratch-rel-dir}}"
+                  value: "{{inputs.parameters.scratch-rel-dir}}reads/"
+            depends: "check-file-path"
           - name: copy-regions-file-to-scratch
             templateRef:
               name: copy-inputs-to-scratch
-              template: copy-regions-file-to-scratch
+              template: copy-regions-file-to-scratch-v2
             arguments:
               parameters:
-                - name: regions-file
-                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.regionsFileRNA.name')}}"
-                  # value: "A3416642_all_merged_Regions.bed"
+                - name: provided-regions-file
+                  value: "{{tasks.check-file-path.outputs.parameters.output-file-3}}"
+                - name: enrichment-kit-regions-file
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.enrichmentKit.filename')}}"
                 - name: input-rel-dir
-                  value: "{{inputs.parameters.input-rel-dir}}"
+                  value: "{{tasks.check-file-path.outputs.parameters.input-rel-dir-3}}"
                 - name: scratch-rel-dir
                   value: "{{inputs.parameters.scratch-rel-dir}}"
+                - name: ref-regions-dir
+                  value: "{{inputs.parameters.ref-base-dir}}/{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/regions/"
             depends: "copy-fastq-to-scratch"
+          # - name: copy-fastq-to-scratch
+          #   templateRef:
+          #     name: copy-inputs-to-scratch
+          #     template: copy-fastq-to-scratch
+          #   arguments:
+          #     parameters:
+          #       - name: fq-r1
+          #         value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR1RNA.name')}}"
+          #       - name: fq-r2
+          #         value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR2RNA.name')}}"
+          #       - name: input-rel-dir
+          #         value: "{{inputs.parameters.input-rel-dir}}"
+          #       - name: scratch-rel-dir
+          #         value: "{{inputs.parameters.scratch-rel-dir}}"
+          # - name: copy-regions-file-to-scratch
+          #   templateRef:
+          #     name: copy-inputs-to-scratch
+          #     template: copy-regions-file-to-scratch
+          #   arguments:
+          #     parameters:
+          #       - name: regions-file
+          #         value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.regionsFileRNA.name')}}"
+          #         # value: "A3416642_all_merged_Regions.bed"
+          #       - name: input-rel-dir
+          #         value: "{{inputs.parameters.input-rel-dir}}"
+          #       - name: scratch-rel-dir
+          #         value: "{{inputs.parameters.scratch-rel-dir}}"
+          #   depends: "copy-fastq-to-scratch"
           - name: compose-read-group-str
             templateRef:
               name: compose-read-group-str
