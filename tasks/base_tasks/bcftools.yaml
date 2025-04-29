@@ -196,7 +196,8 @@ spec:
         image: quay.io/biocontainers/bcftools:1.20--h8b25389_1
         command: [sh]
         source: |
-          bgzip -c /mnt/input/bed/{{=sprig.osBase(inputs.parameters['input-bed-f'])}} > /mnt/output/bed/{{=sprig.osBase(inputs.parameters['output-bed-gz-f'])}};
+          sort -k1,1V -k2,2n /mnt/input/bed/{{=sprig.osBase(inputs.parameters['input-bed-f'])}} > /tmp/sorted_{{=sprig.osBase(inputs.parameters['input-bed-f'])}};
+          bgzip -c /tmp/sorted_{{=sprig.osBase(inputs.parameters['input-bed-f'])}} > /mnt/output/bed/{{=sprig.osBase(inputs.parameters['output-bed-gz-f'])}};
           tabix -p bed /mnt/output/bed/{{=sprig.osBase(inputs.parameters['output-bed-gz-f'])}};
         volumeMounts:
           - name: input-bed-f

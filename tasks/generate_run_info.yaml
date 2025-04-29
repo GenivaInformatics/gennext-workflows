@@ -1,0 +1,91 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: generate-run-info
+  namespace: argo
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: generate-run-info
+  podGC:
+    strategy: OnPodSuccess
+  templates:
+    - name: generate-run-info
+      inputs:
+        parameters:
+          - name: output-dir
+          - name: node-name
+          - name: user-id
+          - name: run-id
+          - name: sample-uuid
+          - name: sample-id
+          - name: sample-name
+          - name: sample-files
+          - name: process-type
+          - name: file-type
+      volumes:
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      nodeSelector:
+          kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      script:
+        image: python:3.11-alpine3.18
+        command: [python]
+        source: |
+          import json
+          from datetime import datetime, timezone
+
+
+          def get_current_time():
+              # Get the current date and time in UTC
+              now = datetime.now(timezone.utc)
+
+              # Format the datetime with milliseconds and 'Z' at the end
+              return now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+          def generate_run_info(
+              user_id, run_id, sample_uuid, sample_name, sample_id, sample_files, process_type, file_type, node_id
+          ):
+              sample_files = json.loads(sample_files)
+              run_info = {
+                  "samples": [
+                      {
+                          "sampleName": f"{sample_name}",
+                          "sampleId": f"{sample_id}",
+                          "id": f"{sample_uuid}",
+                          "files": sample_files,
+                      }
+                  ],
+                  "processType": f"{process_type}",
+                  "refVersion": "hg38",
+                  "dataType": f"{file_type}",
+                  "genomeBuild": "hg38",
+                  "type": "clientTransferInfoReq",
+                  "enrichmentKit": {"company": None, "filename": None, "name": None, "title": None},
+                  "jobId": f"{run_id}",
+                  "runId": f"{run_id}",
+                  "userId": f"{user_id}",
+                  "userHash": f"{user_id}",
+                  "transferStartTime": f"{get_current_time()}",
+              }
+
+              return run_info
+
+          run_info = generate_run_info(
+              user_id="{{inputs.parameters.user-id}}",
+              run_id="{{inputs.parameters.run-id}}",
+              sample_uuid="{{inputs.parameters.sample-uuid}}",
+              sample_name="{{inputs.parameters.sample-name}}",
+              sample_id="{{inputs.parameters.sample-id}}",
+              sample_files='{{inputs.parameters.sample-files}}', # Single-quoted! (JSON input.)
+              process_type="{{inputs.parameters.process-type}}",
+              file_type="{{inputs.parameters.file-type}}",
+              node_id="{{inputs.parameters.node-name}}",
+          )
+
+          json.dump(run_info, open("/mnt/output/{{inputs.parameters.run-id}}.json", "w"))
+
+        volumeMounts:
+          - name: output-dir
+            mountPath: /mnt/output

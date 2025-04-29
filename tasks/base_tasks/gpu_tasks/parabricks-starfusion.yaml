@@ -1,0 +1,60 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: parabricks-starfusion-template
+spec:
+  templates:
+    - name: parabricks-starfusion
+      # nodeSelector:
+      #   kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: chimeric-junction-file
+          - name: genome-lib-dir
+          - name: output-dir
+          - name: thread-count
+      outputs:
+        parameters:
+          - name: output-dir
+            value: "{{inputs.parameters.output-dir}}"
+          - name: output-fusions-tsv
+            value: "{{inputs.parameters.output-dir}}/{{inputs.parameters.sample-id}}_fusion_predictions.tsv"
+      volumes:
+        - name: chimeric-junction-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['chimeric-junction-file'])}}"
+            type: Directory
+        - name: genome-lib-dir
+          hostPath:
+            path: "{{inputs.parameters.genome-lib-dir}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: "parabricks-starfusion-script"
+        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+        command: [sh]
+        source: |
+          pbrun starfusion \
+            --chimeric-junction /mnt/input/star_output/{{=sprig.osBase(inputs.parameters['chimeric-junction-file'])}} \
+            --genome-lib-dir /mnt/ref/genome_lib/ \
+            --out-prefix {{inputs.parameters.sample-id}}_ \
+            --output-dir /mnt/output/dir/ \
+            --num-threads {{inputs.parameters.thread-count}}
+        volumeMounts:
+          - name: genome-lib-dir
+            mountPath: /mnt/ref/genome_lib/
+          - name: chimeric-junction-file
+            mountPath: /mnt/input/star_output/
+          - name: output-dir
+            mountPath: /mnt/output/dir/

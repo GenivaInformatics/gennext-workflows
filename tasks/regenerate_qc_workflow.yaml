@@ -1,0 +1,42 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: regenerate-qc-workflow
+  namespace: argo
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: main
+  arguments:
+    parameters:
+      - name: node-name
+      - name: user-id
+      - name: job-id
+      - name: process-type
+      - name: file-type
+      - name: sample-id
+  podGC:
+    strategy: OnPodSuccess
+  # retryStrategy:
+  #   limit: "2"
+  #   retryPolicy: "Always"
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node-name}}"
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: get-node-config
+            templateRef:
+              name: get-node-config
+              template: get-node-config
+            arguments:
+              parameters:
+                - name: node-name
+                  value: "{{workflow.parameters.node-name}}"
+                - name: user-id
+                  value: "{{workflow.parameters.user-id}}"
+                - name: job-id
+                  value: "{{workflow.parameters.job-id}}"
+          - name: mosdepth
+            templateRef:
+            

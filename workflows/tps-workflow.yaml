@@ -295,7 +295,7 @@ spec:
                 - name: ref-version
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
                 - name: annotators
-                  value: "intervar cadd omim turkish_variome clinvar clinvar_acmg gme clinpred"
+                  value: "intervar cadd omim turkish_variome clinvar clinvar_acmg gme clinpred alphamissense gnomad4"
                 - name: modules-dir
                   value: "{{inputs.parameters.modules-base-dir}}"
                 - name: output-dir # TODO: retrieve base cravat jobs directory

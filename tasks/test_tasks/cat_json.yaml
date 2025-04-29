@@ -1,0 +1,39 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cat-json
+  namespace: argo
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: cat-json
+  # arguments:
+  #   parameters:
+  #     - name: job-id
+  #     - name: input-rel-dir
+  templates:
+    - name: cat-json
+      nodeSelector:
+        kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      inputs:
+        parameters:
+          # Parameters can also be passed via configmap reference.
+          - name: json-file
+          - name: node-name
+            # value: "{{inputs.parameters.job-id}}"
+      script:
+        image: python:3.11-alpine3.18
+        command: [python]
+        source: |
+          import json
+          from pathlib import Path
+          json_f = Path("/mnt/input/") /  "{{=sprig.osBase(inputs.parameters['json-file'])}}"
+          with open(json_f, "r") as f:
+            print(json.load(f))
+        volumeMounts:
+          - name: json-file
+            mountPath: "/mnt/input/{{=sprig.osBase(inputs.parameters['json-file'])}}"
+      volumes:
+        - name: json-file
+          hostPath:
+            path: "{{inputs.parameters.json-file}}"
+            type: File

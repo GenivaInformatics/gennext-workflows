@@ -1,0 +1,73 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: parabricks-mutect2-template
+spec:
+  templates:
+    - name: parabricks-mutect2-tumor-only
+      # nodeSelector:
+      #   kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      inputs:
+        parameters:
+          - name: input-bam
+          - name: sample-id
+          - name: genome-ref
+          - name: regions-file
+          - name: recal-file
+          - name: output-vcf
+      outputs:
+        parameters:
+          - name: output-vcf
+            value: "{{inputs.parameters.output-vcf}}"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: genome-ref
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['genome-ref'])}}"
+            type: Directory
+        - name: regions-file
+          hostPath:
+            path: "{{inputs.parameters.regions-file}}"
+            type: File
+        - name: recal-file
+          hostPath:
+            path: "{{inputs.parameters.recal-file}}"
+            type: File
+        - name: output-vcf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-vcf'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: "parabricks-bqsr-script"
+        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+        command: [sh]
+        source: |
+          pbrun mutectcaller \
+            --ref /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \
+            --interval-file /mnt/input/bed/{{=sprig.osBase(inputs.parameters['regions-file'])}} \
+            --tumor-name "{{inputs.parameters.sample-id}}" \
+            --in-tumor-bam /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+            --in-tumor-recal-file /mnt/input/recal/{{=sprig.osBase(inputs.parameters['recal-file'])}} \
+            --out-vcf /mnt/output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf'])}} \
+            --mutect-low-memory
+        volumeMounts:
+          - name: genome-ref
+            mountPath: /mnt/ref/genome/
+          - name: regions-file
+            mountPath: /mnt/input/bed/{{=sprig.osBase(inputs.parameters['regions-file'])}}
+          - name: input-bam
+            mountPath: /mnt/input/bam/
+          - name: recal-file
+            mountPath: /mnt/input/recal/{{=sprig.osBase(inputs.parameters['recal-file'])}}
+          - name: output-vcf
+            mountPath: /mnt/output/vcf/

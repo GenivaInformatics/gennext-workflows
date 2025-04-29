@@ -23,6 +23,9 @@ spec:
           - name: read-group-str
             valueFrom:
               path: /tmp/read_group_str.var
+          - name: read-group-str-no-rg-prefix
+            valueFrom:
+              path: /tmp/read_group_str_no_rg_prefix.var
       volumes:
         - name: fq-r1
           hostPath:
@@ -59,6 +62,15 @@ spec:
             .replace("\n", "")
             .replace(" ", "_")
           )
+          RG_str_no_RG_prefix = (
+            f"ID:{RGID}\tSM:{SM}\tPL:{PL}\tLB:{LB}\tPU:{PU}".replace(
+                "\r", ""
+            )
+            .replace("\n", "")
+            .replace(" ", "_")
+          )
           with open("/tmp/read_group_str.var", "w") as f:
             f.write(RG_str)
+          with open("/tmp/read_group_str_no_rg_prefix.var", "w") as f:
+            f.write(RG_str_no_RG_prefix)
           print(RG_str)

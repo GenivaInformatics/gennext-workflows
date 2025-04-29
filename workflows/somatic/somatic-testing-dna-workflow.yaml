@@ -1,0 +1,56 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: somatic-testing-dna-workflow
+spec:
+  templates:
+    - name: somatic-testing-dna
+      inputs:
+        parameters:
+          - name: user-id
+          - name: run-id
+          - name: run-data
+          - name: input-rel-dir
+          - name: ref-base-dir
+          - name: temp-rel-dir
+          - name: scratch-rel-dir
+          - name: output-rel-dir
+          - name: thread-count
+            default: "20"
+      outputs:
+        parameters:
+          - name: bam-output
+            valueFrom:
+              parameter: "{{tasks.elprep.outputs.parameters.output-bam}}"
+          # - name: vcf-hc-output
+          #   valueFrom:
+          #     parameter: "{{tasks.haplotypecaller.outputs.parameters.output-vcf}}"
+          # - name: vcf-dv-output
+          #   valueFrom:
+          #     parameter: "{{tasks.deepvariant.outputs.parameters.output-vcf}}"
+      dag:
+        tasks:
+          - name: get-abs-ref-dirs
+            templateRef:
+              name: get-abs-ref-dirs
+              template: get-abs-ref-dirs
+            arguments:
+              parameters:
+                - name: ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}"
+                - name: ref-ver
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
+          - name: copy-fastq-to-scratch
+            templateRef:
+              name: copy-inputs-to-scratch
+              template: copy-fastq-to-scratch
+            arguments:
+              parameters:
+                - name: fq-r1
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR1.name')}}"
+                - name: fq-r2
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR2.name')}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"

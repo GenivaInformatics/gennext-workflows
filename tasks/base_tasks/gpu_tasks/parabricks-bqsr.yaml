@@ -1,0 +1,144 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: parabricks-bqsr-template
+spec:
+  templates:
+    - name: parabricks-bqsr
+      # nodeSelector:
+      #   kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      inputs:
+        parameters:
+          - name: input-bam
+          - name: genome-ref
+          - name: known-sites
+          - name: output-recal-file
+          - name: regions-file # optional
+            value: "."
+      outputs:
+        parameters:
+          - name: output-recal-file
+            value: "{{inputs.parameters.output-recal-file}}"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: genome-ref
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['genome-ref'])}}"
+            type: Directory
+        - name: known-sites
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['known-sites'])}}"
+            type: Directory
+        - name: regions-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['regions-file'])}}"
+            type: Directory
+        - name: output-recal-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-recal-file'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: "parabricks-bqsr-script"
+        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+        command: [sh]
+        source: |
+          regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
+          options=""
+          if [ ! "." = "$regionsFile" ]; then options="$options --interval-file /mnt/input/regions/$regionsFile"; fi
+
+          pbrun bqsr \
+            --ref /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \
+            --knownSites /mnt/ref/known-sites/{{=sprig.osBase(inputs.parameters['known-sites'])}} \
+            --in-bam /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+            $options \
+            --out-recal-file /mnt/output/recal/{{=sprig.osBase(inputs.parameters['output-recal-file'])}}
+        volumeMounts:
+          - name: genome-ref
+            mountPath: /mnt/ref/genome/
+          - name: known-sites
+            mountPath: /mnt/ref/known-sites/
+          - name: input-bam
+            mountPath: /mnt/input/bam/
+          - name: output-recal-file
+            mountPath: /mnt/output/recal/
+          - name: regions-file
+            mountPath: /mnt/input/regions/
+    - name: parabricks-applybqsr
+      # nodeSelector:
+      #   kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      inputs:
+        parameters:
+          - name: genome-ref
+          - name: input-bam
+          - name: input-recal-file
+          - name: output-bam
+          - name: regions-file # optional
+            value: "."
+      outputs:
+        parameters:
+          - name: output-bam
+            value: "{{inputs.parameters.output-bam}}"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: genome-ref
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['genome-ref'])}}"
+            type: Directory
+        - name: input-recal-file
+          hostPath:
+            path: "{{inputs.parameters.input-recal-file}}"
+            type: File
+        - name: regions-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['regions-file'])}}"
+            type: Directory
+        - name: output-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-bam'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: "parabricks-apply-bqsr-script"
+        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+        command: [sh]
+        source: |
+          regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
+          options=""
+          if [ ! "." = "$regionsFile" ]; then options="$options --interval-file /mnt/input/regions/$regionsFile"; fi
+
+          pbrun applybqsr \
+            --ref /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \
+            --in-bam /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+            --in-recal-file /mnt/input/recal/{{=sprig.osBase(inputs.parameters['input-recal-file'])}} \
+            $options \
+            --out-bam /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}
+        volumeMounts:
+          - name: genome-ref
+            mountPath: /mnt/ref/genome/
+          - name: input-bam
+            mountPath: /mnt/input/bam/
+          - name: input-recal-file
+            mountPath: /mnt/input/recal/{{=sprig.osBase(inputs.parameters['input-recal-file'])}}
+          - name: output-bam
+            mountPath: /mnt/output/bam/
+          - name: regions-file
+            mountPath: /mnt/input/regions/

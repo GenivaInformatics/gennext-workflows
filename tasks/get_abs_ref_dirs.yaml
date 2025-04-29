@@ -103,3 +103,45 @@ spec:
         volumeMounts:
           - name: gennext-references
             mountPath: /tmp/ref-configmap
+    - name: get-abs-pgs-ref-dirs
+      inputs:
+        parameters:
+          # Parameters can also be passed via configmap reference.
+          - name: ref-ver
+            # value: "{{workflow.parameters.ref-ver}}"
+          - name: ref-base-dir
+            # value: "{{workflow.parameters.ref-base-dir}}"
+      outputs:
+        parameters:
+          - name: dbsnp-f
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.dbsnp"
+          - name: pgs-dir
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.pgs"
+          - name: pgs-metadata-f
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.pgs.metadata"
+          - name: pgs-genome-f
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.pgs.genome"
+          - name: pgs-genotype-ref-f
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.pgs.genotype.ref"
+          # REL -> relative
+      volumes:
+        - name: gennext-pgs-references
+          configMap:
+            name: gennext-pgs-references
+      script:
+        image: bash:alpine3.18
+        command: [bash]
+        source: |
+          ls /tmp/ref-configmap;
+          clean_path() {
+          sed -E 's#/+#/#g; s#([^/])$#\1/#';
+          }
+          for i in $(ls /tmp/ref-configmap); do sed -E -e "s#^#$(clean_path <<< {{inputs.parameters.ref-base-dir}})#" <<< read /tmp/ref-configmap/$i > /tmp/$i; done
+        volumeMounts:
+          - name: gennext-pgs-references
+            mountPath: /tmp/ref-configmap

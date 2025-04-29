@@ -9,6 +9,8 @@ spec:
       inputs:
         parameters:
           - name: sample-id
+          - name: thresholds
+            value: "1,5,10,30,50"
           - name: input-bam
           - name: regions-bed-f
           - name: output-dir
@@ -27,17 +29,18 @@ spec:
             type: DirectoryOrCreate
         - name: regions-bed-f
           hostPath:
-            path: "{{inputs.parameters.regions-bed-f}}"
-            type: File
+            path: "{{=sprig.osDir(inputs.parameters['regions-bed-f'])}}"
+            type: Directory
       script:
         name: mosdepth-exome-script
-        image: quay.io/biocontainers/mosdepth:0.3.5--hd299d5a_0
+        image: quay.io/biocontainers/mosdepth:0.3.8--hd299d5a_0
         command: [sh]
         workingDir: /mnt/output
         source: |
           mosdepth \
           -n --fast-mode \
           --by /mnt/input/bed/{{=sprig.osBase(inputs.parameters['regions-bed-f'])}} \
+          --thresholds {{inputs.parameters.thresholds}} \
           {{inputs.parameters.sample-id}} \
           /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}
         volumeMounts:
@@ -46,11 +49,13 @@ spec:
           - name: output-dir
             mountPath: "/mnt/output/"
           - name: regions-bed-f
-            mountPath: "/mnt/input/bed/{{=sprig.osBase(inputs.parameters['regions-bed-f'])}}"
+            mountPath: "/mnt/input/bed/"
     - name: mosdepth-genome
       inputs:
         parameters:
           - name: sample-id
+          - name: thresholds
+            value: "1,5,10,30,50"
           - name: input-bam
           - name: output-dir
       outputs:
@@ -68,14 +73,14 @@ spec:
             type: DirectoryOrCreate
       script:
         name: mosdepth-genome-script
-        image: quay.io/biocontainers/mosdepth:0.3.5--hd299d5a_0
+        image: quay.io/biocontainers/mosdepth:0.3.8--hd299d5a_0
         command: [sh]
         workingDir: /mnt/output
         source: |
-          ls /mnt/input/bam/;
           mosdepth \
           -n --fast-mode \
           --by 500 \
+          --thresholds {{inputs.parameters.thresholds}} \
           {{inputs.parameters.sample-id}} \
           /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}
         volumeMounts:
@@ -83,3 +88,97 @@ spec:
             mountPath: "/mnt/input/bam/"
           - name: output-dir
             mountPath: "/mnt/output/"
+    - name: mosdepth
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: input-bam
+          - name: regions-bed-f
+          - name: output-dir
+      steps:
+      - - name: mosdepth-genome
+          template: mosdepth-genome
+          arguments:
+            parameters:
+              - name: sample-id
+                value: "{{inputs.parameters.sample-id}}"
+              - name: input-bam
+                value: "{{inputs.parameters.input-bam}}"
+              - name: output-dir
+                value: "{{inputs.parameters.output-dir}}"
+          when: "\"{{inputs.parameters.regions-bed-f}}\" == \".\""
+        - name: mosdepth-exome
+          template: mosdepth-exome
+          arguments:
+            parameters:
+              - name: sample-id
+                value: "{{inputs.parameters.sample-id}}"
+              - name: input-bam
+                value: "{{inputs.parameters.input-bam}}"
+              - name: regions-bed-f
+                value: "{{inputs.parameters.regions-bed-f}}"
+              - name: output-dir
+                value: "{{inputs.parameters.output-dir}}"
+          when: "\"{{inputs.parameters.regions-bed-f}}\" != \".\""
+    - name: mosdepth-exome-on-node
+      nodeSelector:
+        kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: input-bam
+          - name: regions-bed-f
+          - name: output-dir
+          - name: node-name
+      outputs:
+        parameters:
+          - name: output-dir
+            value: "{{inputs.parameters.output-dir}}"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+        - name: regions-bed-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['regions-bed-f'])}}"
+            type: Directory
+      script:
+        name: mosdepth-exome-on-node-script
+        image: quay.io/biocontainers/mosdepth:0.3.8--hd299d5a_0
+        command: [sh]
+        workingDir: /mnt/output
+        source: |
+          regionsFile="{{=sprig.osBase(inputs.parameters['regions-bed-f'])}}";
+          options="";
+          cat /mnt/input/bed/$regionsFile | head -n5;
+
+          if [ -f  "/mnt/input/bed/$regionsFile" ]; then
+            echo "found $regionsFile";
+          else
+            echo "did not find $regionsFile";
+            echo "/mnt/input/bed/$regionsFile";
+          fi
+
+          if [ -f  "/mnt/input/bed/$regionsFile" ]; then
+            options+=" --by /mnt/input/bed/$regionsFile"
+          else
+            options+=" --by 500"
+           fi;
+          echo $options;
+          mosdepth \
+          -n --fast-mode \
+          $options \
+          {{inputs.parameters.sample-id}} \
+          /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/mnt/input/bam/"
+          - name: output-dir
+            mountPath: "/mnt/output/"
+          - name: regions-bed-f
+            mountPath: "/mnt/input/bed/"

@@ -15,6 +15,8 @@ spec:
             value: "hg38"
           - name: annotators
             value: "refGene,ensGene,esp6500siv2_all,1000g2015aug_all,exac03,avsnp150,dbnsfp42c,dbscsnv11,dbnsfp31a_interpro,clinvar_20221231,cosmic91,icgc28,gnomad_genome"
+          - name: annotator-opts
+            value: "'-hgvs','-hgvs',,,,,,,,,,,"
           - name: annovardb-dir
       outputs:
         parameters:
@@ -55,9 +57,11 @@ spec:
           perl ./table_annovar.pl \
           /mnt/input/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}} \
           /mnt/annovardb -buildver hg38 \
-          -out "/mnt/output/{{inputs.parameters.sample-id}}" \
-          -protocol $annotators  -operation  $operations \
-          -nastring . --vcfinput --remove
+          --out "/mnt/output/{{inputs.parameters.sample-id}}" \
+          --protocol $annotators  --operation  $operations \
+          --nastring . --vcfinput --remove \
+          --arg {{inputs.parameters.annotator-opts}} \
+          --intronhgvs 20 --polish
         volumeMounts:
           - name: input-vcf-f
             mountPath: "/mnt/input/"

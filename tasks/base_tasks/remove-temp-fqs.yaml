@@ -1,0 +1,63 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: remove-temp-fqs-template
+spec:
+  templates:
+    - name: remove-temp-fqs
+      inputs:
+        parameters:
+          - name: fq-r1
+          - name: fq-r2
+      volumes:
+        - name: fq-r1
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['fq-r1'])}}"
+            type: Directory
+        - name: fq-r2
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['fq-r2'])}}"
+            type: Directory
+      script:
+        name: "remove-temp-fqs-script"
+        image: alpine
+        command: [sh]
+        source: |
+          rm -f /mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}};
+          rm -f /mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}};
+        volumeMounts:
+          - name: fq-r1
+            mountPath: "/mnt/input/r1/"
+          - name: fq-r2
+            mountPath: "/mnt/input/r2/"
+    - name: remove-temp-fqs-on-node
+      nodeSelector:
+        kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      inputs:
+        parameters:
+          - name: fq-r1
+          - name: fq-r2
+          - name: node-name
+      volumes:
+        - name: fq-r1
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['fq-r1'])}}"
+            type: Directory
+        - name: fq-r2
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['fq-r2'])}}"
+            type: Directory
+      script:
+        name: "remove-temp-fqs-script"
+        image: alpine
+        command: [sh]
+        source: |
+          rm -f /mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}};
+          rm -f /mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}};
+          touch /mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}};
+          touch /mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}};
+        volumeMounts:
+          - name: fq-r1
+            mountPath: "/mnt/input/r1/"
+          - name: fq-r2
+            mountPath: "/mnt/input/r2/"

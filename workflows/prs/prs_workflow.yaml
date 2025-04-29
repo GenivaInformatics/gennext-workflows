@@ -1,0 +1,178 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: prs-workflow
+spec:
+  entrypoint: main
+  templates:
+    - name: prs-by-genotype-data
+      inputs:
+        parameters:
+          - name: user-id
+          - name: run-id
+          - name: product-id
+          - name: genotype-file-name
+          - name: input-rel-dir
+          - name: output-rel-dir
+          - name: ref-base-dir
+          - name: scratch-rel-dir
+          - name: temp-rel-dir
+          - name: thread-count
+            default: "8"
+      outputs:
+        parameters:
+          - name: dbs-folder
+            valueFrom:
+              parameter: "{{tasks.gennext-prs.outputs.parameters.output-dbs-folder}}"
+      dag:
+        tasks:
+          - name: get-abs-pgs-ref-dirs
+            templateRef:
+              name: get-abs-ref-dirs
+              template: get-abs-pgs-ref-dirs
+            arguments:
+              parameters:
+                - name: ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}"
+                - name: ref-ver
+                  # value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
+                  value: "hg19"
+          - name: check-file-path
+            templateRef:
+              name: check-file-path
+              template: check-file-path-prs
+            arguments:
+              parameters:
+                - name: input-file-path
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: product-id
+                  value: "{{inputs.parameters.product-id}}"
+          - name: copy-genotype-file-to-scratch
+            templateRef:
+              name: copy-inputs-to-scratch
+              template: copy-genotype-file-to-scratch
+            arguments:
+              parameters:
+                - name: genotype-file
+                  value: "{{tasks.check-file-path.outputs.parameters.output-file-1}}"
+                - name: input-rel-dir
+                  value: "{{tasks.check-file-path.outputs.parameters.input-rel-dir-1}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}/genotype_file/"
+            depends: "check-file-path"
+          # - name: update-genotype-snps
+          #   templateRef:
+          #     name: update-genotype-snps-template
+          #     template: update-genotype-snps
+          #   arguments:
+          #     parameters:
+          #       - name: input-genotype-file
+          #         value: "{{tasks.copy-genotype-file-to-scratch.outputs.parameters.genotype-file}}"
+          #       - name: output-genotype-file
+          #         value: "{{inputs.parameters.temp-rel-dir}}/genotype_file/{{inputs.parameters.product-id}}.tsv"
+          #       - name: dbsnp-file
+          #         value: "{{tasks.get-abs-pgs-ref-dirs.outputs.parameters.dbsnp-f}}"
+          #   depends: "copy-genotype-file-to-scratch && get-abs-pgs-ref-dirs"
+          - name: genotype-conditional-workflow
+            templateRef:
+              name: genotype-conditional-workflow-template
+              template: genotype-conditional-workflow
+            arguments:
+              parameters:
+                - name: input-genotype-file
+                  value: "{{tasks.copy-genotype-file-to-scratch.outputs.parameters.genotype-file}}"
+                - name: input-prs-ref-file
+                  value: "{{tasks.get-abs-pgs-ref-dirs.outputs.parameters.pgs-genotype-ref-f}}"
+                - name: input-fasta-file
+                  value: "{{tasks.get-abs-pgs-ref-dirs.outputs.parameters.pgs-genome-f}}"
+                - name: output-genotype-file
+                  value: "{{inputs.parameters.temp-rel-dir}}/genotype_file/{{inputs.parameters.product-id}}.tsv"
+                - name: input-dbsnp-file
+                  value: "{{tasks.get-abs-pgs-ref-dirs.outputs.parameters.dbsnp-f}}"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "copy-genotype-file-to-scratch && get-abs-pgs-ref-dirs"
+          - name: gennext-prs
+            templateRef:
+              name: gennext-prs-template
+              template: gennext-prs
+            arguments:
+              parameters:
+                - name: input-genotype-file
+                  value: "{{tasks.genotype-conditional-workflow.outputs.parameters.output-genotype-file}}"
+                - name: ref-pgs-folder
+                  value: "{{tasks.get-abs-pgs-ref-dirs.outputs.parameters.pgs-dir}}"
+                - name: ref-pgs-metadata
+                  value: "{{tasks.get-abs-pgs-ref-dirs.outputs.parameters.pgs-metadata-f}}"
+                - name: output-dbs-folder
+                  value: "{{inputs.parameters.temp-rel-dir}}/dbs/"
+                - name: output-json-folder
+                  value: "{{inputs.parameters.scratch-rel-dir}}/json/"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "genotype-conditional-workflow"
+          - name: copy-temp-to-output
+            templateRef:
+              name: copy-temp-to-output
+              template: copy-temp-to-output
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.product-id}}"
+                - name: output-rel-dir
+                  value: "{{inputs.parameters.output-rel-dir}}/{{inputs.parameters.product-id}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+            depends: "gennext-prs"
+          - name: clean-scratch
+            templateRef:
+              name: dir-clean-up
+              template: dir-clean-up
+            arguments:
+              parameters:
+                - name: directory
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+            depends: "copy-temp-to-output"
+    - name: main
+      inputs:
+        parameters:
+          - name: user-id
+          - name: run-id
+          - name: product-id
+          - name: genotype-file-name
+          - name: input-rel-dir
+            default: "/runspace/gennext/data/ref/hg19/"
+          - name: output-rel-dir
+          - name: ref-base-dir
+          - name: scratch-rel-dir
+          - name: temp-rel-dir
+          - name: thread-count
+            default: "8"
+      dag:
+        tasks:
+          - name: prs-workflow
+            template: prs-by-genotype-data
+            arguments:
+              parameters:
+                - name: user-id
+                  value: "{{inputs.parameters.user-id}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: product-id
+                  value: "{{inputs.parameters.product-id}}"
+                - name: genotype-file-name
+                  value: "{{inputs.parameters.genotype-file-name}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+                - name: output-rel-dir
+                  value: "{{inputs.parameters.output-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"

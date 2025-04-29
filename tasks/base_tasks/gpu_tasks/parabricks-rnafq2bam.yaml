@@ -1,0 +1,104 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: parabricks-rnafq2bam-template
+spec:
+  templates:
+    - name: parabricks-rnafq2bam
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: genome-ref
+          # - name: genome-lib-dir
+          - name: input-fq-r1
+          - name: input-fq-r2
+          - name: scratch-dir
+          - name: output-bam
+          - name: output-dir
+          - name: thread-count
+
+      outputs:
+        parameters:
+          - name: output-bam
+            value: "{{inputs.parameters.output-bam}}"
+          - name: output-dir
+            value: "{{inputs.parameters.output-dir}}"
+          - name: output-chimeric-junction-file
+            value: "{{inputs.parameters.output-dir}}/{{inputs.parameters.sample-id}}_Chimeric.out.junction"
+      volumes:
+        - name: input-fq-r1
+          hostPath:
+            path: "{{inputs.parameters.input-fq-r1}}"
+            type: File
+        - name: input-fq-r2
+          hostPath:
+            path: "{{inputs.parameters.input-fq-r2}}"
+            type: File
+        - name: output-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-bam'])}}"
+            type: DirectoryOrCreate
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+        - name: scratch-dir
+          hostPath:
+            path: "{{inputs.parameters.scratch-dir}}"
+            type: DirectoryOrCreate
+        - name: genome-ref
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['genome-ref'])}}"
+            type: Directory
+      script:
+        name: "parabricks-germline-rnafq2bam-script"
+        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+        command: [sh]
+        source: |
+          pbrun rna_fq2bam \
+            --ref /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \
+            --genome-lib-dir /mnt/ref/genome/ \
+            --in-fq /mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-fq-r1'])}} /mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-fq-r2'])}} \
+            --tmp-dir /mnt/scratch/ \
+            --output-dir /mnt/output/dir/ \
+            --out-bam /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}} \
+            --out-prefix {{inputs.parameters.sample-id}}_ \
+            --out-reads-unmapped None \
+            --two-pass-mode Basic \
+            --read-files-command zcat \
+            --out-sam-strand-field intronMotif \
+            --out-sam-unmapped Within \
+            --min-chim-segment 12 \
+            --min-chim-overhang 8 \
+            --out-chim-format 1 \
+            --min-align-sjdb-overhang 10 \
+            --max-align-mates-gap 100000 \
+            --max-intron-size 100000 \
+            --max-junction-mismatches 5 -1 5 5 \
+            --read-group-id-prefix ID:GRPundef \
+            --chim-multimap-score-range 3 \
+            --max-chim-multimap 20 \
+            --min-non-chim-score-drop 10 \
+            --chim-score-non-gtag -4 \
+            --align-insertion-flush Right \
+            --num-threads {{inputs.parameters.thread-count}}
+        volumeMounts:
+          - name: input-fq-r1
+            mountPath: "/mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-fq-r1'])}}"
+          - name: input-fq-r2
+            mountPath: "/mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-fq-r2'])}}"
+          - name: output-bam
+            mountPath: /mnt/output/bam/
+          - name: scratch-dir
+            mountPath: /mnt/scratch/
+          - name: genome-ref
+            mountPath: /mnt/ref/genome/
+          - name: output-dir
+            mountPath: /mnt/output/dir/

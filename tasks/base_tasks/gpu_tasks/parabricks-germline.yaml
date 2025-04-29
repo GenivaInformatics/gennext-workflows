@@ -1,0 +1,188 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: parabricks-germline-pipeline-template
+spec:
+  templates:
+    - name: parabricks-germline-fq2bam-wgs
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      inputs:
+        parameters:
+          - name: genome-ref
+          - name: input-fq-r1
+          - name: input-fq-r2
+          - name: known-sites
+          - name: scratch-dir
+          - name: read-group-str
+          - name: output-bam
+          - name: output-recal
+          - name: output-dupes
+
+      outputs:
+        parameters:
+          - name: output-bam
+            value: "{{inputs.parameters.output-bam}}"
+          - name: output-recal
+            value: "{{inputs.parameters.output-recal}}"
+          - name: output-dupes
+            value: "{{inputs.parameters.output-dupes}"
+      volumes:
+        - name: input-fq-r1
+          hostPath:
+            path: "{{inputs.parameters.input-fq-r1}}"
+            type: File
+        - name: input-fq-r2
+          hostPath:
+            path: "{{inputs.parameters.input-fq-r2}}"
+            type: File
+        - name: output-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-bam'])}}"
+            type: Directory
+        - name: output-recal
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-recal'])}}"
+            type: Directory
+        - name: output-dupes
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-dupes'])}}"
+            type: Directory
+        - name: scratch-dir
+          hostPath:
+            path: "{{inputs.parameters.scratch-dir}}"
+            type: Directory
+        - name: genome-ref
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['genome-ref'])}}"
+            type: Directory
+        - name: known-sites
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['known-sites'])}}"
+            type: Directory
+      script:
+        name: "parabricks-germline-fq2bam-wgs-script"
+        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+        command: [sh]
+        source: |
+          pbrun fq2bam \
+            --ref /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \
+            --knownSites /mnt/ref/known-sites/{{=sprig.osBase(inputs.parameters['known-sites'])}} \
+            --in-fq /mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-tumor-fq-r1'])}} /mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-tumor-fq-r2'])}} \
+            "{{inputs.parameters.read-group-str}}" \
+            --tmp-dir /mnt/scratch/ \
+            --out-vcf /mnt/out/vcf/{{=sprig.osBase(inputs.parameters['output-tumor-vcf'])}} \
+            --out-recal-file /mnt/out/metrics/{{=sprig.osBase(inputs.parameters['output-tumor-recal'])}} \
+            --out-duplicate-metrics /mnt/out/metrics/{{=sprig.osBase(inputs.parameters['output-tumor-dupes'])}} \
+            --out-bam /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-tumor-bam'])}}
+        volumeMounts:
+          - name: input-tumor-fq-r1
+            mountPath: "/mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-tumor-fq-r1'])}}"
+          - name: input-tumor-fq-r2
+            mountPath: "/mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-tumor-fq-r2'])}}"
+          - name: output-tumor-bam
+            mountPath: /mnt/output/bam/
+          - name: scratch-dir
+            mountPath: /mnt/scratch/
+          - name: genome-ref
+            mountPath: /mnt/ref/genome/
+          - name: known-sites
+            mountPath: /mnt/ref/known-sites/
+          - name: output-tumor-recal
+            mountPath: /mnt/out/metrics/
+    - name: parabricks-germline-deepvariant-workflow-wgs
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      inputs:
+        parameters:
+          - name: genome-ref
+          - name: input-fq-r1
+          - name: input-fq-r2
+          - name: known-sites
+          - name: scratch-dir
+          - name: read-group-str
+          - name: output-bam
+          - name: output-recal
+          - name: output-dupes
+
+      outputs:
+        parameters:
+          - name: output-bam
+            value: "{{inputs.parameters.output-bam}}"
+          - name: output-recal
+            value: "{{inputs.parameters.output-recal}}"
+          - name: output-dupes
+            value: "{{inputs.parameters.output-dupes}"
+      volumes:
+        - name: input-fq-r1
+          hostPath:
+            path: "{{inputs.parameters.input-fq-r1}}"
+            type: File
+        - name: input-fq-r2
+          hostPath:
+            path: "{{inputs.parameters.input-fq-r2}}"
+            type: File
+        - name: output-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-bam'])}}"
+            type: Directory
+        - name: output-recal
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-recal'])}}"
+            type: Directory
+        - name: output-dupes
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-dupes'])}}"
+            type: Directory
+        - name: scratch-dir
+          hostPath:
+            path: "{{inputs.parameters.scratch-dir}}"
+            type: Directory
+        - name: genome-ref
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['genome-ref'])}}"
+            type: Directory
+        - name: known-sites
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['known-sites'])}}"
+            type: Directory
+      script:
+        name: "parabricks-germline-fq2bam-wgs-script"
+        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+        command: [sh]
+        source: |
+          pbrun fq2bam \
+            --ref /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \
+            --knownSites /mnt/ref/known-sites/{{=sprig.osBase(inputs.parameters['known-sites'])}} \
+            --in-fq /mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-tumor-fq-r1'])}} /mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-tumor-fq-r2'])}} \
+            "{{inputs.parameters.read-group-str}}" \
+            --tmp-dir /mnt/scratch/ \
+            --out-vcf /mnt/out/vcf/{{=sprig.osBase(inputs.parameters['output-tumor-vcf'])}} \
+            --out-recal-file /mnt/out/metrics/{{=sprig.osBase(inputs.parameters['output-tumor-recal'])}} \
+            --out-duplicate-metrics /mnt/out/metrics/{{=sprig.osBase(inputs.parameters['output-tumor-dupes'])}} \
+            --out-bam /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-tumor-bam'])}}
+        volumeMounts:
+          - name: input-tumor-fq-r1
+            mountPath: "/mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-tumor-fq-r1'])}}"
+          - name: input-tumor-fq-r2
+            mountPath: "/mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-tumor-fq-r2'])}}"
+          - name: output-tumor-bam
+            mountPath: /mnt/output/bam/
+          - name: scratch-dir
+            mountPath: /mnt/scratch/
+          - name: genome-ref
+            mountPath: /mnt/ref/genome/
+          - name: known-sites
+            mountPath: /mnt/ref/known-sites/
+          - name: output-tumor-recal
+            mountPath: /mnt/out/metrics/

@@ -1,0 +1,196 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: parabricks-somatic-pipeline-template
+spec:
+  templates:
+    - name: parabricks-somatic-pipeline-tumor-only
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      inputs:
+        parameters:
+          - name: genome-ref
+          - name: input-tumor-fq-r1
+          - name: input-tumor-fq-r2
+          - name: known-sites
+          - name: scratch-dir
+          - name: read-group-str
+          - name: output-tumor-bam
+          - name: output-tumor-recal
+          - name: output-tumor-vcf
+          - name: bwa-options
+            value: ""
+      outputs:
+        parameters:
+          - name: output-tumor-bam
+            value: "{{inputs.parameters.output-tumor-bam}}"
+          - name: output-tumor-recal
+            value: "{{inputs.parameters.output-tumor-recal}}"
+          - name: output-tumor-vcf
+            value: "{{inputs.parameters.output-tumor-vcf}}"
+      volumes:
+        - name: input-tumor-fq-r1
+          hostPath:
+            path: "{{inputs.parameters.input-tumor-fq-r1}}"
+            type: File
+        - name: input-tumor-fq-r2
+          hostPath:
+            path: "{{inputs.parameters.input-tumor-fq-r2}}"
+            type: File
+        - name: output-tumor-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-tumor-bam'])}}"
+            type: DirectoryOrCreate
+        - name: output-tumor-recal
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-tumor-recal'])}}"
+            type: DirectoryOrCreate
+        - name: output-tumor-vcf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-tumor-vcf'])}}"
+            type: DirectoryOrCreate
+        - name: scratch-dir
+          hostPath:
+            path: "{{inputs.parameters.scratch-dir}}"
+            type: Directory
+        - name: genome-ref
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['genome-ref'])}}"
+            type: Directory
+        - name: known-sites
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['known-sites'])}}"
+            type: Directory
+      script:
+        name: "parabricks-somatic-pipeline-tumor-only-script"
+        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+        command: [sh]
+        source: |
+          pbrun somatic \
+            --ref /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \
+            --knownSites /mnt/ref/known-sites/{{=sprig.osBase(inputs.parameters['known-sites'])}} \
+            --in-tumor-fq /mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-tumor-fq-r1'])}} /mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-tumor-fq-r2'])}} \
+            "{{inputs.parameters.read-group-str}}" \
+            --bwa-options="{{inputs.parameters.bwa-options}}" \
+            --low-memory \
+            --tmp-dir /mnt/scratch/ \
+            --out-vcf /mnt/output/vcf/{{=sprig.osBase(inputs.parameters['output-tumor-vcf'])}} \
+            --out-tumor-recal-file /mnt/output/metrics/{{=sprig.osBase(inputs.parameters['output-tumor-recal'])}} \
+            --out-tumor-bam /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-tumor-bam'])}}
+        volumeMounts:
+          - name: input-tumor-fq-r1
+            mountPath: "/mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-tumor-fq-r1'])}}"
+          - name: input-tumor-fq-r2
+            mountPath: "/mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-tumor-fq-r2'])}}"
+          - name: output-tumor-bam
+            mountPath: /mnt/output/bam/
+          - name: output-tumor-vcf
+            mountPath: /mnt/output/vcf/
+          - name: scratch-dir
+            mountPath: /mnt/scratch/
+          - name: genome-ref
+            mountPath: /mnt/ref/genome/
+          - name: known-sites
+            mountPath: /mnt/ref/known-sites/
+          - name: output-tumor-recal
+            mountPath: /mnt/output/metrics/
+    - name: parabricks-somatic-pipeline-tumor-only-nodeSelector
+      nodeSelector:
+        kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      inputs:
+        parameters:
+          - name: genome-ref
+          - name: input-tumor-fq-r1
+          - name: input-tumor-fq-r2
+          - name: known-sites
+          - name: scratch-dir
+          - name: regions-file
+          - name: read-group-str
+          - name: output-tumor-bam
+          - name: output-tumor-vcf
+          - name: output-tumor-recal
+          - name: node-name
+      volumes:
+        - name: input-tumor-fq-r1
+          hostPath:
+            path: "{{inputs.parameters.input-tumor-fq-r1}}"
+            type: File
+        - name: input-tumor-fq-r2
+          hostPath:
+            path: "{{inputs.parameters.input-tumor-fq-r2}}"
+            type: File
+        - name: output-tumor-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-tumor-bam'])}}"
+            type: Directory
+        - name: output-tumor-vcf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-tumor-vcf'])}}"
+            type: Directory
+        - name: output-tumor-recal
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-tumor-recal'])}}"
+            type: Directory
+        - name: scratch-dir
+          hostPath:
+            path: "{{inputs.parameters.scratch-dir}}"
+            type: Directory
+        - name: genome-ref
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['genome-ref'])}}"
+            type: Directory
+        - name: known-sites
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['known-sites'])}}"
+            type: Directory
+        - name: regions-file
+          hostPath:
+            path: "{{inputs.parameters.regions-file}}"
+            type: File
+      script:
+        name: "parabricks-somatic-pipeline-tumor-only-script"
+        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+        command: [sh]
+        source: |
+          echo "@{{inputs.parameters.read-group-str}}";
+          pbrun somatic \
+            --ref /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \
+            --knownSites /mnt/ref/known-sites/{{=sprig.osBase(inputs.parameters['known-sites'])}} \
+            --in-tumor-fq /mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-tumor-fq-r1'])}} /mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-tumor-fq-r2'])}} \
+            "{{inputs.parameters.read-group-str}}" \
+            --interval-file /mnt/ref/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}} \
+            --tmp-dir /mnt/scratch/ \
+            --out-vcf /mnt/output/vcf/{{=sprig.osBase(inputs.parameters['output-tumor-vcf'])}} \
+            --out-tumor-recal-file /mnt/output/metrics/{{=sprig.osBase(inputs.parameters['output-tumor-recal'])}} \
+            --out-tumor-bam /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-tumor-bam'])}}
+        volumeMounts:
+          - name: input-tumor-fq-r1
+            mountPath: "/mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-tumor-fq-r1'])}}"
+          - name: input-tumor-fq-r2
+            mountPath: "/mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-tumor-fq-r2'])}}"
+          - name: output-tumor-bam
+            mountPath: /mnt/output/bam/
+          - name: output-tumor-vcf
+            mountPath: /mnt/output/vcf/
+          - name: scratch-dir
+            mountPath: /mnt/scratch/
+          - name: regions-file
+            mountPath: /mnt/ref/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}}
+          - name: genome-ref
+            mountPath: /mnt/ref/genome/
+          - name: known-sites
+            mountPath: /mnt/ref/known-sites/
+          - name: output-tumor-recal
+            mountPath: /mnt/output/metrics/

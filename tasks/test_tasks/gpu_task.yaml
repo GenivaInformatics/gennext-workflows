@@ -1,0 +1,24 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cuda-vector-add-test
+spec:
+  entrypoint: main
+  templates:
+  - name: main
+    # requires this pod to be run on an nvidia.com/gpu labeled node
+    nodeSelector:
+      # nvidia.com/gpu: "true"
+      kubernetes.io/hostname: "ikf-01"
+    # allows this pod to be run on an nvidia.com/gpu tainted node
+    tolerations:
+    - key: "nvidia.com/gpu"
+      operator: "Exists"
+      effect: "NoSchedule"
+    container:
+      # https://github.com/kubernetes/kubernetes/blob/v1.7.11/test/images/nvidia-cuda/Dockerfile
+      image: "k8s.gcr.io/cuda-vector-add:v0.1"
+      resources:
+        # don't use requests for GPUs: https://kubernetes.io/docs/tasks/manage-gpus/scheduling-gpus/
+        limits:
+          nvidia.com/gpu: 1 # requesting 1 GPU

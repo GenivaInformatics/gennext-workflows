@@ -1,0 +1,126 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: update-genotype-snps-template
+spec:
+  templates:
+    - name: update-genotype-snps
+      # nodeSelector:
+      #   kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      inputs:
+        parameters:
+          - name: input-genotype-file
+          - name: output-genotype-file
+          - name: dbsnp-file
+      outputs:
+        parameters:
+          - name: output-genotype-file
+            value: "{{inputs.parameters.output-genotype-file}}"
+      volumes:
+        - name: input-genotype-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-genotype-file'])}}"
+            type: Directory
+        - name: dbsnp-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['dbsnp-file'])}}"
+            type: Directory
+        - name: output-genotype-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-genotype-file'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: "update-genotype-snps-script"
+        image: berkemelg/dbsnp_annotator:v0.0.5
+        command: [sh]
+        source: |
+          INPUT_GENOTYPE_FILE="{{=sprig.osBase(inputs.parameters['input-genotype-file'])}}";
+          DECOMPRESSED_GENOTYPE_FILE=$(basename "$INPUT_GENOTYPE_FILE" .gz);
+          zcat /mnt/input/$INPUT_GENOTYPE_FILE > /tmp/$DECOMPRESSED_GENOTYPE_FILE &&
+          python /data/annotate_snps_parallel.py /mnt/dbsnp/{{=sprig.osBase(inputs.parameters['dbsnp-file'])}} /tmp/$DECOMPRESSED_GENOTYPE_FILE temp.tsv &&
+          awk 'BEGIN {OFS="\t"} /^#/ {print; next} {gsub(/^chr/, "", $2); print $1, $2, $3, $4}' /data/output_folder/temp.tsv > /data/output_folder/temp2.tsv && rm /data/output_folder/temp.tsv &&
+          tail -n +2 /data/output_folder/temp2.tsv > /data/output_folder/{{=sprig.osBase(inputs.parameters['output-genotype-file'])}} && rm /data/output_folder/temp2.tsv
+        volumeMounts:
+          - name: dbsnp-file
+            mountPath: /mnt/dbsnp/
+          - name: input-genotype-file
+            mountPath: /mnt/input/
+          - name: output-genotype-file
+            # mountPath: /mnt/output/
+            mountPath: /data/output_folder/
+    - name: update-genotype-snps-gvcf
+      inputs:
+        parameters:
+          - name: input-prs-ref-file
+          - name: input-gvcf-file
+          - name: input-fasta-file
+          - name: output-genotype-file
+          - name: thread-count
+            default: "20"
+      outputs:
+        parameters:
+          - name: output-genotype-file
+            value: "{{inputs.parameters.output-genotype-file}}"
+      script:
+        name: update-genotype-snps-gvcf-script
+        image: bergun/genotype-extractor-mt:v0.0.10d
+        command:
+          - sh
+        volumeMounts:
+          - name: input-fasta-file
+            mountPath: /mnt/fasta/
+          - name: input-prs-ref-file
+            mountPath: /mnt/ref/
+          - name: input-gvcf-file
+            mountPath: /mnt/input/
+          - name: output-genotype-file
+            mountPath: /mnt/output/
+        source: |
+          # Using the full paths instead of just basenames
+          GVCF_FILE="/mnt/input/{{=sprig.osBase(inputs.parameters['input-gvcf-file'])}}"
+          REF_FILE="/mnt/ref/{{=sprig.osBase(inputs.parameters['input-prs-ref-file'])}}"
+          FASTA_FILE="/mnt/fasta/{{=sprig.osBase(inputs.parameters['input-fasta-file'])}}"
+
+          TMP_FILE="/tmp/{{=sprig.osBase(inputs.parameters['output-genotype-file'])}}"
+          OUTPUT_FILE="/mnt/output/{{=sprig.osBase(inputs.parameters['output-genotype-file'])}}"
+
+          # Let's see what we have in our mounted directories
+          echo "'ls /mnt/input/'"
+          ls /mnt/input/
+          echo "'ls /mnt/ref/'"
+          ls /mnt/ref/
+          echo "'ls /mnt/fasta/'"
+          ls /mnt/fasta/
+
+          # Make sure we're in a directory where we have write permissions
+          cd /tmp
+
+          # Command being called
+          echo "python3 /app/extract_genotype_script_mt.py $GVCF_FILE $REF_FILE \
+          $FASTA_FILE $OUTPUT_FILE {{inputs.parameters.thread-count}}"
+
+          # Run the Python script with full paths
+          python3 /app/extract_genotype_script_mt.py $GVCF_FILE $REF_FILE $FASTA_FILE \
+          $TMP_FILE {{inputs.parameters.thread-count}}
+
+          # Modify the output file to remove "chr" from the second column
+          awk -F'\t' '{if (NR==1) print $0; else {sub("chr", "", $2); print $0}}' OFS='\t' $TMP_FILE > $OUTPUT_FILE
+          # Clean up the temporary file
+          rm $TMP_FILE
+      volumes:
+        - name: input-prs-ref-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-prs-ref-file'])}}"
+            type: Directory
+        - name: input-gvcf-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-gvcf-file'])}}"
+            type: Directory
+        - name: input-fasta-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-fasta-file'])}}"
+            type: Directory
+        - name: output-genotype-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-genotype-file'])}}"
+            type: DirectoryOrCreate

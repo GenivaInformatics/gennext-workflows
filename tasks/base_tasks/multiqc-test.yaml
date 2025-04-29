@@ -25,7 +25,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: multiqc-script
-        image: quay.io/biocontainers/multiqc:1.17--pyhdfd78af_1
+        image: quay.io/biocontainers/multiqc:1.27--pyhdfd78af_0
         command: [sh]
         source: |
           mkdir /mnt/output/multiqc_data;

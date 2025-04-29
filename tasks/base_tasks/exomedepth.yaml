@@ -1,0 +1,230 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: exomedepth-template
+  namespace: argo
+spec:
+  entrypoint: exomedepth
+  templates:
+    - name: exomedepth
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: input-bam
+          - name: ref-regions
+          - name: ref-cohort
+          - name: ref-fasta
+          - name: output-vcf
+      outputs:
+        parameters:
+          - name: output-vcf
+            value: "{{inputs.parameters.output-vcf}}"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: ref-regions
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['ref-regions'])}}"
+            type: Directory
+        - name: ref-cohort
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['ref-cohort'])}}"
+            type: Directory
+        - name: ref-fasta
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['ref-fasta'])}}"
+            type: Directory
+        - name: output-vcf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-vcf'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: "exomedepth"
+        image: quay.io/biocontainers/r-exomedepth:1.1.16--r44h9f7ea62_4
+        command: [Rscript]
+        volumeMounts:
+          - name: input-bam
+            mountPath: /mnt/input/
+          - name: ref-regions
+            mountPath: /mnt/ref/regions/
+          - name: ref-cohort
+            mountPath: /mnt/ref/cohort/
+          - name: ref-fasta
+            mountPath: /mnt/ref/genome/
+          - name: output-vcf
+            mountPath: /mnt/output/vcf/
+        source: |
+          if (!requireNamespace("Rsamtools", quietly = TRUE)) {
+            install.packages("BiocManager")
+            BiocManager::install("Rsamtools")
+          }
+          library(ExomeDepth)
+          library(Rsamtools)
+
+          input.id <- "{{inputs.parameters.sample-id}}"
+          input.bam <- "/mnt/input/{{=sprig.osBase(inputs.parameters['input-bam'])}}"
+          ref.regions <- "/mnt/ref/regions/{{=sprig.osBase(inputs.parameters['ref-regions'])}}"
+          ref.cohort <- "/mnt/ref/cohort/{{=sprig.osBase(inputs.parameters['ref-cohort'])}}"
+          ref.fasta <- "/mnt/ref/genome/{{=sprig.osBase(inputs.parameters['ref-fasta'])}}"
+          output.vcf <- "/mnt/output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf'])}}"
+
+          message("Running ExomeDepth for sample: ", input.id)
+
+          map_bam_to_column_names <- function(bam_files, count_data_frame) {
+            # Create a mapping between original BAM filenames and column names in data frame
+            bam_basenames <- basename(bam_files)
+            mapping <- list()
+
+            for (bam in bam_basenames) {
+              # Create possible variations of the filename as they might appear in the data frame
+              possible_names <- c(
+                bam,  # Original name
+                make.names(bam),  # R's standard name conversion
+                paste0("X", gsub("-", ".", bam)),  # X prefix + dots for hyphens
+                gsub("-", ".", bam),  # Just dots for hyphens
+                gsub("[^a-zA-Z0-9]", ".", bam)  # Any non-alphanumeric to dots
+              )
+              # Find which variation exists in the column names
+              found <- FALSE
+              for (possible_name in possible_names) {
+                if (possible_name %in% colnames(count_data_frame)) {
+                  mapping[[bam]] <- possible_name
+                  found <- TRUE
+                  break
+                }
+              }
+              # If none of the variations found, look for partial matches
+              if (!found) {
+                for (col in colnames(count_data_frame)) {
+                  # Check if the column contains the numeric part of the filename
+                  numeric_part <- gsub("[^0-9]", "", bam)
+                  if (grepl(numeric_part, col) && !found) {
+                    mapping[[bam]] <- col
+                    found <- TRUE
+                    break
+                  }
+                }
+              }
+              # If still not found, warn the user
+              if (!found) {
+                warning(paste("Could not find a matching column for BAM file:", bam))
+              }
+            }
+            return(mapping)
+          }
+
+          ref.counts <- readRDS(ref.cohort)
+          gencode.hg38 <- read.csv(ref.regions, sep='\t')
+
+          new.count = getBamCounts(bed.frame = gencode.hg38, referenceFasta = ref.fasta, include.chr = FALSE, bam.files = input.bam)
+
+          new.count.dafr <- as(new.count, 'data.frame')
+          # Map the filename to the column name
+          filename_mapping <- map_bam_to_column_names(input.bam, new.count.dafr)
+
+          # Now you can access the count data using the mapped column name
+          test_column <- filename_mapping[[basename(input.bam)]]
+          test.counts <- new.count.dafr[[test_column]]
+
+          # Prepare the reference cohort data
+          # Assuming ref.counts is a GRanges object with multiple samples
+          ref.count.dafr <- as(ref.counts, 'data.frame')
+          reference.columns <- grep(".bam", colnames(ref.count.dafr))
+          reference.counts <- as.matrix(ref.count.dafr[, reference.columns])
+          # Calculate bin length for optimization (or use constant value if all exons are similar size)
+          bin.length <- (new.count.dafr$end - new.count.dafr$start)/1000
+
+          # Select the optimal reference set for this test sample
+          my.choice <- select.reference.set(
+            test.counts = test.counts,
+            reference.counts = reference.counts,
+            bin.length = bin.length,
+            n.bins.reduced = 10000  # Using subset of bins for speed
+          )
+
+          # Create the aggregate reference from the selected samples
+          my.reference.selected <- apply(
+          X = reference.counts[, my.choice$reference.choice, drop = FALSE],
+          MAR = 1,
+          FUN = sum
+          )
+          # Create the ExomeDepth object with the test and optimized reference
+          exomeDepth.obj <- new(
+          'ExomeDepth',
+          test = test.counts,
+          reference = my.reference.selected,
+          formula = 'cbind(test, reference) ~ 1'
+          )
+
+          # Call CNVs
+          exomeDepth.obj <- CallCNVs(
+            x = exomeDepth.obj,
+            transition.probability = 10^-4,
+            chromosome = new.count.dafr$chromosome,
+            start = new.count.dafr$start,
+            end = new.count.dafr$end,
+            name = new.count.dafr$exon  # Use "exon" column for naming
+          )
+
+          # Assuming `exomeDepth.obj@CNV.calls` is your input
+          cnvs <- exomeDepth.obj@CNV.calls
+
+          make_vcf_line <- function(row) {
+            chrom <- row["chromosome"]
+            pos <- row["start"]
+            id <- row["id"]
+            ref <- "N"  # Placeholder since no actual sequence
+            alt <- ifelse(row["type"] == "deletion", "<DEL>", "<DUP>")
+            qual <- round(as.numeric(row["BF"]), 2)
+            filter <- "PASS"
+            end <- row["end"]
+            svtype <- toupper(row["type"])
+            svlen <- ifelse(svtype == "DELETION",
+                            -1 * abs(as.integer(end) - as.integer(pos)),
+                            abs(as.integer(end) - as.integer(pos)))
+            info <- paste0("SVTYPE=", svtype,
+                          ";END=", end,
+                          ";SVLEN=", svlen)
+            format <- "GT:CN:CNQ:BF"
+
+            # Compute CN from reads.ratio
+            ratio <- as.numeric(row["reads.ratio"])
+            cn <- round(ratio * 2)
+            bf <- round(as.numeric(row["BF"]), 2)
+            cnq <- round(10 * bf, 2)  # mock Phred-scaled confidence
+
+            sample <- paste("./.", cn, cnq, bf, sep=":")
+
+            paste(chrom, pos, id, ref, alt, qual, filter, info, format, sample, sep="\t")
+          }
+
+          # Create VCF header
+          vcf_header <- c(
+            "##fileformat=VCFv4.2",
+            paste0("##fileDate=", format(Sys.Date(), "%Y%m%d")),
+            "##INFO=<ID=END,Number=1,Type=Integer,Description=\"End position of the variant described in this record\">",
+            "##INFO=<ID=SVLEN,Number=1,Type=Integer,Description=\"Difference in length between REF and ALT alleles\">",
+            "##INFO=<ID=SVTYPE,Number=1,Type=String,Description=\"Type of structural variant\">",
+            "##ALT=<ID=DEL,Description=\"Deletion\">",
+            "##ALT=<ID=DUP,Description=\"Duplication\">",
+            "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">",
+            "##FORMAT=<ID=CN,Number=1,Type=Integer,Description=\"Copy number genotype for imprecise events\">",
+            "##FORMAT=<ID=CNQ,Number=1,Type=Float,Description=\"Copy number genotype quality for imprecise events\">",
+            "##FORMAT=<ID=BF,Number=1,Type=Float,Description=\"Bayes Factor from ExomeDepth, log10 likelihood ratio supporting CNV\">",
+            sprintf("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t%s", input.id)
+          )
+
+          # Create VCF body
+          vcf_body <- apply(cnvs, 1, make_vcf_line)
+
+          # Write uncompressed VCF to a temporary file
+          tmp_vcf <- tempfile(fileext = ".vcf")
+          writeLines(c(vcf_header, vcf_body), con = tmp_vcf)
+
+          # Compress with bgzip
+          Rsamtools::bgzip(tmp_vcf, dest = output.vcf, overwrite = TRUE)
+
+          # Index with tabix
+          Rsamtools::indexTabix(output.vcf, format = "vcf")

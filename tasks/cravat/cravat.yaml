@@ -11,7 +11,7 @@ spec:
           - name: ref-version
             value: "hg38"
           - name: annotators
-            value: "intervar cadd omim turkish_variome clinvar clinvar_acmg gme clinpred"
+            value: "intervar cadd omim turkish_variome clinvar clinvar_acmg gme clinpred alphamissense gnomad4"
           - name: modules-dir
             default: "/runspace/gennext/data/modules/"
           - name: output-dir
@@ -30,11 +30,16 @@ spec:
             type: DirectoryOrCreate
       script:
         name: cravat-solo
-        image: bergun/gennext-cravat:0.2.3-alpha-no_mu
+        image: bergun/gennext-cravat:0.2.11c-alpha-no_mu
+        workingDir: "{{inputs.parameters.output-dir}}"
         command: [sh]
         source: |
           #!/bin/sh
-          for ext in crg crm crs crv crx err status.json filter_session.json log sqlite var; do rm {{inputs.parameters.output-dir}}/*.$ext; done;
+          for ext in crg crm crs crv crx err status.json filter_session.json log sqlite gen var; do
+            echo "$ext";
+            rm -f ./*."$ext";
+          done;
+
           oc run \
           "/mnt/input/{{=sprig.osBase(inputs.parameters['proband-vcf'])}}" \
           -a {{inputs.parameters.annotators}} \
@@ -59,7 +64,7 @@ spec:
           - name: ref-version
             value: "hg38"
           - name: annotators
-            value: "intervar cadd omim turkish_variome clinvar clinvar_acmg gme clinpred"
+            value: "intervar cadd omim turkish_variome clinvar clinvar_acmg gme clinpred alphamissense gnomad4"
           - name: modules-dir
             default: "/runspace/gennext/data/modules/"
           - name: output-dir
@@ -79,11 +84,16 @@ spec:
             type: DirectoryOrCreate
       script:
         name: cravat-solo
-        image: bergun/gennext-cravat:0.2.3-alpha-no_mu
+        image: bergun/gennext-cravat:0.2.11c-alpha-no_mu
+        workingDir: "{{inputs.parameters.output-dir}}"
         command: [sh]
         source: |
           #!/bin/sh
-          for ext in crg crm crs crv crx err status.json filter_session.json log sqlite var; do rm {{inputs.parameters.output-dir}}/*.$ext; done;
+          for ext in crg crm crs crv crx err status.json filter_session.json log sqlite gen var; do
+            echo "$ext";
+            rm -f ./*."$ext";
+          done;
+
           oc run \
           "/mnt/input/{{=sprig.osBase(inputs.parameters['proband-vcf'])}}" \
           -a {{inputs.parameters.annotators}} \
@@ -128,11 +138,93 @@ spec:
             type: DirectoryOrCreate
       script:
         name: cravat-duo
-        image: bergun/gennext-cravat:0.2.3-alpha-no_mu
+        image: bergun/gennext-cravat:0.2.11c-alpha-no_mu
+        workingDir: "{{inputs.parameters.output-dir}}"
         command: [sh]
         source: |
           #!/bin/sh
-          for ext in crg crm crs crv crx err status.json filter_session.json log sqlite var; do rm {{inputs.parameters.output-dir}}/*.$ext; done;
+          for ext in crg crm crs crv crx err status.json filter_session.json log sqlite gen var; do
+            echo "$ext";
+            rm -f ./*."$ext";
+          done;
+
+          mkdir -p {{inputs.parameters.output-dir}}/temp/;
+          oc run \
+          "/mnt/input/{{=sprig.osBase(inputs.parameters['case-vcf'])}}" \
+          "/mnt/input/{{=sprig.osBase(inputs.parameters['proband-vcf'])}}" \
+          -a {{inputs.parameters.annotators}} \
+          -l {{inputs.parameters.ref-version}} \
+          --skip reporter \
+          --temp-files \
+          --cleanrun \
+          -d "{{inputs.parameters.output-dir}}/temp/";
+          python - <<EOF
+          import os, json
+          job_dir = "{{inputs.parameters.output-dir}}"
+          os.chdir(f"{job_dir}/temp/")
+          status_json = next(filter(lambda x: x.endswith('.status.json'), os.listdir()))
+          with open(status_json, "r") as f:
+            status = json.load(f)
+          db_f = os.path.basename(status["db_path"])
+          status["db_path"] = os.path.join(job_dir, db_f)
+          status["job_dir"] = job_dir
+          status["id"] = os.path.basename(os.path.normpath(job_dir))
+          with open(status_json, 'w') as f:
+            json.dump(status, f)
+          EOF
+          mv -f {{inputs.parameters.output-dir}}/temp/* {{inputs.parameters.output-dir}};
+          rm -rf {{inputs.parameters.output-dir}}/temp/;
+        volumeMounts:
+          - name: proband-vcf
+            mountPath: "/mnt/input/{{=sprig.osBase(inputs.parameters['proband-vcf'])}}"
+          - name: case-vcf
+            mountPath: "/mnt/input/{{=sprig.osBase(inputs.parameters['case-vcf'])}}"
+          - name: output-dir
+            mountPath: "{{inputs.parameters.output-dir}}"
+          - name: modules-dir
+            mountPath: "/opt/open-cravat/cravat/modules"
+    - name: cravat-duo-template-on-node
+      nodeSelector:
+        kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      inputs:
+        parameters:
+          - name: proband-vcf
+          - name: case-vcf
+          - name: ref-version
+          - name: annotators
+          - name: modules-dir
+            default: "/opt/open-cravat/cravat/modules"
+          - name: output-dir
+          - name: node-name
+      volumes:
+        - name: proband-vcf
+          hostPath:
+            path: "{{inputs.parameters.proband-vcf}}"
+            type: File
+        - name: case-vcf
+          hostPath:
+            path: "{{inputs.parameters.case-vcf}}"
+            type: File
+        - name: modules-dir
+          hostPath:
+            path: "{{inputs.parameters.modules-dir}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: cravat-duo
+        image: bergun/gennext-cravat:0.2.11c-alpha-no_mu
+        workingDir: "{{inputs.parameters.output-dir}}"
+        command: [sh]
+        source: |
+          #!/bin/sh
+          for ext in crg crm crs crv crx err status.json filter_session.json log sqlite gen var; do
+            echo "$ext";
+            rm -f ./*."$ext";
+          done;
+
           mkdir -p {{inputs.parameters.output-dir}}/temp/;
           oc run \
           "/mnt/input/{{=sprig.osBase(inputs.parameters['case-vcf'])}}" \
@@ -202,11 +294,112 @@ spec:
             type: DirectoryOrCreate
       script:
         name: cravat-trio
-        image: bergun/gennext-cravat:0.2.3-alpha-no_mu
+        image: bergun/gennext-cravat:0.2.11c-alpha-no_mu
+        workingDir: "{{inputs.parameters.output-dir}}"
         command: [sh]
         source: |
           #!/bin/sh
-          for ext in crg crm crs crv crx err status.json filter_session.json log sqlite var; do rm {{inputs.parameters.output-dir}}/*.$ext; done;
+          for ext in crg crm crs crv crx err status.json filter_session.json log sqlite gen var; do
+            echo "$ext";
+            rm -f ./*."$ext";
+          done;
+
+          echo 'oc run \
+          "/mnt/input/{{=sprig.osBase(inputs.parameters['father-vcf'])}}" \
+          "/mnt/input/{{=sprig.osBase(inputs.parameters['mother-vcf'])}}" \
+          "/mnt/input/{{=sprig.osBase(inputs.parameters['proband-vcf'])}}" \
+          -a {{inputs.parameters.annotators}} \
+          -l {{inputs.parameters.ref-version}} \
+          --skip reporter \
+          --temp-files \
+          --cleanrun \
+          -d "{{inputs.parameters.output-dir}}/temp/";';
+
+          mkdir -p {{inputs.parameters.output-dir}}/temp/;
+          oc run \
+          "/mnt/input/{{=sprig.osBase(inputs.parameters['father-vcf'])}}" \
+          "/mnt/input/{{=sprig.osBase(inputs.parameters['mother-vcf'])}}" \
+          "/mnt/input/{{=sprig.osBase(inputs.parameters['proband-vcf'])}}" \
+          -a {{inputs.parameters.annotators}} \
+          -l {{inputs.parameters.ref-version}} \
+          --skip reporter \
+          --temp-files \
+          --cleanrun \
+          -d "{{inputs.parameters.output-dir}}/temp/";
+          python - <<EOF
+          import os, json
+          job_dir = "{{inputs.parameters.output-dir}}"
+          os.chdir(f"{job_dir}/temp/")
+          status_json = next(filter(lambda x: x.endswith('.status.json'), os.listdir()))
+          with open(status_json, "r") as f:
+            status = json.load(f)
+          db_f = os.path.basename(status["db_path"])
+          status["db_path"] = os.path.join(job_dir, db_f)
+          status["job_dir"] = job_dir
+          status["id"] = os.path.basename(os.path.normpath(job_dir))
+          with open(status_json, 'w') as f:
+            json.dump(status, f)
+          EOF
+          mv -f {{inputs.parameters.output-dir}}/temp/* {{inputs.parameters.output-dir}};
+          rm -rf {{inputs.parameters.output-dir}}/temp/;
+        volumeMounts:
+          - name: proband-vcf
+            mountPath: "/mnt/input/{{=sprig.osBase(inputs.parameters['proband-vcf'])}}"
+          - name: mother-vcf
+            mountPath: "/mnt/input/{{=sprig.osBase(inputs.parameters['mother-vcf'])}}"
+          - name: father-vcf
+            mountPath: "/mnt/input/{{=sprig.osBase(inputs.parameters['father-vcf'])}}"
+          - name: output-dir
+            mountPath: "{{inputs.parameters.output-dir}}"
+          - name: modules-dir
+            mountPath: "/opt/open-cravat/cravat/modules"
+    - name: cravat-trio-template-on-node
+      nodeSelector:
+        kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      inputs:
+        parameters:
+          - name: proband-vcf
+          - name: mother-vcf
+          - name: father-vcf
+          - name: ref-version
+          - name: annotators
+          - name: modules-dir
+            default: "/opt/open-cravat/cravat/modules"
+          - name: output-dir
+          - name: node-name
+      volumes:
+        - name: proband-vcf
+          hostPath:
+            path: "{{inputs.parameters.proband-vcf}}"
+            type: File
+        - name: mother-vcf
+          hostPath:
+            path: "{{inputs.parameters.mother-vcf}}"
+            type: File
+        - name: father-vcf
+          hostPath:
+            path: "{{inputs.parameters.father-vcf}}"
+            type: File
+        - name: modules-dir
+          hostPath:
+            path: "{{inputs.parameters.modules-dir}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: cravat-trio
+        image: bergun/gennext-cravat:0.2.11c-alpha-no_mu
+        workingDir: "{{inputs.parameters.output-dir}}"
+        command: [sh]
+        source: |
+          #!/bin/sh
+          for ext in crg crm crs crv crx err status.json filter_session.json log sqlite gen var; do
+            echo "$ext";
+            rm -f ./*."$ext";
+          done;
+
           mkdir -p {{inputs.parameters.output-dir}}/temp/;
           oc run \
           "/mnt/input/{{=sprig.osBase(inputs.parameters['father-vcf'])}}" \

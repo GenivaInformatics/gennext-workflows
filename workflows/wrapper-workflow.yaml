@@ -4,6 +4,13 @@ metadata:
   name: wrapper-workflow
   namespace: argo
 spec:
+  workflowMetadata:
+    generateName: "wrapper-workflow-{{workflow.parameters.job-id}}-"
+    labels:
+      gennext.bio/node: "{{workflow.parameters.node-name}}"
+      gennext.bio/user-id: "{{workflow.parameters.user-id}}"
+      # gennext.bio/run-id: "{{workflow.parameters.job-id}}"
+      gennext.bio/process-type: "{{workflow.parameters.process-type}}"
   serviceAccountName: gennext-workflows
   entrypoint: wrapper-workflow
   arguments:
@@ -49,7 +56,7 @@ spec:
           - name: tps-workflow
             when: "'{{workflow.parameters.process-type}}' == 'targetted' || '{{workflow.parameters.process-type}}' == 'tps' || '{{workflow.parameters.process-type}}' == 'ces'"
             templateRef:
-              name: tps-workflow
+              name: germline-wes-gpu-workflow
               template: main
             arguments:
               parameters:
@@ -80,6 +87,37 @@ spec:
                 - name: thread-count
                   value: "{{tasks.get-node-config.outputs.parameters.thread-count}}"
             depends: "get-run-data && get-node-config"
+            #   name: tps-workflow
+            #   template: main
+            # arguments:
+            #   parameters:
+            #     - name: user-id
+            #       value: "{{workflow.parameters.user-id}}"
+            #     - name: run-id
+            #       value: "{{workflow.parameters.job-id}}"
+            #     - name: run-data
+            #       value: "{{tasks.get-run-data.outputs.parameters.run-data}}"
+            #     - name: input-rel-dir
+            #       value: "{{tasks.get-node-config.outputs.parameters.input-rel-dir}}"
+            #     - name: temp-rel-dir
+            #       value: "{{tasks.get-node-config.outputs.parameters.temp-rel-dir}}"
+            #     - name: scratch-rel-dir
+            #       value: "{{tasks.get-node-config.outputs.parameters.scratch-rel-dir}}"
+            #     - name: output-rel-dir
+            #       value: "{{tasks.get-node-config.outputs.parameters.output-rel-dir}}"
+            #     - name: ref-base-dir
+            #       value: "{{tasks.get-node-config.outputs.parameters.ref-base-dir}}"
+            #     - name: modules-base-dir
+            #       value: "{{tasks.get-node-config.outputs.parameters.modules-base-dir}}"
+            #     - name: annots-base-dir
+            #       value: "{{tasks.get-node-config.outputs.parameters.annots-base-dir}}"
+            #     - name: job-id
+            #       value: "{{workflow.parameters.job-id}}"
+            #     - name: ref-ver
+            #       value: "{{=jsonpath(tasks['get-run-data'].outputs.parameters['run-data'], '$.refVersion')}}"
+            #     - name: thread-count
+            #       value: "{{tasks.get-node-config.outputs.parameters.thread-count}}"
+            # depends: "get-run-data && get-node-config"
           - name: wes-workflow
             when: "'{{workflow.parameters.process-type}}' == 'wes'"
             templateRef:
@@ -122,7 +160,7 @@ spec:
             #   template: main
             templateRef:
               name: germline-wgs-gpu-workflow
-              template: germline-wgs-gpu-fastq
+              template: main
             arguments:
               parameters:
                 - name: user-id
@@ -185,7 +223,7 @@ spec:
               template: main-rna
             # templateRef:
             #   name: somatic-testing-workflow
-            #   template: somatic-testing-rna
+            #   template: somatic-testing-rna-bed
             arguments:
               parameters:
                 - name: user-id
@@ -261,4 +299,4 @@ spec:
                   value: "{{workflow.parameters.job-id}}"
                 - name: run-state
                   value: "completed"
-            depends: "(tps-workflow.Succeeded || wes-workflow.Succeeded || wgs-workflow.Succeeded || somatic-testing-tumor-workflow.Succeeded || somatic-testing-rna-workflow.Succeeded) && get-run-data.Succeeded"
+            depends: "(tps-workflow.Succeeded || wes-workflow.Succeeded || wgs-workflow.Succeeded || somatic-testing-tumor-workflow.Succeeded || somatic-testing-rna-workflow.Succeeded || somatic-testing-tumor-rna-workflow.Succeeded) && get-run-data.Succeeded"

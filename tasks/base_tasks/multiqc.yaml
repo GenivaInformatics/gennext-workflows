@@ -21,16 +21,53 @@ spec:
             type: Directory
         - name: output-dir
           hostPath:
-            path: "{{inputs.parameters.output-dir}}metrics/"
+            path: "{{inputs.parameters.output-dir}}/"
             type: DirectoryOrCreate
       script:
         name: multiqc-script
-        image: quay.io/biocontainers/multiqc:1.17--pyhdfd78af_1
+        image: quay.io/biocontainers/multiqc:1.27--pyhdfd78af_0
         command: [sh]
         source: |
+          # Create temporary MultiQC config file
+          cat << 'EOF' > /tmp/multiqc_config.yaml
+          mosdepth_config:
+            # Coverage thresholds for General Stats
+            general_stats_coverage:
+              - 1
+              - 5
+              - 10
+              - 30
+              - 50
+              - 100
+              - 500
+
+            # Contig inclusion/exclusion filters
+            include_contigs:
+              - "chr*"
+            exclude_contigs:
+              - "*_alt"
+              - "*_decoy"
+              - "*_random"
+              - "chrUn*"
+              - "HLA*"
+              - "chrM"
+              - "chrEBV"
+
+            # # Exclude contigs with low relative coverage
+            # perchrom_fraction_cutoff: 0.001
+
+            # # Show debug logs for excluded contigs
+            # show_excluded_debug_logs: False
+          EOF
+
+          # Run MultiQC with the custom config file
           multiqc \
           /mnt/input/ \
-          -o /mnt/output/
+          -o /mnt/output/ \
+          -c /tmp/multiqc_config.yaml
+
+          # Remove the temporary config file
+          rm /tmp/multiqc_config.yaml
         volumeMounts:
           - name: input-dir
             mountPath: "/mnt/input/"

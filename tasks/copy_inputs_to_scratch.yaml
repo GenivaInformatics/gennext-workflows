@@ -11,6 +11,19 @@ spec:
   #     - name: job-id
   #     - name: input-rel-dir
   templates:
+    - name: copy-bam-to-scratch-path-aware
+      inputs:
+        parameters:
+          - name: bam
+          - name: input-rel-dir
+          - name: scratch-rel-dir
+      outputs:
+        parameters:
+          - name: bam
+            valueFrom:
+              path: "{{steps.copy-bam-to-scratch.outputs.parameters.bam}}"
+      steps:
+        - - name: check-
     - name: copy-inputs-to-scratch
       inputs:
         parameters:
@@ -102,7 +115,6 @@ spec:
             type: DirectoryOrCreate
       inputs:
         parameters:
-          - name: sample-id
           - name: fq-r1
           - name: fq-r2
           - name: input-rel-dir
@@ -154,6 +166,43 @@ spec:
             mountPath: /mnt/input/
           - name: scratch-rel-dir
             mountPath: /mnt/scratch/
+    - name: copy-vcf-to-output
+      volumes:
+        - name: input-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.input-rel-dir}}"
+        - name: output-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.output-rel-dir}}"
+            type: DirectoryOrCreate
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: vcf
+          - name: input-rel-dir
+          - name: output-rel-dir
+      outputs:
+        parameters:
+          - name: vcf
+            value: "{{inputs.parameters.output-rel-dir}}{{inputs.parameters.sample-id}}_dv.vcf.gz"
+      script:
+        image: quay.io/biocontainers/tabix:0.2.6--ha92aebf_0
+        command: [sh]
+        source: |
+          #!/bin/sh
+          FILE="{{inputs.parameters.vcf}}"
+          NEW_FILE="{{inputs.parameters.sample-id}}_dv.vcf.gz"
+          if [ "$(head -c 2 "/mnt/input/$FILE" | xxd -p)" != "1f8b" ]; then
+              bgzip -c "/mnt/input/$FILE" > "/mnt/output/$NEW_FILE"
+          else
+              cp "/mnt/input/$FILE" /mnt/output/$NEW_FILE
+              echo "FILE is already gzipped."
+          fi
+        volumeMounts:
+          - name: input-rel-dir
+            mountPath: /mnt/input/
+          - name: output-rel-dir
+            mountPath: /mnt/output/
     - name: copy-bam-to-scratch
       volumes:
         - name: input-rel-dir
@@ -183,6 +232,129 @@ spec:
             mountPath: /mnt/input
           - name: scratch-rel-dir
             mountPath: /mnt/scratch
+    # - name: copy-regions-file-to-scratch
+    #   volumes:
+    #     - name: input-rel-dir
+    #       hostPath:
+    #         path: "{{inputs.parameters.input-rel-dir}}"
+    #     - name: scratch-rel-dir
+    #       hostPath:
+    #         path: "{{inputs.parameters.scratch-rel-dir}}"
+    #         type: DirectoryOrCreate
+    #   inputs:
+    #     parameters:
+    #       - name: regions-file
+    #       - name: input-rel-dir
+    #       - name: scratch-rel-dir
+    #   outputs:
+    #     parameters:
+    #       - name: regions-file
+    #         value: "{{inputs.parameters.scratch-rel-dir}}/{{inputs.parameters.regions-file}}"
+    #   script:
+    #     image: alpine:latest
+    #     command: [sh]
+    #     source: |
+    #       #!/bin/sh
+    #       cp "/mnt/input/{{inputs.parameters.regions-file}}" /mnt/scratch/
+    #     volumeMounts:
+    #       - name: input-rel-dir
+    #         mountPath: /mnt/input/
+    #       - name: scratch-rel-dir
+    #         mountPath: /mnt/scratch/
+    - name: copy-regions-file-to-scratch-v2
+      volumes:
+        - name: input-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.input-rel-dir}}"
+            type: Directory
+        - name: scratch-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.scratch-rel-dir}}"
+            type: DirectoryOrCreate
+        - name: ref-regions-dir
+          hostPath:
+            path: "{{inputs.parameters.ref-regions-dir}}"
+            type: Directory
+      inputs:
+        parameters:
+          - name: provided-regions-file
+          - name: enrichment-kit-regions-file
+          - name: input-rel-dir
+          - name: scratch-rel-dir
+          - name: ref-regions-dir
+      outputs:
+        parameters:
+          - name: regions-file
+            valueFrom:
+              path: /tmp/regions-file-output.txt
+      script:
+        image: alpine:latest
+        command: [sh]
+        source: |
+          #!/bin/sh
+          if [ -f "/mnt/input/{{inputs.parameters.provided-regions-file}}" ]; then
+            cp "/mnt/input/{{inputs.parameters.provided-regions-file}}" /mnt/scratch/;
+            echo "{{inputs.parameters.scratch-rel-dir}}/{{inputs.parameters.provided-regions-file}}" > /tmp/regions-file-output.txt;
+          else
+            cp "/mnt/ref/regions/{{inputs.parameters.enrichment-kit-regions-file}}" /mnt/scratch/;
+            echo "{{inputs.parameters.scratch-rel-dir}}/{{inputs.parameters.enrichment-kit-regions-file}}" > /tmp/regions-file-output.txt;
+          fi
+        volumeMounts:
+          - name: input-rel-dir
+            mountPath: /mnt/input/
+          - name: scratch-rel-dir
+            mountPath: /mnt/scratch/
+          - name: ref-regions-dir
+            mountPath: /mnt/ref/regions/
+    - name: copy-regions-file-to-scratch-v3
+      volumes:
+        - name: input-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.input-rel-dir}}"
+            type: Directory
+        - name: scratch-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.scratch-rel-dir}}"
+            type: DirectoryOrCreate
+        - name: ref-regions-dir
+          hostPath:
+            path: "{{inputs.parameters.ref-regions-dir}}"
+            type: Directory
+      inputs:
+        parameters:
+          - name: provided-regions-file
+          - name: enrichment-kit-regions-file
+          - name: default-regions-file
+          - name: input-rel-dir
+          - name: scratch-rel-dir
+          - name: ref-regions-dir
+      outputs:
+        parameters:
+          - name: regions-bed-f
+            valueFrom:
+              path: /tmp/regions-file-output.txt
+      script:
+        image: alpine:latest
+        command: [sh]
+        source: |
+          #!/bin/sh
+          if [ -n "{{inputs.parameters.provided-regions-file}}" ] && [ -f "/mnt/input/{{inputs.parameters.provided-regions-file}}" ]; then
+            cp "/mnt/input/{{inputs.parameters.provided-regions-file}}" /mnt/scratch/;
+            echo "{{inputs.parameters.scratch-rel-dir}}/{{inputs.parameters.provided-regions-file}}" > /tmp/regions-file-output.txt;
+          elif [ -n "{{inputs.parameters.enrichment-kit-regions-file}}" ]; then
+            cp "/mnt/ref/regions/{{inputs.parameters.enrichment-kit-regions-file}}" /mnt/scratch/;
+            echo "{{inputs.parameters.scratch-rel-dir}}/{{inputs.parameters.enrichment-kit-regions-file}}" > /tmp/regions-file-output.txt;
+          else
+            cp "/mnt/ref/regions/{{inputs.parameters.default-regions-file}}" /mnt/scratch/;
+            echo "{{inputs.parameters.scratch-rel-dir}}/{{inputs.parameters.default-regions-file}}" > /tmp/regions-file-output.txt;
+          fi
+        volumeMounts:
+          - name: input-rel-dir
+            mountPath: /mnt/input/
+          - name: scratch-rel-dir
+            mountPath: /mnt/scratch/
+          - name: ref-regions-dir
+            mountPath: /mnt/ref/regions/
     - name: copy-regions-file-to-scratch
       volumes:
         - name: input-rel-dir
@@ -200,13 +372,95 @@ spec:
       outputs:
         parameters:
           - name: regions-file
-            value: "{{inputs.parameters.scratch-rel-dir}}/{{inputs.parameters.regions-file}}"
+            valueFrom:
+              path: /tmp/regions-file-output.txt
       script:
         image: alpine:latest
         command: [sh]
         source: |
           #!/bin/sh
-          cp "/mnt/input/{{inputs.parameters.regions-file}}" /mnt/scratch/
+          if [ -f "/mnt/input/{{inputs.parameters.regions-file}}" ]; then
+            cp "/mnt/input/{{inputs.parameters.regions-file}}" /mnt/scratch/
+            echo "{{inputs.parameters.scratch-rel-dir}}/{{inputs.parameters.regions-file}}" > /tmp/regions-file-output.txt
+          else
+            echo "." > /tmp/regions-file-output.txt
+          fi
+        volumeMounts:
+          - name: input-rel-dir
+            mountPath: /mnt/input/
+          - name: scratch-rel-dir
+            mountPath: /mnt/scratch/
+    # - name: copy-genotype-file-to-scratch
+    #   volumes:
+    #     - name: input-genotype-file
+    #       hostPath:
+    #         path: "{{=sprig.osDir(inputs.parameters['input-genotype-file'])}}"
+    #         type: Directory
+    #     - name: output-genotype-file
+    #       hostPath:
+    #         path: "{{=sprig.osDir(inputs.parameters['output-genotype-file'])}}"
+    #         type: DirectoryOrCreate
+    #   inputs:
+    #     parameters:
+    #       - name: input-genotype-file
+    #       - name: output-genotype-file
+    #   outputs:
+    #     parameters:
+    #       - name: genotype-file
+    #         value: "{{inputs.parameters.output-genotype-file}}"
+    #   script:
+    #     image: alpine:latest
+    #     command: [sh]
+    #     source: |
+    #       #!/bin/sh
+    #       gzip -dk "/mnt/input/{{=sprig.osBase(inputs.parameters['input-genotype-file'])}}" > "/mnt/scratch/{{=sprig.osBase(inputs.parameters['output-genotype-file'])}}"
+    #     volumeMounts:
+    #       - name: input-rel-dir
+    #         mountPath: /mnt/input
+    #       - name: scratch-rel-dir
+    #         mountPath: /mnt/scratch
+    - name: copy-genotype-file-to-scratch
+      volumes:
+        - name: input-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.input-rel-dir}}"
+        - name: scratch-rel-dir
+          hostPath:
+            path: "{{inputs.parameters.scratch-rel-dir}}"
+            type: DirectoryOrCreate
+      inputs:
+        parameters:
+          - name: genotype-file
+          - name: input-rel-dir
+          - name: scratch-rel-dir
+      outputs:
+        parameters:
+          - name: genotype-file
+            valueFrom:
+              path: /tmp/genotype-file-output.txt
+      script:
+        image: alpine:latest
+        command: [sh]
+        source: |
+          #!/bin/sh
+          if [ -f "/mnt/input/{{inputs.parameters.genotype-file}}" ]; then
+            input_file="/mnt/input/{{inputs.parameters.genotype-file}}"
+            filename="{{=sprig.osBase(inputs.parameters['genotype-file'])}}"
+
+            # Test if the file is already gzip-compressed
+            if gzip -t "$input_file" 2>/dev/null; then
+              # File is already compressed, just copy it
+              cp "$input_file" "/mnt/scratch/${filename}"
+              echo "{{inputs.parameters.scratch-rel-dir}}/${filename}" > /tmp/genotype-file-output.txt
+            else
+              # File is not compressed, compress it while copying
+              output_filename="${filename}.gz"
+              cat "$input_file" | gzip -c > "/mnt/scratch/${output_filename}"
+              echo "{{inputs.parameters.scratch-rel-dir}}/${output_filename}" > /tmp/genotype-file-output.txt
+            fi
+          else
+            echo "." > /tmp/genotype-file-output.txt
+          fi
         volumeMounts:
           - name: input-rel-dir
             mountPath: /mnt/input/

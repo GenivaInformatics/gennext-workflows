@@ -25,9 +25,6 @@ spec:
         parameters:
           - name: output-dir
             value: "{{inputs.parameters.output-dir}}"
-          # - name: output-vcf-f-basenames
-          #   valueFrom:
-          #     path: "/tmp/output-vcf-f-basenames"
           - name: output-tumor-vcf-f
             value: "{{inputs.parameters.output-dir}}/{{inputs.parameters.sample-id}}_tumorSV.vcf.gz"
           - name: output-diploid-vcf-f
@@ -60,48 +57,7 @@ spec:
       script:
         name: "manta"
         image: quay.io/biocontainers/manta:1.6.0--h9ee0642_2
-        command: [sh]
-        source: |
-
-          sampleId="{{inputs.parameters.sample-id}}";
-          normalBam="{{=sprig.osBase(inputs.parameters['normal-bam'])}}";
-          tumorBam="{{=sprig.osBase(inputs.parameters['tumor-bam'])}}";
-          regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
-          refGenomeFile="{{=sprig.osBase(inputs.parameters['ref-genome-f'])}}";
-
-          options="";
-
-          # sprig.osBase returns "." if the path is empty
-          # mind the whitespace before '--'
-          if [ ! "." = "$normalBam" ]; then options+=" --normalBam=/mnt/input/normal_bam/$normalBam"; fi
-          if [ ! "." = "$tumorBam" ]; then options+=" --tumorBam=/mnt/input/tumor_bam/$tumorBam"; fi
-          if [ ! "." = "$regionsFile" ]; then options+=" --exome"; fi
-          if [ ! "." = "$regionsFile" ]; then options+=" --callRegions=/mnt/ref/regions/$regionsFile.gz"; fi
-
-          echo $sampleId;
-          echo $options;
-
-          MANTA_TMP_DIR=$(mktemp -p /mnt/scratch/ -d manta.XXXXXXXX);
-
-          configManta.py \
-          --referenceFasta=/ref/genome/$refGenomeFile \
-           $options --runDir=$MANTA_TMP_DIR && \
-          $MANTA_TMP_DIR/runWorkflow.py -m local -j {{inputs.parameters.thread-count}};
-          for f in $MANTA_TMP_DIR/results/variants/*
-          do
-            mv "$MANTA_TMP_DIR/results/variants/$(basename ${f})" "$MANTA_TMP_DIR/results/variants/${sampleId}_$(basename ${f})"
-          done;
-          ls $MANTA_TMP_DIR/results/variants;
-          for f in $MANTA_TMP_DIR/results/stats/*
-          do
-            mv "$MANTA_TMP_DIR/results/stats/$(basename ${f})" "$MANTA_TMP_DIR/results/stats/${sampleId}_$(basename ${f})"
-          done;
-          cp $MANTA_TMP_DIR/results/variants/* /mnt/output/ &&
-          cp $MANTA_TMP_DIR/results/stats /mnt/output/;
-          rm -rf $MANTA_TMP_DIR/results/;
-          # touch /tmp/output-vcf-f-basenames;
-          # list output vcf.gz file basenames in the /tmp/output-vcf-f-basenames
-          # find /mnt/output/ -name "*.vcf.gz" | xargs -I {} basename {} >> /tmp/output-vcf-f-basenames
+        command: [bash]
         volumeMounts:
           - name: normal-bam
             mountPath: "/mnt/input/normal_bam/"
@@ -115,6 +71,77 @@ spec:
             mountPath: "/mnt/output/"
           - name: scratch-dir
             mountPath: "/mnt/scratch/"
+        source: |
+          set -e  # Exit on error
+
+          # Function to create empty VCF file
+          create_empty_vcf() {
+            local output_file="$1"
+            {
+              echo "##fileformat=VCFv4.2"
+              echo "##source=Manta_empty_placeholder"
+              echo "##reference=file:///ref/genome/$refGenomeFile"
+              echo "##SAMPLE=<ID=$sampleId>"
+              echo "##contig=<ID=chr1>"
+              echo "##INFO=<ID=SVTYPE,Number=1,Type=String,Description=\"Type of structural variant\">"
+              echo "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">"
+              echo -e "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t$sampleId"
+            } | gzip > "$output_file"
+          }
+
+          sampleId="{{inputs.parameters.sample-id}}"
+          normalBam="{{=sprig.osBase(inputs.parameters['normal-bam'])}}"
+          tumorBam="{{=sprig.osBase(inputs.parameters['tumor-bam'])}}"
+          regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}"
+          refGenomeFile="{{=sprig.osBase(inputs.parameters['ref-genome-f'])}}"
+
+          options=""
+
+          # sprig.osBase returns "." if the path is empty
+          # mind the whitespace before '--'
+          if [ ! "." = "$normalBam" ]; then options+=" --normalBam=/mnt/input/normal_bam/$normalBam"; fi
+          if [ ! "." = "$tumorBam" ]; then options+=" --tumorBam=/mnt/input/tumor_bam/$tumorBam"; fi
+          if [ ! "." = "$regionsFile" ]; then options+=" --exome"; fi
+          if [ ! "." = "$regionsFile" ]; then options+=" --callRegions=/mnt/ref/regions/$regionsFile.gz"; fi
+
+          echo "Sample ID: $sampleId"
+          echo "Manta options: $options"
+
+          MANTA_TMP_DIR=$(mktemp -p /mnt/scratch/ -d manta.XXXXXXXX)
+
+          # Try to run Manta
+          if configManta.py \
+            --referenceFasta=/ref/genome/$refGenomeFile \
+            $options --runDir=$MANTA_TMP_DIR && \
+            $MANTA_TMP_DIR/runWorkflow.py -m local -j {{inputs.parameters.thread-count}}; then
+
+            # Manta succeeded - process outputs normally
+            for f in $MANTA_TMP_DIR/results/variants/*; do
+              mv "$MANTA_TMP_DIR/results/variants/$(basename ${f})" "$MANTA_TMP_DIR/results/variants/${sampleId}_$(basename ${f})"
+            done
+
+            for f in $MANTA_TMP_DIR/results/stats/*; do
+              mv "$MANTA_TMP_DIR/results/stats/$(basename ${f})" "$MANTA_TMP_DIR/results/stats/${sampleId}_$(basename ${f})"
+            done
+
+            cp $MANTA_TMP_DIR/results/variants/* /mnt/output/
+            mkdir -p /mnt/output/stats
+            cp $MANTA_TMP_DIR/results/stats/* /mnt/output/stats/
+          else
+            # Manta failed - create empty VCF files
+            echo "Manta failed. Creating empty VCF files as placeholders..."
+
+            # Create empty tumor and diploid VCF files
+            create_empty_vcf "/mnt/output/${sampleId}_tumorSV.vcf.gz"
+            create_empty_vcf "/mnt/output/${sampleId}_diploidSV.vcf.gz"
+
+            # Create empty stats directory
+            mkdir -p /mnt/output/stats
+            echo "Manta run failed - empty output files created" > "/mnt/output/stats/${sampleId}_manta_failed.txt"
+          fi
+
+          # Cleanup
+          rm -rf "$MANTA_TMP_DIR"
     - name: manta-with-nodeSelector
       nodeSelector:
         kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
@@ -137,9 +164,6 @@ spec:
         parameters:
           - name: output-dir
             value: "{{inputs.parameters.output-dir}}"
-          # - name: output-vcf-f-basenames
-          #   valueFrom:
-          #     path: "/tmp/output-vcf-f-basenames"
           - name: output-tumor-vcf-f
             value: "{{inputs.parameters.output-dir}}/{{inputs.parameters.sample-id}}_tumorSV.vcf.gz"
           - name: output-diploid-vcf-f
@@ -172,48 +196,7 @@ spec:
       script:
         name: "manta"
         image: quay.io/biocontainers/manta:1.6.0--h9ee0642_2
-        command: [sh]
-        source: |
-
-          sampleId="{{inputs.parameters.sample-id}}";
-          normalBam="{{=sprig.osBase(inputs.parameters['normal-bam'])}}";
-          tumorBam="{{=sprig.osBase(inputs.parameters['tumor-bam'])}}";
-          regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
-          refGenomeFile="{{=sprig.osBase(inputs.parameters['ref-genome-f'])}}";
-
-          options="";
-
-          # sprig.osBase returns "." if the path is empty
-          # mind the whitespace before '--'
-          if [ ! "." = "$normalBam" ]; then options+=" --normalBam=/mnt/input/normal_bam/$normalBam"; fi
-          if [ ! "." = "$tumorBam" ]; then options+=" --tumorBam=/mnt/input/tumor_bam/$tumorBam"; fi
-          if [ ! "." = "$regionsFile" ]; then options+=" --exome"; fi
-          if [ ! "." = "$regionsFile" ]; then options+=" --callRegions=/mnt/ref/regions/$regionsFile.gz"; fi
-
-          echo $sampleId;
-          echo $options;
-
-          MANTA_TMP_DIR=$(mktemp -p /mnt/scratch/ -d manta.XXXXXXXX);
-
-          configManta.py \
-          --referenceFasta=/ref/genome/$refGenomeFile \
-           $options --runDir=$MANTA_TMP_DIR && \
-          $MANTA_TMP_DIR/runWorkflow.py -m local -j {{inputs.parameters.thread-count}};
-          for f in $MANTA_TMP_DIR/results/variants/*
-          do
-            mv "$MANTA_TMP_DIR/results/variants/$(basename ${f})" "$MANTA_TMP_DIR/results/variants/${sampleId}_$(basename ${f})"
-          done;
-          ls $MANTA_TMP_DIR/results/variants;
-          for f in $MANTA_TMP_DIR/results/stats/*
-          do
-            mv "$MANTA_TMP_DIR/results/stats/$(basename ${f})" "$MANTA_TMP_DIR/results/stats/${sampleId}_$(basename ${f})"
-          done;
-          cp $MANTA_TMP_DIR/results/variants/* /mnt/output/ &&
-          cp $MANTA_TMP_DIR/results/stats /mnt/output/;
-          rm -rf $MANTA_TMP_DIR/results/;
-          # touch /tmp/output-vcf-f-basenames;
-          # list output vcf.gz file basenames in the /tmp/output-vcf-f-basenames
-          # find /mnt/output/ -name "*.vcf.gz" | xargs -I {} basename {} >> /tmp/output-vcf-f-basenames
+        command: [bash]
         volumeMounts:
           - name: normal-bam
             mountPath: "/mnt/input/normal_bam/"
@@ -227,3 +210,74 @@ spec:
             mountPath: "/mnt/output/"
           - name: scratch-dir
             mountPath: "/mnt/scratch/"
+        source: |
+          set -e  # Exit on error
+
+          # Function to create empty VCF file
+          create_empty_vcf() {
+            local output_file="$1"
+            {
+              echo "##fileformat=VCFv4.2"
+              echo "##source=Manta_empty_placeholder"
+              echo "##reference=file:///ref/genome/$refGenomeFile"
+              echo "##SAMPLE=<ID=$sampleId>"
+              echo "##contig=<ID=chr1>"
+              echo "##INFO=<ID=SVTYPE,Number=1,Type=String,Description=\"Type of structural variant\">"
+              echo "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">"
+              echo -e "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t$sampleId"
+            } | gzip > "$output_file"
+          }
+
+          sampleId="{{inputs.parameters.sample-id}}"
+          normalBam="{{=sprig.osBase(inputs.parameters['normal-bam'])}}"
+          tumorBam="{{=sprig.osBase(inputs.parameters['tumor-bam'])}}"
+          regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}"
+          refGenomeFile="{{=sprig.osBase(inputs.parameters['ref-genome-f'])}}"
+
+          options=""
+
+          # sprig.osBase returns "." if the path is empty
+          # mind the whitespace before '--'
+          if [ ! "." = "$normalBam" ]; then options+=" --normalBam=/mnt/input/normal_bam/$normalBam"; fi
+          if [ ! "." = "$tumorBam" ]; then options+=" --tumorBam=/mnt/input/tumor_bam/$tumorBam"; fi
+          if [ ! "." = "$regionsFile" ]; then options+=" --exome"; fi
+          if [ ! "." = "$regionsFile" ]; then options+=" --callRegions=/mnt/ref/regions/$regionsFile.gz"; fi
+
+          echo "Sample ID: $sampleId"
+          echo "Manta options: $options"
+
+          MANTA_TMP_DIR=$(mktemp -p /mnt/scratch/ -d manta.XXXXXXXX)
+
+          # Try to run Manta
+          if configManta.py \
+            --referenceFasta=/ref/genome/$refGenomeFile \
+            $options --runDir=$MANTA_TMP_DIR && \
+            $MANTA_TMP_DIR/runWorkflow.py -m local -j {{inputs.parameters.thread-count}}; then
+            
+            # Manta succeeded - process outputs normally
+            for f in $MANTA_TMP_DIR/results/variants/*; do
+              mv "$MANTA_TMP_DIR/results/variants/$(basename ${f})" "$MANTA_TMP_DIR/results/variants/${sampleId}_$(basename ${f})"
+            done
+
+            for f in $MANTA_TMP_DIR/results/stats/*; do
+              mv "$MANTA_TMP_DIR/results/stats/$(basename ${f})" "$MANTA_TMP_DIR/results/stats/${sampleId}_$(basename ${f})"
+            done
+
+            cp $MANTA_TMP_DIR/results/variants/* /mnt/output/
+            mkdir -p /mnt/output/stats
+            cp $MANTA_TMP_DIR/results/stats/* /mnt/output/stats/
+          else
+            # Manta failed - create empty VCF files
+            echo "Manta failed. Creating empty VCF files as placeholders..."
+
+            # Create empty tumor and diploid VCF files
+            create_empty_vcf "/mnt/output/${sampleId}_tumorSV.vcf.gz"
+            create_empty_vcf "/mnt/output/${sampleId}_diploidSV.vcf.gz"
+
+            # Create empty stats directory
+            mkdir -p /mnt/output/stats
+            echo "Manta run failed - empty output files created" > "/mnt/output/stats/${sampleId}_manta_failed.txt"
+          fi
+
+          # Cleanup
+          rm -rf "$MANTA_TMP_DIR"

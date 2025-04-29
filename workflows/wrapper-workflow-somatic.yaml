@@ -1,0 +1,137 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: wrapper-workflow-somatic
+  namespace: argo
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: wrapper-workflow-somatic
+  arguments:
+    parameters:
+      - name: node-name
+      - name: user-id
+      - name: job-id
+      - name: process-type
+  podGC:
+    strategy: OnPodSuccess
+  # retryStrategy:
+  #   limit: "2"
+  #   retryPolicy: "Always"
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node-name}}"
+  templates:
+    - name: wrapper-workflow-somatic
+      dag:
+        tasks:
+          - name: get-node-config
+            templateRef:
+              name: get-node-config
+              template: get-node-config
+            arguments:
+              parameters:
+                - name: node-name
+                  value: "{{workflow.parameters.node-name}}"
+                - name: user-id
+                  value: "{{workflow.parameters.user-id}}"
+                - name: job-id
+                  value: "{{workflow.parameters.job-id}}"
+          - name: get-run-data
+            templateRef:
+              name: get-run-data
+              template: get-run-data
+            arguments:
+              parameters:
+                - name: job-id
+                  value: "{{workflow.parameters.job-id}}"
+                - name: input-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.input-rel-dir}}"
+            depends: "get-node-config"
+          - name: somatic-testing-tumor-workflow
+            when: "'{{workflow.parameters.process-type}}' == 'som-test-tumor'"
+            templateRef:
+              name: somatic-testing-workflow
+              template: main
+            arguments:
+              parameters:
+                - name: user-id
+                  value: "{{workflow.parameters.user-id}}"
+                - name: run-id
+                  value: "{{workflow.parameters.job-id}}"
+                - name: run-data
+                  value: "{{tasks.get-run-data.outputs.parameters.run-data}}"
+                - name: input-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.input-rel-dir}}"
+                - name: temp-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.scratch-rel-dir}}"
+                - name: output-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.output-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.ref-base-dir}}"
+                - name: thread-count
+                  value: "{{tasks.get-node-config.outputs.parameters.thread-count}}"
+            depends: "get-run-data && get-node-config"
+          - name: somatic-testing-rna-workflow
+            when: "'{{workflow.parameters.process-type}}' == 'som-test-rna'"
+            templateRef:
+              name: somatic-testing-workflow
+              template: somatic-testing-rna
+            arguments:
+              parameters:
+                - name: user-id
+                  value: "{{workflow.parameters.user-id}}"
+                - name: run-id
+                  value: "{{workflow.parameters.job-id}}"
+                - name: run-data
+                  value: "{{tasks.get-run-data.outputs.parameters.run-data}}"
+                - name: input-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.input-rel-dir}}"
+                - name: temp-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.scratch-rel-dir}}"
+                - name: output-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.output-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.ref-base-dir}}"
+                - name: thread-count
+                  value: "{{tasks.get-node-config.outputs.parameters.thread-count}}"
+            depends: "get-run-data && get-node-config"
+          - name: somatic-testing-tumor-rna-workflow
+            when: "'{{workflow.parameters.process-type}}' == 'som-test-tumor-rna'"
+            templateRef:
+              name: somatic-testing-workflow
+              template: somatic-testing-tumor-rna
+            arguments:
+              parameters:
+                - name: user-id
+                  value: "{{workflow.parameters.user-id}}"
+                - name: run-id
+                  value: "{{workflow.parameters.job-id}}"
+                - name: run-data
+                  value: "{{tasks.get-run-data.outputs.parameters.run-data}}"
+                - name: input-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.input-rel-dir}}"
+                - name: temp-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.scratch-rel-dir}}"
+                - name: output-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.output-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.ref-base-dir}}"
+                - name: thread-count
+                  value: "{{tasks.get-node-config.outputs.parameters.thread-count}}"
+            depends: "get-run-data && get-node-config"
+          - name: set-state-completed
+            templateRef:
+              name: change-run-state-template
+              template: change-run-state
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{workflow.parameters.job-id}}"
+                - name: run-state
+                  value: "completed"
+            depends: "(somatic-testing-tumor-workflow.Succeeded || somatic-testing-rna-workflow.Succeeded) && get-run-data.Succeeded"

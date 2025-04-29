@@ -1,0 +1,101 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cnvpytor-template
+  namespace: argo
+spec:
+  templates:
+    - name: cnvpytor
+      inputs:
+        parameters:
+          - name: sample-id
+            # Sample ID
+          - name: input-bam
+            # Path to input BAM file
+          - name: input-vcf
+            # Path to input VCF file (for SNP information)
+          - name: ref-genome-f
+            # Path to reference genome
+          - name: output-f
+            # Path for output pytor file
+          - name: his-bin-size
+            default: "5000 10000 100000"
+            # Bin sizes for histogram analysis
+          - name: baf-bin-size
+            default: "5000 10000 100000"
+            # Bin sizes for BAF analysis
+          - name: thread-count
+            default: "8"
+            # Number of threads to use
+      outputs:
+        parameters:
+          - name: output-f
+            value: "{{inputs.parameters.output-f}}"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: input-vcf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-vcf'])}}"
+            type: Directory
+        - name: ref-genome-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['ref-genome-f'])}}"
+            type: Directory
+        - name: output-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-f'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: "cnvpytor-analysis"
+        image: quay.io/biocontainers/cnvpytor:1.0--py39h6a678da_2
+        command: [sh]
+        source: |
+
+          sample_id="{{inputs.parameters.sample-id}}"
+
+          # Run CNVpytor
+          cnvpytor \
+            -root /output/{{=sprig.osBase(inputs.parameters['output-f'])}} \
+            -rd /input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+            -snp /input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf'])}} \
+            -T /input/ref/{{=sprig.osBase(inputs.parameters['ref-genome-f'])}} \
+            -his {{inputs.parameters.his-bin-size}} \
+            -baf {{inputs.parameters.baf-bin-size}} \
+            -j {{inputs.parameters.thread-count}}
+
+          # Generate plots and other output files
+          # Set IFS to space to split bin sizes into array
+          IFS=' ' read -r -a his_bins <<< "{{inputs.parameters.his-bin-size}}"
+
+          # Generate plots for each bin size
+          for bin_size in "${his_bins[@]}"; do
+            echo "Generating plots for bin size $bin_size"
+            cnvpytor \
+              -root /output/{{=sprig.osBase(inputs.parameters['output-f'])}} \
+              -plot manhattan rd:$bin_size -o /output/{{inputs.parameters.sample-id}}_manhattan_rd_$bin_size.png
+
+            cnvpytor \
+              -root /output/{{=sprig.osBase(inputs.parameters['output-f'])}} \
+              -plot manhattan baf:$bin_size -o /output/{{inputs.parameters.sample-id}}_manhattan_baf_$bin_size.png
+
+            cnvpytor \
+              -root /output/{{=sprig.osBase(inputs.parameters['output-f'])}} \
+              -plot heatmap rd:$bin_size -o /output/{{inputs.parameters.sample-id}}_heatmap_rd_$bin_size.png
+
+            # Call CNVs and output to file
+            cnvpytor \
+              -root /output/{{=sprig.osBase(inputs.parameters['output-f'])}} \
+              -call $bin_size > /output/{{inputs.parameters.sample-id}}_calls_$bin_size.txt
+          done
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/input/bam/"
+          - name: input-vcf
+            mountPath: "/input/vcf/"
+          - name: ref-genome-f
+            mountPath: "/input/ref/"
+          - name: output-f
+            mountPath: "/output/"

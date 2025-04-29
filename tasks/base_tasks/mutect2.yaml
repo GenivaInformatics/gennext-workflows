@@ -36,7 +36,7 @@ spec:
             type: File
       script:
         name: mutect2-mark-calls-script
-        image: broadinstitute/gatk:4.3.0.0
+        image: broadinstitute/gatk:4.6.1.0
         command: [sh]
         source: |
           regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
@@ -99,7 +99,7 @@ spec:
             type: File
       script:
         name: mutect2-tumor-only
-        image: broadinstitute/gatk:4.3.0.0
+        image: broadinstitute/gatk:4.6.1.0
         command: [sh]
         source: |
           regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
@@ -110,7 +110,10 @@ spec:
           $(if [ ! -z "$regionsFile" ]; then echo "-L /mnt/input/regions/$regionsFile"; fi) \
           --germline-resource /mnt/ref/gnomad/{{=sprig.osBase(inputs.parameters['gnomad-data-f'])}} \
           --panel-of-normals /mnt/ref/1000g/{{=sprig.osBase(inputs.parameters['1000g-pon-data-f'])}} \
-          -O /mnt/output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf'])}}
+          -O /mnt/output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf'])}} \
+          --max-reads-per-alignment-start 0 \
+          --initial-tumor-lod 1.0 \
+          --tumor-lod-to-emit 1.0
         volumeMounts:
           - name: input-bam
             mountPath: "/mnt/input/bam/"

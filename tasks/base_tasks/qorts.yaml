@@ -1,0 +1,114 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: qorts-template
+  namespace: argo
+spec:
+# singularity exec --bind /home/workspace/ --bind /home/ilaydasahin/rnaseq/ --bind /run
+# space/ilayda/ /opt/acugen/singularity_images/quay.io_biocontainers_qorts_1.3.6--hdfd78af_
+# 1.sif qorts -Xmx8G QC --stranded --stranded_fr_secondstrand --chromSizes /home/workspace/
+# refs_annots/gene_annotation/hg38.chrom_sizes --outfilePrefix ACU1 /home/ilaydasahin/rnase
+# q/raw_data/STAR_out/ACU1Aligned.sortedByCoord.out.bam /home/workspace/refs_annots/gene_an
+# notation/gencode.v41.primary_assembly.annotation.gtf.gz /runspace/ilayda/qorts_out/
+  templates:
+    - name: qorts
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: gene-annotation-gtf
+          - name: chrom-sizes
+          - name: input-bam
+          - name: output-dir
+      outputs:
+        parameters:
+          - name: output-dir
+            value: "{{inputs.parameters.output-dir}}"
+      volumes:
+        - name: gene-annotation-gtf
+          hostPath:
+            path: "{{inputs.parameters.gene-annotation-gtf}}"
+            type: File
+        - name: chrom-sizes
+          hostPath:
+            path: "{{inputs.parameters.chrom-sizes}}"
+            type: File
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: qorts-script
+        image: quay.io/biocontainers/qorts:1.3.0--py36_0
+        command: [sh]
+        source: |
+          qorts -Xmx120G QC --stranded --stranded_fr_secondstrand \
+          --chromSizes /mnt/ref/gene_annots/{{=sprig.osBase(inputs.parameters['chrom-sizes'])}} \
+          --outfilePrefix {{inputs.parameters.sample-id}}_ \
+          /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+          /mnt/ref/gene_annots/{{=sprig.osBase(inputs.parameters['gene-annotation-gtf'])}} \
+          /mnt/output/
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/mnt/input/bam/"
+          - name: output-dir
+            mountPath: "/mnt/output/"
+          - name: gene-annotation-gtf
+            mountPath: "/mnt/ref/gene_annots/{{=sprig.osBase(inputs.parameters['gene-annotation-gtf'])}}"
+          - name: chrom-sizes
+            mountPath: "/mnt/ref/gene_annots/{{=sprig.osBase(inputs.parameters['chrom-sizes'])}}"
+    - name: qorts-on-node
+      nodeSelector:
+        kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      inputs:
+        parameters:
+          - name: node-name
+          - name: sample-id
+          - name: gene-annotation-gtf
+          - name: chrom-sizes
+          - name: input-bam
+          - name: output-dir
+      outputs:
+        parameters:
+          - name: output-dir
+            value: "{{inputs.parameters.output-dir}}"
+      volumes:
+        - name: gene-annotation-gtf
+          hostPath:
+            path: "{{inputs.parameters.gene-annotation-gtf}}"
+            type: File
+        - name: chrom-sizes
+          hostPath:
+            path: "{{inputs.parameters.chrom-sizes}}"
+            type: File
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: qorts-script
+        image: quay.io/biocontainers/qorts:1.3.0--py36_0
+        command: [sh]
+        source: |
+          qorts -Xmx56G QC --stranded --stranded_fr_secondstrand \
+          --chromSizes /mnt/ref/gene_annots/{{=sprig.osBase(inputs.parameters['chrom-sizes'])}} \
+          --outfilePrefix {{inputs.parameters.sample-id}}_ \
+          /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+          /mnt/ref/gene_annots/{{=sprig.osBase(inputs.parameters['gene-annotation-gtf'])}} \
+          /mnt/output/
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/mnt/input/bam/"
+          - name: output-dir
+            mountPath: "/mnt/output/"
+          - name: gene-annotation-gtf
+            mountPath: "/mnt/ref/gene_annots/{{=sprig.osBase(inputs.parameters['gene-annotation-gtf'])}}"
+          - name: chrom-sizes
+            mountPath: "/mnt/ref/gene_annots/{{=sprig.osBase(inputs.parameters['chrom-sizes'])}}"

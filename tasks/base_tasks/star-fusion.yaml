@@ -8,6 +8,7 @@ spec:
       inputs:
         parameters:
           - name: sample-id
+          - name: read-group-str
           - name: fq-r1
           - name: fq-r2
             value: ""
@@ -67,6 +68,7 @@ spec:
           --genome_lib_dir /mnt/ref/ctat-lib/ \
           --left_fq /mnt/input/r1/$fqR1 \
           $(if [ ! -z "$fqR2" ]; then echo "--right_fq /mnt/input/r2/$fqR2"; fi) \
+          --STAR_outSAMattrRGline "{{inputs.parameters.read-group-str}}" \
           --output_dir /mnt/scratch/ \
           --CPU {{inputs.parameters.thread-count}};
           mv /mnt/scratch/Aligned.out.bam /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}};

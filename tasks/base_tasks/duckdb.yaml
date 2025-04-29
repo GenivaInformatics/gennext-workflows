@@ -174,72 +174,127 @@ spec:
           DROP VIEW IF EXISTS advanced_combined_snv;
           CREATE TABLE oncokb_snv AS FROM read_csv_auto('/mnt/input/oncokb_snv.tsv', header=True, sep='\t', sample_size=-1);
           CREATE TABLE cancervar_snv AS FROM read_csv_auto('/mnt/input/cancervar_snv.tsv', header=True, sep='\t', sample_size=-1);
-          CREATE VIEW combined_snv AS
+          CREATE OR REPLACE VIEW combined_snv AS
           SELECT
-            cancervar_snv_with_row_ids."row_id",
-            CONCAT('chr', cancervar_snv_with_row_ids."#Chr") AS Chrom,
-            cancervar_snv_with_row_ids."Start",
-            cancervar_snv_with_row_ids."End",
-            oncokb_snv."Reference_Allele" AS Ref,
-            cancervar_snv_with_row_ids."Alt",
-            oncokb_snv."Otherinfo10" AS "Filter",
-            -- STRING_SPLIT(oncokb_snv."Otherinfo10", ';') AS "Filter",
-            cancervar_snv_with_row_ids."Ref.Gene" AS "Gene.refGene",
-            cancervar_snv_with_row_ids."Func.refGene",
-            cancervar_snv_with_row_ids."ExonicFunc.refGene",
-            oncokb_snv."tx",
-            oncokb_snv."exon",
-            oncokb_snv."txChange",
-            oncokb_snv."aaChange",
-            oncokb_snv."Variant_Type",
-            oncokb_snv."avsnp150",
-            cancervar_snv_with_row_ids."clinvar: Clinvar",
-            cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence",
-            REPLACE(
-            SUBSTRING(
-                cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence"
-                FROM POSITION('#' IN cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence") + 1
-                FOR POSITION(' ' IN SUBSTRING(cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence" FROM POSITION('#' IN cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence"))) - 1
-            ),
-            '_', ' '
-            ) AS "CancerVar: Tier",
-            (
-            SELECT STRING_AGG(DISTINCT CONCAT('CBP', i + 1), ', ')
-            FROM generate_series(0, 11) as gs(i)
-            WHERE TRIM(SPLIT_PART(SPLIT_PART(SPLIT_PART(cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence", 'EVS=[', 2), ']', 1), ',', gs.i+1)) ~ '^[0-9]+$' AND
-                    CAST(TRIM(SPLIT_PART(SPLIT_PART(SPLIT_PART(cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence", 'EVS=[', 2), ']', 1), ',', gs.i+1)) AS INTEGER) > 0
-            ) AS "CancerVar: Evidence",
-            cancervar_snv_with_row_ids."cosmic91",
-            oncokb_snv."ICGC_Id",
-            SPLIT_PART(oncokb_snv."Otherinfo13", ':', 1) AS GT,
-            SPLIT_PART(oncokb_snv."Otherinfo13", ':', 2) AS AD,
-            SPLIT_PART(oncokb_snv."Otherinfo13", ':', 3) AS AF,
-            SPLIT_PART(oncokb_snv."Otherinfo13", ':', 4) AS DP,
-            SPLIT_PART(SPLIT_PART(oncokb_snv."Otherinfo11", 'DET=', 2), ';', 1) AS DET,
-            CASE
-              WHEN TRIM(SPLIT_PART(SPLIT_PART(oncokb_snv."Otherinfo11", 'DETS=', 2), ';', 1)) = '' THEN NULL
-              ELSE CAST(SPLIT_PART(SPLIT_PART(oncokb_snv."Otherinfo11", 'DETS=', 2), ';', 1) AS FLOAT)
-            END AS DETS,
-            oncokb_snv."GENE_IN_ONCOKB",
-            oncokb_snv."ONCOGENIC",
-            oncokb_snv."LEVEL_1",
-            oncokb_snv."LEVEL_2",
-            oncokb_snv."LEVEL_3A",
-            oncokb_snv."LEVEL_3B",
-            oncokb_snv."LEVEL_4",
-            oncokb_snv."LEVEL_R1",
-            oncokb_snv."LEVEL_R2",
-            oncokb_snv."HIGHEST_LEVEL",
-            oncokb_snv."HIGHEST_SENSITIVE_LEVEL",
-            oncokb_snv."HIGHEST_RESISTANCE_LEVEL",
-            oncokb_snv."TX_CITATIONS",
+              cancervar_snv_with_row_ids."row_id",
+              CONCAT('chr', cancervar_snv_with_row_ids."#Chr") AS Chrom,
+              cancervar_snv_with_row_ids."Start",
+              cancervar_snv_with_row_ids."End",
+              oncokb_snv."Reference_Allele" AS Ref,
+              cancervar_snv_with_row_ids."Alt",
+              oncokb_snv."Otherinfo10" AS "Filter",
+              cancervar_snv_with_row_ids."Ref.Gene" AS "Gene.refGene",
+              cancervar_snv_with_row_ids."Func.refGene",
+              cancervar_snv_with_row_ids."ExonicFunc.refGene",
+
+              -- Improved consequences column that handles semicolon-separated values (renamed to match your Rust code)
+              CASE
+                  WHEN cancervar_snv_with_row_ids."Func.refGene" = 'exonic'
+                      THEN cancervar_snv_with_row_ids."ExonicFunc.refGene"
+                  WHEN cancervar_snv_with_row_ids."Func.refGene" LIKE 'exonic;%'
+                      THEN CONCAT(
+                          cancervar_snv_with_row_ids."ExonicFunc.refGene",
+                          ';',
+                          SUBSTRING(cancervar_snv_with_row_ids."Func.refGene" FROM 8)
+                      )
+                  WHEN cancervar_snv_with_row_ids."Func.refGene" LIKE '%;exonic;%'
+                      THEN REGEXP_REPLACE(
+                          cancervar_snv_with_row_ids."Func.refGene",
+                          ';exonic;',
+                          CONCAT(';', cancervar_snv_with_row_ids."ExonicFunc.refGene", ';')
+                      )
+                  WHEN cancervar_snv_with_row_ids."Func.refGene" LIKE '%;exonic'
+                      THEN REGEXP_REPLACE(
+                          cancervar_snv_with_row_ids."Func.refGene",
+                          ';exonic$',
+                          CONCAT(';', cancervar_snv_with_row_ids."ExonicFunc.refGene")
+                      )
+                  ELSE cancervar_snv_with_row_ids."Func.refGene"
+              END AS consequence,
+
+              -- Use split components from GeneDetail.refGene for splicing and intron consequences
+              -- Take only the first annotation if multiple are present (separated by semicolons)
+              CASE
+                  WHEN cancervar_snv_with_row_ids."Func.refGene" IN ('splicing', 'intron') AND SPLIT_PART(oncokb_snv."GeneDetail.refGene", ';', 1) LIKE '%:%:%'
+                  THEN SPLIT_PART(SPLIT_PART(oncokb_snv."GeneDetail.refGene", ';', 1), ':', 1)
+                  ELSE oncokb_snv."tx"
+              END AS "tx",
+              
+              CASE
+                  WHEN cancervar_snv_with_row_ids."Func.refGene" IN ('splicing', 'intron') AND SPLIT_PART(oncokb_snv."GeneDetail.refGene", ';', 1) LIKE '%:%:%'
+                  THEN SPLIT_PART(SPLIT_PART(SPLIT_PART(oncokb_snv."GeneDetail.refGene", ';', 1), ':', 2), 'c.', 1)
+                  ELSE oncokb_snv."exon"
+              END AS "exon",
+              
+              CASE
+                  WHEN cancervar_snv_with_row_ids."Func.refGene" IN ('splicing', 'intron') AND SPLIT_PART(oncokb_snv."GeneDetail.refGene", ';', 1) LIKE '%:%r.spl%'
+                  THEN 'r.spl'
+                  WHEN cancervar_snv_with_row_ids."Func.refGene" IN ('splicing', 'intron') AND SPLIT_PART(oncokb_snv."GeneDetail.refGene", ';', 1) LIKE '%:%:%' AND SPLIT_PART(oncokb_snv."GeneDetail.refGene", ';', 1) LIKE '%c.%'
+                  THEN CONCAT('c.', SPLIT_PART(SPLIT_PART(oncokb_snv."GeneDetail.refGene", ';', 1), 'c.', 2))
+                  ELSE oncokb_snv."txChange"
+              END AS "txChange",
+              
+              oncokb_snv."GeneDetail.refGene",
+              
+              oncokb_snv."aaChange",
+              oncokb_snv."Variant_Type",
+              oncokb_snv."avsnp150",
+              cancervar_snv_with_row_ids."clinvar: Clinvar",
+              cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence",
+              REPLACE(
+                  SUBSTRING(
+                      cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence"
+                      FROM POSITION('#' IN cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence") + 1
+                      FOR POSITION(' ' IN SUBSTRING(cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence" FROM POSITION('#' IN cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence"))) - 1
+                  ),
+                  '_', ' '
+              ) AS "CancerVar: Tier",
+              (
+              SELECT STRING_AGG(DISTINCT CONCAT('CBP', i + 1), ', ')
+              FROM generate_series(0, 11) as gs(i)
+              WHERE TRIM(SPLIT_PART(SPLIT_PART(SPLIT_PART(cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence", 'EVS=[', 2), ']', 1), ',', gs.i+1)) ~ '^[0-9]+$' AND
+                      CAST(TRIM(SPLIT_PART(SPLIT_PART(SPLIT_PART(cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence", 'EVS=[', 2), ']', 1), ',', gs.i+1)) AS INTEGER) > 0
+              ) AS "CancerVar: Evidence",
+              cancervar_snv_with_row_ids."cosmic91",
+              oncokb_snv."ICGC_Id",
+              SPLIT_PART(oncokb_snv."Otherinfo13", ':', 1) AS GT,
+              SPLIT_PART(oncokb_snv."Otherinfo13", ':', 2) AS AD,
+              SPLIT_PART(oncokb_snv."Otherinfo13", ':', 3) AS AF,
+              SPLIT_PART(oncokb_snv."Otherinfo13", ':', 4) AS DP,
+              SPLIT_PART(SPLIT_PART(oncokb_snv."Otherinfo11", 'DET=', 2), ';', 1) AS DET,
+              CASE
+                  WHEN TRIM(SPLIT_PART(SPLIT_PART(oncokb_snv."Otherinfo11", 'DETS=', 2), ';', 1)) = '' THEN NULL
+                  ELSE CAST(SPLIT_PART(SPLIT_PART(oncokb_snv."Otherinfo11", 'DETS=', 2), ';', 1) AS FLOAT)
+              END AS DETS,
+
+              -- Add the missing columns
+              cancervar_snv_with_row_ids."OMIM",
+              cancervar_snv_with_row_ids."Phenotype_MIM",
+              cancervar_snv_with_row_ids."OrphaNumber",
+              cancervar_snv_with_row_ids."Orpha",
+
+              oncokb_snv."GENE_IN_ONCOKB",
+              oncokb_snv."ONCOGENIC",
+              oncokb_snv."LEVEL_1",
+              oncokb_snv."LEVEL_2",
+              oncokb_snv."LEVEL_3A",
+              oncokb_snv."LEVEL_3B",
+              oncokb_snv."LEVEL_4",
+              oncokb_snv."LEVEL_R1",
+              oncokb_snv."LEVEL_R2",
+              oncokb_snv."HIGHEST_LEVEL",
+              oncokb_snv."HIGHEST_SENSITIVE_LEVEL",
+              oncokb_snv."HIGHEST_RESISTANCE_LEVEL",
+              oncokb_snv."TX_CITATIONS"
           FROM
-                      (SELECT ROW_NUMBER() OVER () AS "row_id", * FROM cancervar_snv) AS cancervar_snv_with_row_ids
-                    INNER JOIN oncokb_snv ON cancervar_snv_with_row_ids."#Chr" = SUBSTRING(oncokb_snv."Chromosome" FROM 4)
-                                  AND cancervar_snv_with_row_ids."Start" = oncokb_snv."Start_Position"
-                                  AND cancervar_snv_with_row_ids."End" = oncokb_snv."End_Position"
-                                  AND cancervar_snv_with_row_ids."Alt" = oncokb_snv."Tumor_Seq_Allele2"
-                                  AND cancervar_snv_with_row_ids."Ref" = oncokb_snv."Reference_Allele";
+              (SELECT ROW_NUMBER() OVER () AS "row_id", * FROM cancervar_snv) AS cancervar_snv_with_row_ids
+          INNER JOIN oncokb_snv ON cancervar_snv_with_row_ids."#Chr" = SUBSTRING(oncokb_snv."Chromosome" FROM 4)
+                          AND cancervar_snv_with_row_ids."Start" = oncokb_snv."Start_Position"
+                          AND cancervar_snv_with_row_ids."End" = oncokb_snv."End_Position"
+                          AND cancervar_snv_with_row_ids."Alt" = oncokb_snv."Tumor_Seq_Allele2"
+                          AND cancervar_snv_with_row_ids."Ref" = oncokb_snv."Reference_Allele";
+          -- Create a view with the combined data
+          DROP VIEW IF EXISTS advanced_combined_snv;
           CREATE VIEW advanced_combined_snv AS
           SELECT
           cancervar_snv_with_row_ids."row_id",
@@ -281,7 +336,6 @@ spec:
                     CAST(TRIM(SPLIT_PART(SPLIT_PART(SPLIT_PART(cancervar_snv_with_row_ids."CancerVar: CancerVar and Evidence", 'EVS=[', 2), ']', 1), ',', gs.i+1)) AS INTEGER) > 0
             ) AS "CancerVar: Evidence",
             cancervar_snv_with_row_ids."cosmic91",
-            oncokb_snv."ICGC_Id",
             SPLIT_PART(oncokb_snv."Otherinfo13", ':', 1) AS GT,
             SPLIT_PART(oncokb_snv."Otherinfo13", ':', 2) AS AD,
             SPLIT_PART(oncokb_snv."Otherinfo13", ':', 3) AS AF,
@@ -481,29 +535,63 @@ spec:
         command: ["duckdb", "-init"]
         source: |
           .open "/mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}"
-          CREATE TABLE oncokb_sv AS FROM read_csv_auto('/mnt/input/oncokb/oncokb_sv.tsv', header=True, sep='\t');
-          CREATE TABLE annotsv_sv AS FROM read_csv_auto('/mnt/input/annotsv/annotsv_sv.tsv', header=True, sep='\t');
-          CREATE VIEW combined_sv AS
+          CREATE TABLE oncokb_sv AS FROM read_csv_auto('/mnt/input/oncokb/oncokb_sv.tsv', sample_size=-1, header=True, sep='\t');
+          CREATE TABLE annotsv_sv AS FROM read_csv_auto('/mnt/input/annotsv/annotsv_sv.tsv', sample_size=-1, header=True, sep='\t');
+          DROP VIEW IF EXISTS combined_sv;
+          DROP TABLE IF EXISTS combined_sv;
+          CREATE OR REPLACE VIEW combined_sv AS
+          WITH annotsv_ordered AS (
+              SELECT
+                  ROW_NUMBER() OVER () AS row_id,  -- Create incrementing unique ID
+                  annotsv_sv.SV_chrom,
+                  annotsv_sv.SV_start,
+                  annotsv_sv.SV_end,
+                  annotsv_sv.SV_length,
+                  annotsv_sv.SV_type,
+                  annotsv_sv.REF,
+                  annotsv_sv.ALT,
+                  annotsv_sv.Paired_Reads,
+                  annotsv_sv.CytoBand,
+                  annotsv_sv.Gene_name,
+                  annotsv_sv.Annotation_mode,
+                  annotsv_sv.Tx,
+                  annotsv_sv.Tx_start,
+                  annotsv_sv.Tx_end,
+                  annotsv_sv.Overlapped_CDS_length,
+                  annotsv_sv.Overlapped_CDS_percent,
+                  CAST(annotsv_sv.OMIM_ID AS VARCHAR) AS OMIM_ID,
+                  annotsv_sv.OMIM_phenotype,
+                  annotsv_sv.OMIM_inheritance,
+                  annotsv_sv.GnomAD_pLI,
+                  annotsv_sv.ExAC_pLI,
+                  annotsv_sv.ACMG_class,
+                  annotsv_sv.AnnotSV_ID
+              FROM
+                  annotsv_sv
+          )
           SELECT
-              annotsv_sv.SV_chrom,
-              annotsv_sv.SV_start,
-              annotsv_sv.SV_end,
-              annotsv_sv.SV_length,
-              annotsv_sv.SV_type,
-              annotsv_sv.REF,
-              annotsv_sv.ALT,
-              annotsv_sv.CytoBand,
-              annotsv_sv.Gene_name,
-              annotsv_sv.Annotation_mode,
-              annotsv_sv.Tx,
-              annotsv_sv.Tx_start,
-              annotsv_sv.Tx_end,
-              CAST(annotsv_sv.OMIM_ID AS VARCHAR) AS OMIM_ID,
-              annotsv_sv.OMIM_phenotype,
-              annotsv_sv.OMIM_inheritance,
-              annotsv_sv.GnomAD_pLI,
-              annotsv_sv.ExAC_pLI,
-              annotsv_sv.ACMG_class,
+              annotsv_ordered.Annotation_mode,
+              annotsv_ordered.SV_chrom,
+              annotsv_ordered.SV_start,
+              annotsv_ordered.SV_end,
+              annotsv_ordered.SV_length,
+              annotsv_ordered.SV_type,
+              annotsv_ordered.REF,
+              annotsv_ordered.ALT,
+              annotsv_ordered.Paired_Reads,
+              annotsv_ordered.CytoBand,
+              annotsv_ordered.Gene_name,
+              annotsv_ordered.Tx,
+              annotsv_ordered.Tx_start,
+              annotsv_ordered.Tx_end,
+              annotsv_ordered.Overlapped_CDS_length,
+              annotsv_ordered.Overlapped_CDS_percent,
+              annotsv_ordered.OMIM_ID,
+              annotsv_ordered.OMIM_phenotype,
+              annotsv_ordered.OMIM_inheritance,
+              annotsv_ordered.GnomAD_pLI,
+              annotsv_ordered.ExAC_pLI,
+              annotsv_ordered.ACMG_class,
               oncokb_sv.Sv_Type AS "ONCOKB_SV_TYPE",
               oncokb_sv.GeneA AS "ONCOKB_GENE",
               oncokb_sv.MUTATION_EFFECT,
@@ -531,10 +619,12 @@ spec:
               oncokb_sv.LEVEL_Px2,
               oncokb_sv.LEVEL_Px3,
               oncokb_sv.HIGHEST_PX_LEVEL,
-              CAST(oncokb_sv.PX_CITATIONS AS VARCHAR) AS PX_CITATIONS,
+              CAST(oncokb_sv.PX_CITATIONS AS VARCHAR) AS PX_CITATIONS
           FROM
-              annotsv_sv
-          JOIN oncokb_sv ON annotsv_sv.AnnotSV_ID = oncokb_sv.AnnotSV_ID;
+              annotsv_ordered
+          LEFT JOIN oncokb_sv ON annotsv_ordered.AnnotSV_ID = oncokb_sv.AnnotSV_ID
+          AND annotsv_ordered.Gene_name = oncokb_sv.GeneA
+          ORDER BY annotsv_ordered.row_id;  -- Reorder using the original row order;
           CREATE VIEW advanced_combined_sv AS
           SELECT
               annotsv_sv.SV_chrom,
@@ -725,7 +815,7 @@ spec:
         command: ["duckdb", "-init"]
         source: |
           .open "/mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}"
-          CREATE TABLE oncokb_fusions AS FROM read_csv_auto('/mnt/input/oncokb/oncokb_fusions.tsv', header=True, sep='\t');
+          CREATE TABLE oncokb_fusions AS FROM read_csv_auto('/mnt/input/oncokb/oncokb_fusions.tsv', sample_size=-1, header=True, sep='\t');
           CREATE VIEW combined_fusions AS
           SELECT
               oncokb_fusions.Fusion,
@@ -748,12 +838,12 @@ spec:
               oncokb_fusions.HIGHEST_LEVEL,
               oncokb_fusions.HIGHEST_SENSITIVE_LEVEL,
               oncokb_fusions.HIGHEST_RESISTANCE_LEVEL,
-              oncokb_fusions.TX_CITATIONS,
+              CAST(oncokb_fusions.TX_CITATIONS AS VARCHAR) AS TX_CITATIONS,
               oncokb_fusions.LEVEL_Dx1,
               oncokb_fusions.LEVEL_Dx2,
               oncokb_fusions.LEVEL_Dx3,
               oncokb_fusions.HIGHEST_DX_LEVEL,
-              oncokb_fusions.DX_CITATIONS,
+              CAST(oncokb_fusions.DX_CITATIONS AS VARCHAR) AS DX_CITATIONS,
               oncokb_fusions.LEVEL_Px1,
               oncokb_fusions.LEVEL_Px2,
               oncokb_fusions.LEVEL_Px3,

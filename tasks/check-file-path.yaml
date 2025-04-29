@@ -1,0 +1,127 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: check-file-path
+spec:
+  entrypoint: main
+  templates:
+    - name: check-file-path
+      inputs:
+        parameters:
+          - name: input-file-1
+            value: '.'
+          - name: input-file-2
+            value: '.'
+          - name: input-file-3
+            value: '.'
+          - name: input-rel-dir
+      outputs:
+        parameters:
+          - name: output-file-1
+            valueFrom:
+              path: /tmp/output-file-1.txt
+          - name: output-file-2
+            valueFrom:
+              path: /tmp/output-file-2.txt
+          - name: output-file-3
+            valueFrom:
+              path: /tmp/output-file-3.txt
+          - name: input-rel-dir-1
+            valueFrom:
+              path: /tmp/input-rel-dir-1.txt
+          - name: input-rel-dir-2
+            valueFrom:
+              path: /tmp/input-rel-dir-2.txt
+          - name: input-rel-dir-3
+            valueFrom:
+              path: /tmp/input-rel-dir-3.txt
+      script:
+        image: python:3.12-alpine
+        command: [python3]
+        source: |
+          from pathlib import Path
+
+          input_dir = Path("{{inputs.parameters.input-rel-dir}}")
+          input_file_1 = Path("{{inputs.parameters.input-file-1}}")
+          input_file_2 = Path("{{inputs.parameters.input-file-2}}")
+          input_file_3 = Path("{{inputs.parameters.input-file-3}}")
+
+          def check_file_path(path, input_dir):
+              if path == '.':
+                  return ('.', '.')
+              if path.is_absolute():
+                  return (str(path.parent)+'/', path.name)
+              else:
+                  return (str(input_dir)+'/', path.name)
+
+          file_dir_1, file_name_1 = check_file_path(input_file_1, input_dir)
+          file_dir_2, file_name_2 = check_file_path(input_file_2, input_dir)
+          file_dir_3, file_name_3 = check_file_path(input_file_3, input_dir)
+
+          # Write outputs to files
+          with open('/tmp/output-file-1.txt', 'w') as f:
+              f.write(file_name_1)
+          with open('/tmp/output-file-2.txt', 'w') as f:
+              f.write(file_name_2)
+          with open('/tmp/output-file-3.txt', 'w') as f:
+              f.write(file_name_3)
+          with open('/tmp/input-rel-dir-1.txt', 'w') as f:
+              f.write(file_dir_1)
+          with open('/tmp/input-rel-dir-2.txt', 'w') as f:
+              f.write(file_dir_2)
+          with open('/tmp/input-rel-dir-3.txt', 'w') as f:
+              f.write(file_dir_3)
+    - name: check-file-path-prs
+      inputs:
+        parameters:
+          - name: input-file-path
+          - name: input-rel-dir
+          - name: product-id
+      outputs:
+        parameters:
+          - name: output-file-1
+            valueFrom:
+              path: /tmp/output-file-1.txt
+          - name: input-rel-dir-1
+            valueFrom:
+              path: /tmp/input-rel-dir-1.txt
+      volumes:
+        - name: input-file-path
+          hostPath:
+            path: "{{inputs.parameters.input-file-path}}"
+      script:
+        image: python:3.12-alpine
+        command: [python3]
+        volumeMounts:
+          - mountPath: "{{inputs.parameters.input-file-path}}"
+            name: input-file-path
+        source: |
+          import os
+          from pathlib import Path
+
+          product_id = "{{inputs.parameters.product-id}}"
+          input_rel_dir = Path("{{inputs.parameters.input-rel-dir}}")
+          input_file_path = Path("{{inputs.parameters.input-file-path}}")
+
+          def check_file_path(path, base_dir, product_id):
+              if path.is_dir():
+                  print(f"Path is a directory: {path}")
+                  input_dir = path / product_id
+                  input_file = os.listdir(input_dir)[0]
+                  return (str(input_dir)+'/', input_file)
+              elif path.is_absolute():
+                  print(f"Path is absolute: {path}")
+                  return (str(path.parent)+'/', path.name)
+              else:
+                  print(f"Path is relative: {path}")
+                  input_dir = base_dir / product_id
+                  input_file = os.listdir(input_dir)[0]
+                  return (str(input_dir)+'/', input_file)
+
+          file_dir_1, file_name_1 = check_file_path(input_file_path, input_rel_dir, product_id)
+
+          # Write outputs to files
+          with open('/tmp/output-file-1.txt', 'w') as f:
+              f.write(file_name_1)
+          with open('/tmp/input-rel-dir-1.txt', 'w') as f:
+              f.write(file_dir_1)

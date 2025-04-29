@@ -1,0 +1,82 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: wrapper-workflow-prs
+  namespace: argo
+spec:
+  workflowMetadata:
+    generateName: "prs-workflow-{{workflow.parameters.job-id}}-"
+    labels:
+      gennext.bio/node: "{{workflow.parameters.node-name}}"
+      gennext.bio/user-id: "{{workflow.parameters.user-id}}"
+      # gennext.bio/run-id: "{{workflow.parameters.job-id}}"
+      gennext.bio/process-type: "prs"
+  serviceAccountName: gennext-workflows
+  entrypoint: wrapper-workflow-prs
+  arguments:
+    parameters:
+      - name: user-id
+      - name: job-id
+      - name: product-id
+      - name: node-name
+      # - name: genotype-file-name
+  podGC:
+    strategy: OnPodSuccess
+  # retryStrategy:
+  #   limit: "2"
+  #   retryPolicy: "Always"
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node-name}}"
+  templates:
+    - name: wrapper-workflow-prs
+      dag:
+        tasks:
+          - name: get-node-config
+            templateRef:
+              name: get-node-config
+              template: get-node-config
+            arguments:
+              parameters:
+                - name: node-name
+                  value: "{{workflow.parameters.node-name}}"
+                - name: user-id
+                  value: "{{workflow.parameters.user-id}}"
+                - name: job-id
+                  value: "{{workflow.parameters.job-id}}"
+          - name: prs-workflow
+            templateRef:
+              name: prs-workflow
+              template: main
+            arguments:
+              parameters:
+                - name: user-id
+                  value: "{{workflow.parameters.user-id}}"
+                - name: run-id
+                  value: "{{workflow.parameters.job-id}}"
+                - name: product-id
+                  value: "{{workflow.parameters.product-id}}"
+                - name: input-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.input-rel-dir}}"
+                - name: temp-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.scratch-rel-dir}}"
+                - name: output-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.output-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.ref-base-dir}}"
+                - name: thread-count
+                  # value: "{{tasks.get-node-config.outputs.parameters.thread-count}}"
+                  value: "20"
+            depends: "get-node-config"
+          - name: set-state-completed
+            templateRef:
+              name: change-run-state-template
+              template: change-run-state
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{workflow.parameters.job-id}}"
+                - name: run-state
+                  value: "completed"
+            depends: "prs-workflow.Succeeded"
