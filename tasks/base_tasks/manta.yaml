@@ -86,7 +86,7 @@ spec:
               echo "##INFO=<ID=SVTYPE,Number=1,Type=String,Description=\"Type of structural variant\">"
               echo "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">"
               echo -e "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t$sampleId"
-            } | gzip > "$output_file"
+            } | /usr/local/share/manta-1.6.0-2/libexec/bgzip > "$output_file"
           }
 
           sampleId="{{inputs.parameters.sample-id}}"

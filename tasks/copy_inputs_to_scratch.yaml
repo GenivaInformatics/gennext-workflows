@@ -341,12 +341,12 @@ spec:
           if [ -n "{{inputs.parameters.provided-regions-file}}" ] && [ -f "/mnt/input/{{inputs.parameters.provided-regions-file}}" ]; then
             cp "/mnt/input/{{inputs.parameters.provided-regions-file}}" /mnt/scratch/;
             echo "{{inputs.parameters.scratch-rel-dir}}/{{inputs.parameters.provided-regions-file}}" > /tmp/regions-file-output.txt;
-          elif [ -n "{{inputs.parameters.enrichment-kit-regions-file}}" ]; then
+          elif [ -n "{{inputs.parameters.enrichment-kit-regions-file}}" ] && [ "{{inputs.parameters.enrichment-kit-regions-file}}" != "{{=jsonpath(inputs.parameters['run-data'], '$.enrichmentKit.filename')}}" ]; then
             cp "/mnt/ref/regions/{{inputs.parameters.enrichment-kit-regions-file}}" /mnt/scratch/;
             echo "{{inputs.parameters.scratch-rel-dir}}/{{inputs.parameters.enrichment-kit-regions-file}}" > /tmp/regions-file-output.txt;
           else
-            cp "/mnt/ref/regions/{{inputs.parameters.default-regions-file}}" /mnt/scratch/;
-            echo "{{inputs.parameters.scratch-rel-dir}}/{{inputs.parameters.default-regions-file}}" > /tmp/regions-file-output.txt;
+            cp "/mnt/ref/regions/{{=sprig.osBase(inputs.parameters['default-regions-file'])}}" /mnt/scratch/;
+            echo "{{inputs.parameters.scratch-rel-dir}}/{{=sprig.osBase(inputs.parameters['default-regions-file'])}}" > /tmp/regions-file-output.txt;
           fi
         volumeMounts:
           - name: input-rel-dir

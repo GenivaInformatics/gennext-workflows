@@ -133,11 +133,15 @@ spec:
           - sh
         source: |
           #!/bin/sh
-          # Select the non-empty output (only one branch produces an output)
-          if [ -n "{{inputs.parameters.gvcf-output}}" ]; then
-              chosen_path="{{inputs.parameters.gvcf-output}}"
-          else
+          # Use a simple string comparison to check for {{ characters
+          first_two_chars=$(echo "{{inputs.parameters.gvcf-output}}" | cut -c1-2)
+
+          if [ "$first_two_chars" = "{{" ]; then
+              # The gvcf-output appears to be an unreplaced template
               chosen_path="{{inputs.parameters.other-output}}"
+          else
+              # The gvcf-output is valid
+              chosen_path="{{inputs.parameters.gvcf-output}}"
           fi
 
           # Write only the chosen file path into the output file
