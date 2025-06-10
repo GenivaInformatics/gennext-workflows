@@ -30,8 +30,8 @@ spec:
         command: [sh]
         source: |
           bcftools merge {{inputs.parameters.input-vcf-f-basenames}} | \
-          bcftools sort -Oz -o /mnt/output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf-f'])}};
-          tabix -p vcf /mnt/output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf-f'])}};
+          bcftools sort -Oz -o "/mnt/output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf-f'])}}";
+          tabix -p vcf "/mnt/output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf-f'])}}";
         workingDir: "/mnt/input/vcf/"
         volumeMounts:
           - name: input-vcf-fs-dir
@@ -76,18 +76,18 @@ spec:
           if [ ! "." = "$regionsFile" ]; then options+=" -R /mnt/input/regions/$regionsFile"; fi
           if [ ! -z "$doFilter" ]; then options+=" -f $doFilter"; fi
 
-          bcftools index -t /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}};
+          bcftools index -t "/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}";
           # Remove duplicate variants
           # Sort for duplicate variant removal due to bed region overlap
           # Compress
           # Index
           bcftools view \
-          /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}} \
+          "/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}" \
            $options \
           | bcftools sort \
           | bcftools norm -d none - \
-          | bgzip -c > /mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf-f'])}};
-          bcftools index -t /mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf-f'])}}
+          | bgzip -c > "/mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf-f'])}}";
+          bcftools index -t "/mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf-f'])}}"
         volumeMounts:
           - name: input-vcf-f
             mountPath: "/mnt/input/vcf/"
@@ -128,7 +128,7 @@ spec:
           options=""
           if [ ! "." = "$regionsFile" ]; then options+=" -R /mnt/input/regions/$regionsFile"; fi
 
-          bcftools index -t /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}};
+          bcftools index -t "/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}";
           # Filter for PASS, '.' variants
           # Filter for min DP > 10 and GQ > 15
           # Remove duplicate variants
@@ -136,13 +136,13 @@ spec:
           # Compress
           # Index
           bcftools view \
-          /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}} \
+          "/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}" \
           $options \
           --include "(FILTER='PASS' | FILTER='.') & (FMT/DP>10) & (FMT/GQ>15)" \
           | bcftools sort \
           | bcftools norm -d none - \
-          | bgzip -c > /mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf-f'])}};
-          bcftools index -t /mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf-f'])}}
+          | bgzip -c > "/mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf-f'])}}";
+          bcftools index -t "/mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf-f'])}}"
         volumeMounts:
           - name: input-vcf-f
             mountPath: "/mnt/input/vcf/"
@@ -168,8 +168,8 @@ spec:
         image: quay.io/biocontainers/bcftools:1.20--h8b25389_1
         command: [sh]
         source: |
-          bgzip /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}};
-          bcftools index -t /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}.gz;
+          bgzip "/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}";
+          bcftools index -t "/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}.gz";
         volumeMounts:
           - name: input-vcf-f
             mountPath: "/mnt/input/vcf/"
@@ -196,9 +196,9 @@ spec:
         image: quay.io/biocontainers/bcftools:1.20--h8b25389_1
         command: [sh]
         source: |
-          sort -k1,1V -k2,2n /mnt/input/bed/{{=sprig.osBase(inputs.parameters['input-bed-f'])}} > /tmp/sorted_{{=sprig.osBase(inputs.parameters['input-bed-f'])}};
-          bgzip -c /tmp/sorted_{{=sprig.osBase(inputs.parameters['input-bed-f'])}} > /mnt/output/bed/{{=sprig.osBase(inputs.parameters['output-bed-gz-f'])}};
-          tabix -p bed /mnt/output/bed/{{=sprig.osBase(inputs.parameters['output-bed-gz-f'])}};
+          sort -k1,1V -k2,2n "/mnt/input/bed/{{=sprig.osBase(inputs.parameters['input-bed-f'])}}" > "/tmp/sorted_{{=sprig.osBase(inputs.parameters['input-bed-f'])}}";
+          bgzip -c "/tmp/sorted_{{=sprig.osBase(inputs.parameters['input-bed-f'])}}" > "/mnt/output/bed/{{=sprig.osBase(inputs.parameters['output-bed-gz-f'])}}";
+          tabix -p bed "/mnt/output/bed/{{=sprig.osBase(inputs.parameters['output-bed-gz-f'])}}";
         volumeMounts:
           - name: input-bed-f
             mountPath: "/mnt/input/bed/{{=sprig.osBase(inputs.parameters['input-bed-f'])}}"

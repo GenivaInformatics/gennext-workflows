@@ -4,6 +4,75 @@ metadata:
   name: parabricks-bqsr-template
 spec:
   templates:
+    # - name: parabricks-bqsr
+    #   # nodeSelector:
+    #   #   kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+    #   tolerations:
+    #     - key: "nvidia.com/gpu"
+    #       operator: "Exists"
+    #       effect: "NoSchedule"
+    #   inputs:
+    #     parameters:
+    #       - name: input-bam
+    #       - name: genome-ref
+    #       - name: known-sites
+    #       - name: output-recal-file
+    #       - name: regions-file # optional
+    #         value: "."
+    #   outputs:
+    #     parameters:
+    #       - name: output-recal-file
+    #         value: "{{inputs.parameters.output-recal-file}}"
+    #   volumes:
+    #     - name: input-bam
+    #       hostPath:
+    #         path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+    #         type: Directory
+    #     - name: genome-ref
+    #       hostPath:
+    #         path: "{{=sprig.osDir(inputs.parameters['genome-ref'])}}"
+    #         type: Directory
+    #     - name: known-sites
+    #       hostPath:
+    #         path: "{{=sprig.osDir(inputs.parameters['known-sites'])}}"
+    #         type: Directory
+    #     - name: regions-file
+    #       hostPath:
+    #         path: "{{=sprig.osDir(inputs.parameters['regions-file'])}}"
+    #         type: Directory
+    #     - name: output-recal-file
+    #       hostPath:
+    #         path: "{{=sprig.osDir(inputs.parameters['output-recal-file'])}}"
+    #         type: DirectoryOrCreate
+    #   script:
+    #     name: "parabricks-bqsr-script"
+    #     image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+    #     resources:
+    #       limits:
+    #         nvidia.com/gpu: 1
+    #     command: [sh]
+    #     source: |
+    #       regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
+    #       options=""
+    #       if [ ! "." = "$regionsFile" ]; then options="$options --interval-file /mnt/input/regions/$regionsFile"; fi
+
+    #       pbrun bqsr \
+    #         --ref "/mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}}" \
+    #         --knownSites "/mnt/ref/known-sites/{{=sprig.osBase(inputs.parameters['known-sites'])}}" \
+    #         --in-bam "/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}" \
+    #         $options \
+    #         --out-recal-file "/mnt/output/recal/{{=sprig.osBase(inputs.parameters['output-recal-file'])}}"
+    #     volumeMounts:
+    #       - name: genome-ref
+    #         mountPath: /mnt/ref/genome/
+    #       - name: known-sites
+    #         mountPath: /mnt/ref/known-sites/
+    #       - name: input-bam
+    #         mountPath: /mnt/input/bam/
+    #       - name: output-recal-file
+    #         mountPath: /mnt/output/recal/
+    #       - name: regions-file
+    #         mountPath: /mnt/input/regions/
     - name: parabricks-bqsr
       # nodeSelector:
       #   kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
@@ -16,6 +85,8 @@ spec:
           - name: input-bam
           - name: genome-ref
           - name: known-sites
+          - name: known-sites-gnomad # optional secondary known sites
+            value: "."
           - name: output-recal-file
           - name: regions-file # optional
             value: "."
@@ -36,6 +107,10 @@ spec:
           hostPath:
             path: "{{=sprig.osDir(inputs.parameters['known-sites'])}}"
             type: Directory
+        - name: known-sites-gnomad
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['known-sites-gnomad'])}}"
+            type: Directory
         - name: regions-file
           hostPath:
             path: "{{=sprig.osDir(inputs.parameters['regions-file'])}}"
@@ -53,20 +128,58 @@ spec:
         command: [sh]
         source: |
           regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
+          gnomadFile="{{=sprig.osBase(inputs.parameters['known-sites-gnomad'])}}";
+          dbsnpKnownSites="{{=sprig.osBase(inputs.parameters['known-sites'])}}";
           options=""
-          if [ ! "." = "$regionsFile" ]; then options="$options --interval-file /mnt/input/regions/$regionsFile"; fi
+
+          echo "=== Parabricks BQSR Configuration ==="
+          echo "Input BAM: {{=sprig.osBase(inputs.parameters['input-bam'])}}"
+          echo "Genome reference: {{=sprig.osBase(inputs.parameters['genome-ref'])}}"
+          echo "dbSNP known sites: $dbsnpKnownSites"
+          echo "gnomAD known sites: $gnomadFile"
+          echo "Regions file: $regionsFile"
+          echo "Output recal file: {{=sprig.osBase(inputs.parameters['output-recal-file'])}}"
+
+          # Add regions file if provided
+          if [ ! "." = "$regionsFile" ]; then
+            echo "Adding regions file: /mnt/input/regions/$regionsFile"
+            options="$options --interval-file /mnt/input/regions/$regionsFile";
+          else
+            echo "No regions file specified"
+          fi
+
+          # Set known sites - check if gnomad file exists, otherwise use primary known sites
+          knownSitesArg=""
+          if [ ! "." = "$gnomadFile" ] && [ -f "/mnt/ref/known-sites-gnomad/$gnomadFile" ]; then
+            echo "gnomAD known sites file found: /mnt/ref/known-sites-gnomad/$gnomadFile"
+            echo "Using gnomAD known sites instead of primary known sites"
+            knownSitesArg="--knownSites /mnt/ref/known-sites-gnomad/$gnomadFile"
+          else
+            if [ ! "." = "$gnomadFile" ]; then
+              echo "gnomAD known sites file not found: /mnt/ref/known-sites-gnomad/$gnomadFile"
+            fi
+            echo "Using dbSNP known sites: /mnt/ref/known-sites/$dbsnpKnownSites"
+            knownSitesArg="--knownSites /mnt/ref/known-sites/$dbsnpKnownSites"
+          fi
+
+          echo "=== Starting Parabricks BQSR ==="
+          echo "Command: pbrun bqsr --ref /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}} $knownSitesArg --in-bam /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} $options --out-recal-file /mnt/output/recal/{{=sprig.osBase(inputs.parameters['output-recal-file'])}}"
 
           pbrun bqsr \
-            --ref /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \
-            --knownSites /mnt/ref/known-sites/{{=sprig.osBase(inputs.parameters['known-sites'])}} \
-            --in-bam /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+            --ref "/mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}}" \
+            $knownSitesArg \
+            --in-bam "/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}" \
             $options \
-            --out-recal-file /mnt/output/recal/{{=sprig.osBase(inputs.parameters['output-recal-file'])}}
+            --out-recal-file "/mnt/output/recal/{{=sprig.osBase(inputs.parameters['output-recal-file'])}}"
+
+          echo "=== Parabricks BQSR completed ==="
         volumeMounts:
           - name: genome-ref
             mountPath: /mnt/ref/genome/
           - name: known-sites
             mountPath: /mnt/ref/known-sites/
+          - name: known-sites-gnomad
+            mountPath: /mnt/ref/known-sites-gnomad/
           - name: input-bam
             mountPath: /mnt/input/bam/
           - name: output-recal-file
@@ -126,18 +239,18 @@ spec:
           if [ ! "." = "$regionsFile" ]; then options="$options --interval-file /mnt/input/regions/$regionsFile"; fi
 
           pbrun applybqsr \
-            --ref /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \
-            --in-bam /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
-            --in-recal-file /mnt/input/recal/{{=sprig.osBase(inputs.parameters['input-recal-file'])}} \
+            --ref "/mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}}" \
+            --in-bam "/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}" \
+            --in-recal-file "/mnt/input/recal/{{=sprig.osBase(inputs.parameters['input-recal-file'])}}" \
             $options \
-            --out-bam /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}
+            --out-bam "/mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}"
         volumeMounts:
           - name: genome-ref
             mountPath: /mnt/ref/genome/
           - name: input-bam
             mountPath: /mnt/input/bam/
           - name: input-recal-file
-            mountPath: /mnt/input/recal/{{=sprig.osBase(inputs.parameters['input-recal-file'])}}
+            mountPath: "/mnt/input/recal/{{=sprig.osBase(inputs.parameters['input-recal-file'])}}"
           - name: output-bam
             mountPath: /mnt/output/bam/
           - name: regions-file

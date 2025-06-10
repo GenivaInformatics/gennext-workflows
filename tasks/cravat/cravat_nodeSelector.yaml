@@ -31,11 +31,16 @@ spec:
             type: DirectoryOrCreate
       script:
         name: cravat-solo
-        image: bergun/gennext-cravat:0.2.3-alpha-no_mu
+        image: bergun/gennext-cravat:0.2.11c-alpha-no_mu
+        workingDir: "{{inputs.parameters.output-dir}}"
         command: [sh]
         source: |
           #!/bin/sh
-          for ext in crg crm crs crv crx err status.json filter_session.json log sqlite var; do rm {{inputs.parameters.output-dir}}/*.$ext; done;
+          for ext in crg crm crs crv crx err status.json filter_session.json log sqlite gen var; do
+            echo "$ext";
+            rm -f ./*."$ext";
+          done;
+
           oc run \
           "/mnt/input/{{=sprig.osBase(inputs.parameters['proband-vcf'])}}" \
           -a {{inputs.parameters.annotators}} \

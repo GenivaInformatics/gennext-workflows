@@ -65,20 +65,22 @@ spec:
           - name: copy-regions-file-to-scratch
             templateRef:
               name: copy-inputs-to-scratch
-              template: copy-regions-file-to-scratch-v2
+              template: copy-regions-file-to-scratch-v3
             arguments:
               parameters:
                 - name: provided-regions-file
                   value: "{{tasks.check-file-path.outputs.parameters.output-file-2}}"
                 - name: enrichment-kit-regions-file
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.enrichmentKit.filename')}}"
+                - name: default-regions-file
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
                 - name: input-rel-dir
                   value: "{{tasks.check-file-path.outputs.parameters.input-rel-dir-2}}"
                 - name: scratch-rel-dir
                   value: "{{inputs.parameters.scratch-rel-dir}}"
                 - name: ref-regions-dir
                   value: "{{inputs.parameters.ref-base-dir}}/{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/regions/"
-            depends: "check-file-path"
+            depends: "copy-bam-to-scratch && get-abs-ref-dirs"
           - name: bgzip-and-index-regions-file
             templateRef:
               name: bcftools-template
@@ -704,20 +706,22 @@ spec:
           - name: copy-regions-file-to-scratch
             templateRef:
               name: copy-inputs-to-scratch
-              template: copy-regions-file-to-scratch-v2
+              template: copy-regions-file-to-scratch-v3
             arguments:
               parameters:
                 - name: provided-regions-file
                   value: "{{tasks.check-file-path.outputs.parameters.output-file-3}}"
                 - name: enrichment-kit-regions-file
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.enrichmentKit.filename')}}"
+                - name: default-regions-file
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
                 - name: input-rel-dir
                   value: "{{tasks.check-file-path.outputs.parameters.input-rel-dir-3}}"
                 - name: scratch-rel-dir
                   value: "{{inputs.parameters.scratch-rel-dir}}"
                 - name: ref-regions-dir
                   value: "{{inputs.parameters.ref-base-dir}}/{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/regions/"
-            depends: "copy-fastq-to-scratch"
+            depends: "copy-fastq-to-scratch && get-abs-ref-dirs"
           - name: bgzip-and-index-regions-file
             templateRef:
               name: bcftools-template
@@ -834,6 +838,8 @@ spec:
                   value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
                 - name: known-sites
                   value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-dbsnp-f}}"
+                - name: known-sites-gnomad
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-gnomad4-common-variants-f}}"
                 - name: output-recal-file
                   value: "{{inputs.parameters.temp-rel-dir}}metrics/bqsr/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}.recal"
             depends: "pb-fq2bam && get-abs-ref-dirs && copy-regions-file-to-scratch"

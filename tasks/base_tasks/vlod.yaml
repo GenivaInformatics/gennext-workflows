@@ -31,14 +31,14 @@ spec:
             type: DirectoryOrCreate
       script:
         name: "vlod-script"
-        image: bergun/vlod:v0.0.1
-        command: [sh]
+        image: bergun/vlod:v0.0.4
+        command: [bash]
         source: |
           python LOD_edit.py \
-          --input-vcf /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf'])}} \
-          --input-bam /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
-          --input-bam-index /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}.bai \
-          --output /mnt/output/{{=sprig.osBase(inputs.parameters['vlod-out-tsv'])}} \
+          --input-vcf "/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf'])}}" \
+          --input-bam "/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}" \
+          --input-bam-index "/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}.bai" \
+          --output "/mnt/output/{{=sprig.osBase(inputs.parameters['vlod-out-tsv'])}}" \
           --num-processes {{inputs.parameters.thread-count}}
         volumeMounts:
           - name: input-vcf
@@ -72,15 +72,15 @@ spec:
             type: DirectoryOrCreate
       script:
         name: "vlod-merge-with-vcf-script"
-        image: bergun/vlod:v0.0.1
-        command: [sh]
+        image: bergun/vlod:v0.0.4
+        command: [bash]
         source: |
           python merge_vcf_lod.py \
-          /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf'])}} \
-          /mnt/input/vlod/{{=sprig.osBase(inputs.parameters['input-vlod-tsv'])}} \
-          /mnt/output/{{=sprig.osBase(inputs.parameters['vlod-merged-output-vcf'])}};
-          bgzip -f /mnt/output/{{=sprig.osBase(inputs.parameters['vlod-merged-output-vcf'])}};
-          tabix -f -p vcf /mnt/output/{{=sprig.osBase(inputs.parameters['vlod-merged-output-vcf'])}}.gz;
+          "/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf'])}}" \
+          "/mnt/input/vlod/{{=sprig.osBase(inputs.parameters['input-vlod-tsv'])}}" \
+          "/mnt/output/{{=sprig.osBase(inputs.parameters['vlod-merged-output-vcf'])}}";
+          bgzip -f "/mnt/output/{{=sprig.osBase(inputs.parameters['vlod-merged-output-vcf'])}}";
+          tabix -f -p vcf "/mnt/output/{{=sprig.osBase(inputs.parameters['vlod-merged-output-vcf'])}}.gz";
         volumeMounts:
           - name: input-vcf
             mountPath: "/mnt/input/vcf/"

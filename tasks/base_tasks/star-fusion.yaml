@@ -22,10 +22,8 @@ spec:
         parameters:
           - name: output-bam
             value: "{{inputs.parameters.output-bam}}"
-            # value: "{{inputs.parameters.output-dir}}/bam/{{inputs.parameters.sample-id}}_RNA.bam"
           - name: output-fusions-tsv
             value: "{{inputs.parameters.output-fusions-tsv}}"
-            # value: "{{inputs.parameters.output-dir}}/results/fusions/{{inputs.parameters.sample-id}}_fusions.tsv"
           - name: output-chimeric-out-fusions
             value: "{{inputs.parameters.output-chimeric-out-fusions}}"
       volumes:
@@ -64,6 +62,14 @@ spec:
         source: |
           fqR1="{{=sprig.osBase(inputs.parameters['fq-r1'])}}";
           fqR2="{{=sprig.osBase(inputs.parameters['fq-r2'])}}";
+          FUSION_OUT_DIR="/mnt/output/fusions"
+          FUSION_OUT_FILE="$FUSION_OUT_DIR/{{=sprig.osBase(inputs.parameters['output-fusions-tsv'])}}"
+          BAM_OUT_DIR="/mnt/output/bam"
+          BAM_OUT_FILE="$BAM_OUT_DIR/{{=sprig.osBase(inputs.parameters['output-bam'])}}"
+          CHIMERIC_OUT_DIR="/mnt/output/chimeric"
+          CHIMERIC_OUT_FILE="$CHIMERIC_OUT_DIR/{{=sprig.osBase(inputs.parameters['output-chimeric-out-fusions'])}}"
+
+          # Run STAR-Fusion
           STAR-Fusion \
           --genome_lib_dir /mnt/ref/ctat-lib/ \
           --left_fq /mnt/input/r1/$fqR1 \
@@ -71,9 +77,31 @@ spec:
           --STAR_outSAMattrRGline "{{inputs.parameters.read-group-str}}" \
           --output_dir /mnt/scratch/ \
           --CPU {{inputs.parameters.thread-count}};
-          mv /mnt/scratch/Aligned.out.bam /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}};
-          mv /mnt/scratch/star-fusion.fusion_predictions.tsv /mnt/output/fusions/{{=sprig.osBase(inputs.parameters['output-fusions-tsv'])}};
-          mv /mnt/scratch/Chimeric.out.junction /mnt/output/chimeric/{{=sprig.osBase(inputs.parameters['output-chimeric-out-fusions'])}}
+
+          # Handle BAM file
+          if [ -f "/mnt/scratch/Aligned.out.bam" ]; then
+            mv /mnt/scratch/Aligned.out.bam $BAM_OUT_FILE
+          else
+            echo "No BAM file was generated"
+          fi
+
+          # Handle fusion predictions file
+          if [ -f "/mnt/scratch/star-fusion.fusion_predictions.tsv" ]; then
+            mv /mnt/scratch/star-fusion.fusion_predictions.tsv $FUSION_OUT_FILE
+          else
+            # Create empty fusion file with header if not generated
+            echo -e "#FusionName\tJunctionReadCount\tSpanningFragCount\test_J\test_S\tSpliceType\tLeftGene\tLeftBreakpoint\tRightGene\tRightBreakpoint\tJunctionReads\tSpanningFrags\tLargeAnchorSupport\tFFPM\tLeftBreakDinuc\tLeftBreakEntropy\tRightBreakDinuc\tRightBreakEntropy\tannots" > $FUSION_OUT_FILE
+            echo "Created empty fusion file with header at $FUSION_OUT_FILE"
+          fi
+
+          # Handle chimeric junction file
+          if [ -f "/mnt/scratch/Chimeric.out.junction" ]; then
+            mv /mnt/scratch/Chimeric.out.junction $CHIMERIC_OUT_FILE
+          else
+            # Create empty chimeric file with header
+            echo -e "chr_donorA\tbrkpt_donorA\tstrand_donorA\tchr_acceptorB\tbrkpt_acceptorB\tstrand_acceptorB\tjunction_type\trepeat_left_lenA\trepeat_right_lenB\tread_name\tstart_alnA\tcigar_alnA\tstart_alnB\tcigar_alnB\tnum_chim_aln\tmax_poss_aln_score\tnon_chim_aln_score\tthis_chim_aln_score\tbestall_chim_aln_score\tPEmerged_bool\treadgrp" > $CHIMERIC_OUT_FILE
+            echo "Created empty chimeric junctions file with header at $CHIMERIC_OUT_FILE"
+          fi
         volumeMounts:
           - name: fq-r1
             mountPath: "/mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}"

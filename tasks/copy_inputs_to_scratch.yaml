@@ -292,12 +292,28 @@ spec:
         command: [sh]
         source: |
           #!/bin/sh
+
+          # Function to sanitize filenames
+          sanitize_filename() {
+            # Replace spaces with underscores and remove other problematic characters
+            echo "$1" | sed 's/ /_/g' | sed 's/[^a-zA-Z0-9_.-]/_/g'
+          }
+
           if [ -f "/mnt/input/{{inputs.parameters.provided-regions-file}}" ]; then
-            cp "/mnt/input/{{inputs.parameters.provided-regions-file}}" /mnt/scratch/;
-            echo "{{inputs.parameters.scratch-rel-dir}}/{{inputs.parameters.provided-regions-file}}" > /tmp/regions-file-output.txt;
+            SOURCE_FILE="{{inputs.parameters.provided-regions-file}}"
+            SANITIZED_FILENAME=$(sanitize_filename "$(basename "$SOURCE_FILE")")
+
+            # Copy with sanitized name
+            cp "/mnt/input/$SOURCE_FILE" "/mnt/scratch/$SANITIZED_FILENAME"
+            echo "{{inputs.parameters.scratch-rel-dir}}/$SANITIZED_FILENAME" > /tmp/regions-file-output.txt
+
           else
-            cp "/mnt/ref/regions/{{inputs.parameters.enrichment-kit-regions-file}}" /mnt/scratch/;
-            echo "{{inputs.parameters.scratch-rel-dir}}/{{inputs.parameters.enrichment-kit-regions-file}}" > /tmp/regions-file-output.txt;
+            SOURCE_FILE="{{inputs.parameters.enrichment-kit-regions-file}}"
+            SANITIZED_FILENAME=$(sanitize_filename "$(basename "$SOURCE_FILE")")
+
+            # Copy with sanitized name
+            cp "/mnt/ref/regions/$SOURCE_FILE" "/mnt/scratch/$SANITIZED_FILENAME"
+            echo "{{inputs.parameters.scratch-rel-dir}}/$SANITIZED_FILENAME" > /tmp/regions-file-output.txt
           fi
         volumeMounts:
           - name: input-rel-dir
@@ -333,20 +349,44 @@ spec:
           - name: regions-bed-f
             valueFrom:
               path: /tmp/regions-file-output.txt
+          - name: regions-file
+            valueFrom:
+              path: /tmp/regions-file-output.txt
       script:
         image: alpine:latest
         command: [sh]
         source: |
           #!/bin/sh
+
+          # Function to sanitize filenames
+          sanitize_filename() {
+            # Replace spaces with underscores and remove other problematic characters
+            echo "$1" | sed 's/ /_/g' | sed 's/[^a-zA-Z0-9_.-]/_/g'
+          }
+
           if [ -n "{{inputs.parameters.provided-regions-file}}" ] && [ -f "/mnt/input/{{inputs.parameters.provided-regions-file}}" ]; then
-            cp "/mnt/input/{{inputs.parameters.provided-regions-file}}" /mnt/scratch/;
-            echo "{{inputs.parameters.scratch-rel-dir}}/{{inputs.parameters.provided-regions-file}}" > /tmp/regions-file-output.txt;
+            SOURCE_FILE="{{inputs.parameters.provided-regions-file}}"
+            SANITIZED_FILENAME=$(sanitize_filename "$(basename "$SOURCE_FILE")")
+
+            # Copy with sanitized name
+            cp "/mnt/input/$SOURCE_FILE" "/mnt/scratch/$SANITIZED_FILENAME"
+            echo "{{inputs.parameters.scratch-rel-dir}}/$SANITIZED_FILENAME" > /tmp/regions-file-output.txt
+
           elif [ -n "{{inputs.parameters.enrichment-kit-regions-file}}" ] && [ "{{inputs.parameters.enrichment-kit-regions-file}}" != "{{=jsonpath(inputs.parameters['run-data'], '$.enrichmentKit.filename')}}" ]; then
-            cp "/mnt/ref/regions/{{inputs.parameters.enrichment-kit-regions-file}}" /mnt/scratch/;
-            echo "{{inputs.parameters.scratch-rel-dir}}/{{inputs.parameters.enrichment-kit-regions-file}}" > /tmp/regions-file-output.txt;
+            SOURCE_FILE="{{inputs.parameters.enrichment-kit-regions-file}}"
+            SANITIZED_FILENAME=$(sanitize_filename "$(basename "$SOURCE_FILE")")
+
+            # Copy with sanitized name
+            cp "/mnt/ref/regions/$SOURCE_FILE" "/mnt/scratch/$SANITIZED_FILENAME"
+            echo "{{inputs.parameters.scratch-rel-dir}}/$SANITIZED_FILENAME" > /tmp/regions-file-output.txt
+
           else
-            cp "/mnt/ref/regions/{{=sprig.osBase(inputs.parameters['default-regions-file'])}}" /mnt/scratch/;
-            echo "{{inputs.parameters.scratch-rel-dir}}/{{=sprig.osBase(inputs.parameters['default-regions-file'])}}" > /tmp/regions-file-output.txt;
+            SOURCE_FILE="{{=sprig.osBase(inputs.parameters['default-regions-file'])}}"
+            SANITIZED_FILENAME=$(sanitize_filename "$SOURCE_FILE")
+
+            # Copy with sanitized name
+            cp "/mnt/ref/regions/$SOURCE_FILE" "/mnt/scratch/$SANITIZED_FILENAME"
+            echo "{{inputs.parameters.scratch-rel-dir}}/$SANITIZED_FILENAME" > /tmp/regions-file-output.txt
           fi
         volumeMounts:
           - name: input-rel-dir

@@ -56,6 +56,41 @@ spec:
           - name: tps-workflow
             when: "'{{workflow.parameters.process-type}}' == 'targetted' || '{{workflow.parameters.process-type}}' == 'tps' || '{{workflow.parameters.process-type}}' == 'ces'"
             templateRef:
+              name: germline-tps-gpu-workflow
+              template: main
+            arguments:
+              parameters:
+                - name: user-id
+                  value: "{{workflow.parameters.user-id}}"
+                - name: run-id
+                  value: "{{workflow.parameters.job-id}}"
+                - name: run-data
+                  value: "{{tasks.get-run-data.outputs.parameters.run-data}}"
+                - name: input-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.input-rel-dir}}"
+                - name: temp-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.scratch-rel-dir}}"
+                - name: output-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.output-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.ref-base-dir}}"
+                - name: modules-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.modules-base-dir}}"
+                - name: annots-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.annots-base-dir}}"
+                - name: job-id
+                  value: "{{workflow.parameters.job-id}}"
+                - name: ref-ver
+                  value: "{{=jsonpath(tasks['get-run-data'].outputs.parameters['run-data'], '$.refVersion')}}"
+                - name: thread-count
+                  value: "{{tasks.get-node-config.outputs.parameters.thread-count}}"
+            depends: "get-run-data && get-node-config"
+          - name: wes-workflow
+            when: "'{{workflow.parameters.process-type}}' == 'wes'"
+            templateRef:
+              # name: wes-workflow
               name: germline-wes-gpu-workflow
               template: main
             arguments:
@@ -87,42 +122,10 @@ spec:
                 - name: thread-count
                   value: "{{tasks.get-node-config.outputs.parameters.thread-count}}"
             depends: "get-run-data && get-node-config"
-            #   name: tps-workflow
-            #   template: main
-            # arguments:
-            #   parameters:
-            #     - name: user-id
-            #       value: "{{workflow.parameters.user-id}}"
-            #     - name: run-id
-            #       value: "{{workflow.parameters.job-id}}"
-            #     - name: run-data
-            #       value: "{{tasks.get-run-data.outputs.parameters.run-data}}"
-            #     - name: input-rel-dir
-            #       value: "{{tasks.get-node-config.outputs.parameters.input-rel-dir}}"
-            #     - name: temp-rel-dir
-            #       value: "{{tasks.get-node-config.outputs.parameters.temp-rel-dir}}"
-            #     - name: scratch-rel-dir
-            #       value: "{{tasks.get-node-config.outputs.parameters.scratch-rel-dir}}"
-            #     - name: output-rel-dir
-            #       value: "{{tasks.get-node-config.outputs.parameters.output-rel-dir}}"
-            #     - name: ref-base-dir
-            #       value: "{{tasks.get-node-config.outputs.parameters.ref-base-dir}}"
-            #     - name: modules-base-dir
-            #       value: "{{tasks.get-node-config.outputs.parameters.modules-base-dir}}"
-            #     - name: annots-base-dir
-            #       value: "{{tasks.get-node-config.outputs.parameters.annots-base-dir}}"
-            #     - name: job-id
-            #       value: "{{workflow.parameters.job-id}}"
-            #     - name: ref-ver
-            #       value: "{{=jsonpath(tasks['get-run-data'].outputs.parameters['run-data'], '$.refVersion')}}"
-            #     - name: thread-count
-            #       value: "{{tasks.get-node-config.outputs.parameters.thread-count}}"
-            # depends: "get-run-data && get-node-config"
-          - name: wes-workflow
-            when: "'{{workflow.parameters.process-type}}' == 'wes'"
+          - name: rna-workflow
+            when: "'{{workflow.parameters.process-type}}' == 'rna'"
             templateRef:
-              # name: wes-workflow
-              name: germline-wes-gpu-workflow
+              name: germline-rna-gpu-workflow
               template: main
             arguments:
               parameters:
@@ -146,8 +149,6 @@ spec:
                   value: "{{tasks.get-node-config.outputs.parameters.modules-base-dir}}"
                 - name: annots-base-dir
                   value: "{{tasks.get-node-config.outputs.parameters.annots-base-dir}}"
-                - name: job-id
-                  value: "{{workflow.parameters.job-id}}"
                 - name: ref-ver
                   value: "{{=jsonpath(tasks['get-run-data'].outputs.parameters['run-data'], '$.refVersion')}}"
                 - name: thread-count

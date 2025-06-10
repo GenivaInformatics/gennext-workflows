@@ -23,7 +23,7 @@ spec:
         parameters:
           - name: dbs-folder
             valueFrom:
-              parameter: "{{tasks.gennext-prs.outputs.parameters.output-dbs-folder}}"
+              parameter: "{{tasks.gennext-prs-matcher.outputs.parameters.output-dbs-folder}}"
       dag:
         tasks:
           - name: get-abs-pgs-ref-dirs
@@ -94,24 +94,30 @@ spec:
                 - name: thread-count
                   value: "{{inputs.parameters.thread-count}}"
             depends: "copy-genotype-file-to-scratch && get-abs-pgs-ref-dirs"
-          - name: gennext-prs
+          - name: gennext-prs-matcher
             templateRef:
-              name: gennext-prs-template
-              template: gennext-prs
+              name: gennext-prs-matcher-template
+              template: gennext-prs-matcher
             arguments:
               parameters:
                 - name: input-genotype-file
                   value: "{{tasks.genotype-conditional-workflow.outputs.parameters.output-genotype-file}}"
                 - name: ref-pgs-folder
                   value: "{{tasks.get-abs-pgs-ref-dirs.outputs.parameters.pgs-dir}}"
-                - name: ref-pgs-metadata
-                  value: "{{tasks.get-abs-pgs-ref-dirs.outputs.parameters.pgs-metadata-f}}"
+                # - name: ref-pgs-metadata
+                #   value: "{{tasks.get-abs-pgs-ref-dirs.outputs.parameters.pgs-metadata-f}}"
                 - name: output-dbs-folder
                   value: "{{inputs.parameters.temp-rel-dir}}/dbs/"
-                - name: output-json-folder
-                  value: "{{inputs.parameters.scratch-rel-dir}}/json/"
-                - name: thread-count
-                  value: "{{inputs.parameters.thread-count}}"
+                # - name: output-json-folder
+                #   value: "{{inputs.parameters.scratch-rel-dir}}/json/"
+                # - name: thread-count
+                #   value: "{{inputs.parameters.thread-count}}"
+                - name: batch-workers-count
+                  value: "2"
+                - name: pgs-workers-count
+                  value: "30"
+                - name: batch-size
+                  value: "200000"
             depends: "genotype-conditional-workflow"
           - name: copy-temp-to-output
             templateRef:
@@ -125,7 +131,7 @@ spec:
                   value: "{{inputs.parameters.output-rel-dir}}/{{inputs.parameters.product-id}}"
                 - name: temp-rel-dir
                   value: "{{inputs.parameters.temp-rel-dir}}"
-            depends: "gennext-prs"
+            depends: "gennext-prs-matcher"
           - name: clean-scratch
             templateRef:
               name: dir-clean-up

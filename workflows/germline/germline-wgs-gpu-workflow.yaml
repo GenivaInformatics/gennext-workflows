@@ -300,6 +300,25 @@ spec:
           #       - name: scratch-dir
           #         value: "{{inputs.parameters.scratch-rel-dir}}"
           #   depends: "elprep && deepvariant"
+          - name: cnvpytor
+            templateRef:
+              name: cnvpytor-template
+              template: cnvpytor
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: input-bam
+                  value: "{{tasks.pb-applybqsr.outputs.parameters.output-bam}}"
+                - name: input-vcf
+                  value: "{{tasks.deepvariant.outputs.parameters.output-vcf}}"
+                - name: ref-genome-f
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
+                - name: output-f
+                  value: "{{inputs.parameters.temp-rel-dir}}results/cnv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}.cnvpytor"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "pb-applybqsr && deepvariant && get-abs-ref-dirs"
           - name: verifybamid
             templateRef:
               name: verifybamid-template
@@ -367,7 +386,7 @@ spec:
                   value: "{{inputs.parameters.output-rel-dir}}"
                 - name: temp-rel-dir
                   value: "{{inputs.parameters.temp-rel-dir}}"
-            depends: "collect-qc-data && deepvariant && annotsv-create-dummy-tsv"
+            depends: "cnvpytor && collect-qc-data && deepvariant && annotsv-create-dummy-tsv"
           - name: cravat
             templateRef:
               name: cravat-templates
@@ -631,6 +650,25 @@ spec:
           #       - name: scratch-dir
           #         value: "{{inputs.parameters.scratch-rel-dir}}"
           #   depends: "elprep && deepvariant"
+          - name: cnvpytor
+            templateRef:
+              name: cnvpytor-template
+              template: cnvpytor
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: input-bam
+                  value: "{{tasks.pb-applybqsr.outputs.parameters.output-bam}}"
+                - name: input-vcf
+                  value: "{{tasks.deepvariant.outputs.parameters.output-vcf}}"
+                - name: ref-genome-f
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
+                - name: output-f
+                  value: "{{inputs.parameters.temp-rel-dir}}results/cnv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}.cnvpytor"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "pb-applybqsr && deepvariant && get-abs-ref-dirs"
           - name: verifybamid
             templateRef:
               name: verifybamid-template
@@ -698,7 +736,7 @@ spec:
                   value: "{{inputs.parameters.output-rel-dir}}"
                 - name: temp-rel-dir
                   value: "{{inputs.parameters.temp-rel-dir}}"
-            depends: "collect-qc-data && deepvariant && annotsv-create-dummy-tsv"
+            depends: "cnvpytor && collect-qc-data && deepvariant && annotsv-create-dummy-tsv"
           - name: cravat
             templateRef:
               name: cravat-templates

@@ -1,11 +1,11 @@
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
-  name: germline-wes-gpu-workflow
+  name: germline-tps-gpu-workflow
 spec:
   entrypoint: main
   templates:
-    - name: germline-wes-gpu-fastq
+    - name: germline-tps-gpu-fastq
       inputs:
         parameters:
           - name: user-id
@@ -234,45 +234,46 @@ spec:
                   # value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
                   value: "{{tasks.copy-regions-file-to-scratch.outputs.parameters.regions-bed-f}}"
             depends: "deepvariant && get-abs-ref-dirs && copy-regions-file-to-scratch"
-          # - name: manta
-          #   templateRef:
-          #     name: manta-template
-          #     template: manta
-          #   arguments:
-          #     parameters:
-          #       - name: sample-id
-          #         value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
-          #       - name: normal-bam
-          #         value: "{{tasks.pb-applybqsr.outputs.parameters.output-bam}}"
-          #       - name: ref-genome-f
-          #         value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
-          #       - name: regions-file
-          #         value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
-          #       - name: output-dir
-          #         value: "{{inputs.parameters.temp-rel-dir}}vcf/"
-          #       - name: scratch-dir
-          #         value: "{{inputs.parameters.scratch-rel-dir}}manta/"
-          #       - name: thread-count
-          #         value: "{{inputs.parameters.thread-count}}"
-          - name: exomedepth
+          - name: manta
             templateRef:
-              name: exomedepth-template
-              template: exomedepth
+              name: manta-template
+              template: manta
             arguments:
               parameters:
                 - name: sample-id
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
-                - name: input-bam
+                - name: normal-bam
                   value: "{{tasks.pb-applybqsr.outputs.parameters.output-bam}}"
-                - name: ref-regions
-                  value: "{{inputs.parameters.ref-base-dir}}{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/regions/gencode.v47.hg38.exons.bed"
-                - name: ref-cohort
-                  value: "{{inputs.parameters.ref-base-dir}}{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/other/exomedepth/cohorts/gencode_v47_hg38_exons_cohort.rds"
-                - name: ref-fasta
+                - name: ref-genome-f
                   value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
-                - name: output-vcf
-                  value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_exomedepth_CNV.vcf.gz"
-            depends: "get-abs-ref-dirs && pb-applybqsr"
+                - name: regions-file
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}vcf/"
+                - name: scratch-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}manta/"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "deepvariant && pb-applybqsr && get-abs-ref-dirs"
+          # - name: exomedepth
+          #   templateRef:
+          #     name: exomedepth-template
+          #     template: exomedepth
+          #   arguments:
+          #     parameters:
+          #       - name: sample-id
+          #         value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+          #       - name: input-bam
+          #         value: "{{tasks.pb-applybqsr.outputs.parameters.output-bam}}"
+          #       - name: ref-regions
+          #         value: "{{inputs.parameters.ref-base-dir}}{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/regions/gencode.v47.hg38.exons.bed"
+          #       - name: ref-cohort
+          #         value: "{{inputs.parameters.ref-base-dir}}{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/other/exomedepth/cohorts/gencode_v47_hg38_exons_cohort.rds"
+          #       - name: ref-fasta
+          #         value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
+          #       - name: output-vcf
+          #         value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_exomedepth_CNV.vcf.gz"
+          #   depends: "get-abs-ref-dirs && pb-applybqsr"
           - name: annotsv
             templateRef:
               name: annotsv-template
@@ -280,8 +281,8 @@ spec:
             arguments:
               parameters:
                 - name: input-vcf-f
-                  # value: "{{tasks.manta.outputs.parameters.output-diploid-vcf-f}}"
-                  value: "{{tasks.exomedepth.outputs.parameters.output-vcf}}"
+                  value: "{{tasks.manta.outputs.parameters.output-diploid-vcf-f}}"
+                  # value: "{{tasks.exomedepth.outputs.parameters.output-vcf}}"
                 - name: output-annotsv-tsv-f
                   value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_annotsv.tsv"
                 - name: ref-version
@@ -290,8 +291,8 @@ spec:
                   value: "{{inputs.parameters.ref-base-dir}}{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/other/AnnotSV/"
                 - name: sv-min-size
                   value: "50"
-            # depends: "manta"
-            depends: "exomedepth"
+            depends: "manta"
+            # depends: "exomedepth"
           - name: annotsv-create-dummy-tsv
             templateRef:
               name: annotsv-template
@@ -417,7 +418,7 @@ spec:
                 - name: directory
                   value: "{{inputs.parameters.scratch-rel-dir}}"
             depends: "copy-temp-to-output"
-    - name: germline-wes-gpu-bam
+    - name: germline-tps-gpu-bam
       inputs:
         parameters:
           - name: user-id
@@ -596,46 +597,46 @@ spec:
                 - name: regions-file
                   value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
             depends: "deepvariant && get-abs-ref-dirs"
-          # - name: manta
-          #   templateRef:
-          #     name: manta-template
-          #     template: manta
-          #   arguments:
-          #     parameters:
-          #       - name: sample-id
-          #         value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
-          #       - name: normal-bam
-          #         value: "{{tasks.pb-applybqsr.outputs.parameters.output-bam}}"
-          #       - name: ref-genome-f
-          #         value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
-          #       - name: regions-file
-          #         value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
-          #       - name: output-dir
-          #         value: "{{inputs.parameters.temp-rel-dir}}vcf/"
-          #       - name: scratch-dir
-          #         value: "{{inputs.parameters.scratch-rel-dir}}manta/"
-          #       - name: thread-count
-          #         value: "{{inputs.parameters.thread-count}}"
-          #   depends: "deepvariant && get-abs-ref-dirs && pb-applybqsr"
-          - name: exomedepth
+          - name: manta
             templateRef:
-              name: exomedepth-template
-              template: exomedepth
+              name: manta-template
+              template: manta
             arguments:
               parameters:
                 - name: sample-id
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
-                - name: input-bam
+                - name: normal-bam
                   value: "{{tasks.pb-applybqsr.outputs.parameters.output-bam}}"
-                - name: ref-regions
-                  value: "{{inputs.parameters.ref-base-dir}}{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/regions/gencode.v47.hg38.exons.bed"
-                - name: ref-cohort
-                  value: "{{inputs.parameters.ref-base-dir}}{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/other/exomedepth/cohorts/gencode_v47_hg38_exons_cohort.rds"
-                - name: ref-fasta
+                - name: ref-genome-f
                   value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
-                - name: output-vcf
-                  value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_exomedepth_CNV.vcf.gz"
-            depends: "get-abs-ref-dirs && pb-applybqsr"
+                - name: regions-file
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}vcf/"
+                - name: scratch-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}manta/"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "deepvariant && get-abs-ref-dirs && pb-applybqsr"
+          # - name: exomedepth
+          #   templateRef:
+          #     name: exomedepth-template
+          #     template: exomedepth
+          #   arguments:
+          #     parameters:
+          #       - name: sample-id
+          #         value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+          #       - name: input-bam
+          #         value: "{{tasks.pb-applybqsr.outputs.parameters.output-bam}}"
+          #       - name: ref-regions
+          #         value: "{{inputs.parameters.ref-base-dir}}{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/regions/gencode.v47.hg38.exons.bed"
+          #       - name: ref-cohort
+          #         value: "{{inputs.parameters.ref-base-dir}}{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/other/exomedepth/cohorts/gencode_v47_hg38_exons_cohort.rds"
+          #       - name: ref-fasta
+          #         value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
+          #       - name: output-vcf
+          #         value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_exomedepth_CNV.vcf.gz"
+          #   depends: "get-abs-ref-dirs && pb-applybqsr"
           - name: annotsv
             templateRef:
               name: annotsv-template
@@ -643,8 +644,8 @@ spec:
             arguments:
               parameters:
                 - name: input-vcf-f
-                  # value: "{{tasks.manta.outputs.parameters.output-diploid-vcf-f}}"
-                  value: "{{tasks.exomedepth.outputs.parameters.output-vcf}}"
+                  value: "{{tasks.manta.outputs.parameters.output-diploid-vcf-f}}"
+                  # value: "{{tasks.exomedepth.outputs.parameters.output-vcf}}"
                 - name: output-annotsv-tsv-f
                   value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_annotsv.tsv"
                 - name: ref-version
@@ -653,8 +654,8 @@ spec:
                   value: "{{inputs.parameters.ref-base-dir}}{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/other/AnnotSV/"
                 - name: sv-min-size
                   value: "50"
-            # depends: "manta"
-            depends: "exomedepth"
+            depends: "manta"
+            # depends: "exomedepth"
           - name: annotsv-create-dummy-tsv
             templateRef:
               name: annotsv-template
@@ -784,7 +785,7 @@ spec:
                 - name: directory
                   value: "{{inputs.parameters.scratch-rel-dir}}"
             depends: "copy-temp-to-output"
-    - name: germline-wes-vcf
+    - name: germline-tps-vcf
       inputs:
         parameters:
           - name: user-id
@@ -849,9 +850,9 @@ spec:
             default: "8"
       dag:
         tasks:
-          - name: germline-wes-bam-workflow
+          - name: germline-tps-bam-workflow
             when: "{{=jsonpath(inputs.parameters['run-data'], '$.dataType')}} == 'bam'"
-            template: germline-wes-gpu-bam
+            template: germline-tps-gpu-bam
             arguments:
               parameters:
                 - name: user-id
@@ -876,9 +877,9 @@ spec:
                   value: "{{inputs.parameters.annots-base-dir}}"
                 - name: thread-count
                   value: "{{inputs.parameters.thread-count}}"
-          - name: germline-wes-fastq-workflow
+          - name: germline-tps-fastq-workflow
             when: "{{=jsonpath(inputs.parameters['run-data'], '$.dataType')}} == 'fastq'"
-            template: germline-wes-gpu-fastq
+            template: germline-tps-gpu-fastq
             arguments:
               parameters:
                 - name: user-id
@@ -903,9 +904,9 @@ spec:
                   value: "{{inputs.parameters.annots-base-dir}}"
                 - name: thread-count
                   value: "{{inputs.parameters.thread-count}}"
-          - name: germline-wes-vcf-workflow
+          - name: germline-tps-vcf-workflow
             when: "{{=jsonpath(inputs.parameters['run-data'], '$.dataType')}} == 'vcf'"
-            template: germline-wes-vcf
+            template: germline-tps-vcf
             arguments:
               parameters:
                 - name: user-id

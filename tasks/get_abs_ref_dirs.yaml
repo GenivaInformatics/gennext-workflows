@@ -28,6 +28,9 @@ spec:
           - name: ref-dbsnp-f
             valueFrom:
               path: "/tmp/{{inputs.parameters.ref-ver}}.dbsnp"
+          - name: ref-gnomad4-common-variants-f
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.gnomad4.common.variants"
           - name: regions-bed-f
             valueFrom:
               path: "/tmp/{{inputs.parameters.ref-ver}}.regions.targeted"

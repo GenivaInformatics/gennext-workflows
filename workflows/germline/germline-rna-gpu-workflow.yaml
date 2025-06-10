@@ -1,10 +1,10 @@
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
-  name: somatic-testing-rna-gpu-workflow
+  name: germline-rna-gpu-workflow
 spec:
   templates:
-    - name: somatic-testing-rna-gpu-fastq
+    - name: germline-rna-gpu-fastq
       inputs:
         parameters:
           - name: user-id
@@ -85,7 +85,7 @@ spec:
                   value: "{{inputs.parameters.scratch-rel-dir}}"
                 - name: ref-regions-dir
                   value: "{{inputs.parameters.ref-base-dir}}/{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/regions/"
-            depends: "copy-fastq-to-scratch && get-abs-ref-dirs"
+            depends: "copy-fastq-to-scratch"
           # - name: copy-fastq-to-scratch
           #   templateRef:
           #     name: copy-inputs-to-scratch
@@ -180,7 +180,8 @@ spec:
                 - name: scratch-dir
                   value: "{{inputs.parameters.scratch-rel-dir}}star-fusion/"
                 - name: ctat-genome-lib-build-dir
-                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ctat-genome-lib-build-dir}}"
+                  # value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ctat-genome-lib-build-dir}}"
+                  value: "/runspace/gennext/data/ref/m37/rna/ctat_genome_lib_build_dir/"
             depends: "trim-galore && get-abs-ref-dirs && compose-read-group-str"
           - name: samtools-sort-index
             templateRef:
@@ -244,9 +245,11 @@ spec:
                 - name: sample-id
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
                 - name: gene-annotation-gtf
-                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.gene-annotation-gtf}}"
+                  # value: "{{tasks.get-abs-ref-dirs.outputs.parameters.gene-annotation-gtf}}"
+                  value: "/runspace/gennext/data/ref/m37/gene_annots/gencode.vM37.annotation.gtf"
                 - name: chrom-sizes
-                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.chrom-sizes}}"
+                  # value: "{{tasks.get-abs-ref-dirs.outputs.parameters.chrom-sizes}}"
+                  value: "/runspace/gennext/data/ref/m37/genome/GRCm39.chrom_sizes"
                 - name: input-bam
                   # value: "{{tasks.pb-rnafq2bam.outputs.parameters.output-bam}}"
                   value: "{{tasks.samtools-sort-index.outputs.parameters.output-bam}}"
@@ -254,43 +257,43 @@ spec:
                   value: "{{inputs.parameters.temp-rel-dir}}results/rna/qorts/"
             # depends: "pb-rnafq2bam && get-abs-ref-dirs"
             depends: "samtools-sort-index && get-abs-ref-dirs"
-          - name: star-fusion-to-oncokb
-            templateRef:
-              name: star-fusion-to-oncokb-template
-              template: star-fusion-to-oncokb
-            arguments:
-              parameters:
-                - name: sample-id
-                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
-                - name: star-fusion-tsv
-                  # value: "{{tasks.pb-starfusion.outputs.parameters.output-fusions-tsv}}"
-                  value: "{{tasks.star-fusion.outputs.parameters.output-fusions-tsv}}"
-                - name: star-fusion-oncokb-tsv
-                  value: "{{inputs.parameters.scratch-rel-dir}}results/fusions/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_fusions_oncokb_base.tsv"
-            # depends: "pb-starfusion"
-            depends: "star-fusion"
-          - name: oncokb-fusions
-            templateRef:
-              name: oncokb-templates
-              template: oncokb-fusions
-            arguments:
-              parameters:
-                - name: oncokb-fusions-in-f
-                  value: "{{tasks.star-fusion-to-oncokb.outputs.parameters.star-fusion-oncokb-tsv}}"
-                - name: oncokb-fusions-out-f
-                  value: "{{inputs.parameters.temp-rel-dir}}results/fusions/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_fusions_oncokb.tsv"
-            depends: "star-fusion-to-oncokb"
-          - name: duckdb-fusions
-            templateRef:
-              name: duckdb-template
-              template: duckdb-fusions
-            arguments:
-              parameters:
-                - name: oncokb-tsv-f
-                  value: "{{tasks.oncokb-fusions.outputs.parameters.oncokb-fusions-out-f}}"
-                - name: output-duckdb
-                  value: "{{inputs.parameters.temp-rel-dir}}results/db/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_fusions.duckdb"
-            depends: "oncokb-fusions"
+          # - name: star-fusion-to-oncokb
+          #   templateRef:
+          #     name: star-fusion-to-oncokb-template
+          #     template: star-fusion-to-oncokb
+          #   arguments:
+          #     parameters:
+          #       - name: sample-id
+          #         value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+          #       - name: star-fusion-tsv
+          #         # value: "{{tasks.pb-starfusion.outputs.parameters.output-fusions-tsv}}"
+          #         value: "{{tasks.star-fusion.outputs.parameters.output-fusions-tsv}}"
+          #       - name: star-fusion-oncokb-tsv
+          #         value: "{{inputs.parameters.scratch-rel-dir}}results/fusions/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_fusions_oncokb_base.tsv"
+          #   # depends: "pb-starfusion"
+          #   depends: "star-fusion"
+          # - name: oncokb-fusions
+          #   templateRef:
+          #     name: oncokb-templates
+          #     template: oncokb-fusions
+          #   arguments:
+          #     parameters:
+          #       - name: oncokb-fusions-in-f
+          #         value: "{{tasks.star-fusion-to-oncokb.outputs.parameters.star-fusion-oncokb-tsv}}"
+          #       - name: oncokb-fusions-out-f
+          #         value: "{{inputs.parameters.temp-rel-dir}}results/fusions/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_fusions_oncokb.tsv"
+          #   depends: "star-fusion-to-oncokb"
+          # - name: duckdb-fusions
+          #   templateRef:
+          #     name: duckdb-template
+          #     template: duckdb-fusions
+          #   arguments:
+          #     parameters:
+          #       - name: oncokb-tsv-f
+          #         value: "{{tasks.oncokb-fusions.outputs.parameters.oncokb-fusions-out-f}}"
+          #       - name: output-duckdb
+          #         value: "{{inputs.parameters.temp-rel-dir}}results/db/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_fusions.duckdb"
+          #   depends: "oncokb-fusions"
           # - name: samtools-sort-index
           #   templateRef:
           #     name: samtools-template
@@ -350,7 +353,8 @@ spec:
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}metrics/rna/mosdepth/"
                 - name: regions-bed-f
-                  value: "{{tasks.copy-regions-file-to-scratch.outputs.parameters.regions-file}}"
+                  # value: "{{tasks.copy-regions-file-to-scratch.outputs.parameters.regions-file}}"
+                  value: "/runspace/gennext/data/ref/m37/rna/regions/gencode.vM37.CDS.bed"
             # depends: "get-abs-ref-dirs && verifybamid && pb-rnafq2bam && copy-regions-file-to-scratch"
             depends: "get-abs-ref-dirs && verifybamid && samtools-sort-index && copy-regions-file-to-scratch"
           - name: multiqc
@@ -396,7 +400,7 @@ spec:
                   value: "{{inputs.parameters.output-rel-dir}}"
                 - name: temp-rel-dir
                   value: "{{inputs.parameters.temp-rel-dir}}"
-            depends: "collect-qc-data && duckdb-fusions && qorts"
+            depends: "collect-qc-data && qorts"
           - name: clean-scratch
             templateRef:
               name: dir-clean-up
@@ -406,7 +410,7 @@ spec:
                 - name: directory
                   value: "{{inputs.parameters.scratch-rel-dir}}"
             depends: "copy-temp-to-output"
-    - name: somatic-testing-rna-gpu-bam
+    - name: germline-rna-gpu-bam
       inputs:
         parameters:
           - name: user-id
@@ -620,43 +624,43 @@ spec:
                   value: "{{inputs.parameters.temp-rel-dir}}results/rna/qorts/"
             # depends: "pb-rnafq2bam && get-abs-ref-dirs"
             depends: "samtools-sort-index && get-abs-ref-dirs"
-          - name: star-fusion-to-oncokb
-            templateRef:
-              name: star-fusion-to-oncokb-template
-              template: star-fusion-to-oncokb
-            arguments:
-              parameters:
-                - name: sample-id
-                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
-                - name: star-fusion-tsv
-                  # value: "{{tasks.pb-starfusion.outputs.parameters.output-fusions-tsv}}"
-                  value: "{{tasks.star-fusion.outputs.parameters.output-fusions-tsv}}"
-                - name: star-fusion-oncokb-tsv
-                  value: "{{inputs.parameters.scratch-rel-dir}}results/fusions/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_fusions_oncokb_base.tsv"
-            # depends: "pb-starfusion"
-            depends: "star-fusion"
-          - name: oncokb-fusions
-            templateRef:
-              name: oncokb-templates
-              template: oncokb-fusions
-            arguments:
-              parameters:
-                - name: oncokb-fusions-in-f
-                  value: "{{tasks.star-fusion-to-oncokb.outputs.parameters.star-fusion-oncokb-tsv}}"
-                - name: oncokb-fusions-out-f
-                  value: "{{inputs.parameters.temp-rel-dir}}results/fusions/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_fusions_oncokb.tsv"
-            depends: "star-fusion-to-oncokb"
-          - name: duckdb-fusions
-            templateRef:
-              name: duckdb-template
-              template: duckdb-fusions
-            arguments:
-              parameters:
-                - name: oncokb-tsv-f
-                  value: "{{tasks.oncokb-fusions.outputs.parameters.oncokb-fusions-out-f}}"
-                - name: output-duckdb
-                  value: "{{inputs.parameters.temp-rel-dir}}results/db/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_fusions.duckdb"
-            depends: "oncokb-fusions"
+          # - name: star-fusion-to-oncokb
+          #   templateRef:
+          #     name: star-fusion-to-oncokb-template
+          #     template: star-fusion-to-oncokb
+          #   arguments:
+          #     parameters:
+          #       - name: sample-id
+          #         value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+          #       - name: star-fusion-tsv
+          #         # value: "{{tasks.pb-starfusion.outputs.parameters.output-fusions-tsv}}"
+          #         value: "{{tasks.star-fusion.outputs.parameters.output-fusions-tsv}}"
+          #       - name: star-fusion-oncokb-tsv
+          #         value: "{{inputs.parameters.scratch-rel-dir}}results/fusions/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_fusions_oncokb_base.tsv"
+          #   # depends: "pb-starfusion"
+          #   depends: "star-fusion"
+          # - name: oncokb-fusions
+          #   templateRef:
+          #     name: oncokb-templates
+          #     template: oncokb-fusions
+          #   arguments:
+          #     parameters:
+          #       - name: oncokb-fusions-in-f
+          #         value: "{{tasks.star-fusion-to-oncokb.outputs.parameters.star-fusion-oncokb-tsv}}"
+          #       - name: oncokb-fusions-out-f
+          #         value: "{{inputs.parameters.temp-rel-dir}}results/fusions/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_fusions_oncokb.tsv"
+          #   depends: "star-fusion-to-oncokb"
+          # - name: duckdb-fusions
+          #   templateRef:
+          #     name: duckdb-template
+          #     template: duckdb-fusions
+          #   arguments:
+          #     parameters:
+          #       - name: oncokb-tsv-f
+          #         value: "{{tasks.oncokb-fusions.outputs.parameters.oncokb-fusions-out-f}}"
+          #       - name: output-duckdb
+          #         value: "{{inputs.parameters.temp-rel-dir}}results/db/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_fusions.duckdb"
+          #   depends: "oncokb-fusions"
           # - name: samtools-sort-index
           #   templateRef:
           #     name: samtools-template
@@ -760,7 +764,7 @@ spec:
                   value: "{{inputs.parameters.output-rel-dir}}"
                 - name: temp-rel-dir
                   value: "{{inputs.parameters.temp-rel-dir}}"
-            depends: "collect-qc-data && duckdb-fusions && qorts"
+            depends: "collect-qc-data && qorts"
           - name: clean-scratch
             templateRef:
               name: dir-clean-up
@@ -770,3 +774,74 @@ spec:
                 - name: directory
                   value: "{{inputs.parameters.scratch-rel-dir}}"
             depends: "copy-temp-to-output"
+    - name: main
+      inputs:
+        parameters:
+          - name: user-id
+          - name: run-id
+          - name: run-data
+          - name: input-rel-dir
+          - name: ref-base-dir
+          - name: temp-rel-dir
+          - name: scratch-rel-dir
+          - name: output-rel-dir
+          - name: modules-base-dir
+          - name: annots-base-dir
+          - name: thread-count
+            default: "8"
+      dag:
+        tasks:
+          - name: germline-rna-bam-workflow
+            when: "{{=jsonpath(inputs.parameters['run-data'], '$.dataType')}} == 'bam'"
+            template: germline-rna-gpu-bam
+            arguments:
+              parameters:
+                - name: user-id
+                  value: "{{inputs.parameters.user-id}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: run-data
+                  value: "{{inputs.parameters.run-data}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+                - name: output-rel-dir
+                  value: "{{inputs.parameters.output-rel-dir}}"
+                - name: modules-base-dir
+                  value: "{{inputs.parameters.modules-base-dir}}"
+                - name: annots-base-dir
+                  value: "{{inputs.parameters.annots-base-dir}}"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+          - name: germline-rna-fastq-workflow
+            when: "{{=jsonpath(inputs.parameters['run-data'], '$.dataType')}} == 'fastq'"
+            template: germline-rna-gpu-fastq
+            arguments:
+              parameters:
+                - name: user-id
+                  value: "{{inputs.parameters.user-id}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: run-data
+                  value: "{{inputs.parameters.run-data}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+                - name: output-rel-dir
+                  value: "{{inputs.parameters.output-rel-dir}}"
+                - name: modules-base-dir
+                  value: "{{inputs.parameters.modules-base-dir}}"
+                - name: annots-base-dir
+                  value: "{{inputs.parameters.annots-base-dir}}"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
