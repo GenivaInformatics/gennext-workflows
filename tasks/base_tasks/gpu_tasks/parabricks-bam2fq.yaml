@@ -50,3 +50,49 @@ spec:
             mountPath: /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}
           - name: output-dir
             mountPath: /mnt/output/fq/
+    - name: parabricks-bam2fq-on-node
+      nodeSelector:
+        kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      inputs:
+        parameters:
+          - name: input-bam
+          - name: sample-id
+          - name: output-dir
+          - name: thread-count
+          - name: node-name
+      outputs:
+        parameters:
+          - name: output-fq-r1
+            value: "{{inputs.parameters.output-dir}}/{{inputs.parameters.sample-id}}_1.fastq.gz"
+          - name: output-fq-r2
+            value: "{{inputs.parameters.output-dir}}/{{inputs.parameters.sample-id}}_2.fastq.gz"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{inputs.parameters.input-bam}}"
+            type: File
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: "parabricks-bam2fastq-script"
+        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+        command: [sh]
+        source: |
+          pbrun bam2fq \
+            --num-threads {{inputs.parameters.thread-count}} \
+            --in-bam "/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}" \
+            --out-prefix "/mnt/output/fq/{{=sprig.osBase(inputs.parameters['sample-id'])}}"
+        volumeMounts:
+          - name: input-bam
+            mountPath: /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}
+          - name: output-dir
+            mountPath: /mnt/output/fq/

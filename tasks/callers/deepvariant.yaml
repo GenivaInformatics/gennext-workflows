@@ -59,7 +59,7 @@ spec:
             type: Directory
       script:
         name: "deepvariant-wgs-gpu"
-        image: google/deepvariant:1.5.0-gpu
+        image: google/deepvariant:1.9.0-gpu
         # image: gcr.io/deepvariant-docker/deepvariant:1.5.0-gpu
         # image: gcr.io/deepvariant-docker/deepvariant:1.5.0
         resources:
@@ -148,7 +148,7 @@ spec:
             type: Directory
       script:
         name: "deepvariant-wes-nogpu"
-        image: google/deepvariant:1.5.0-gpu
+        image: google/deepvariant:1.9.0-gpu
         # image: gcr.io/deepvariant-docker/deepvariant:1.5.0-gpu
         # image: gcr.io/deepvariant-docker/deepvariant:1.5.0
         # resources:
@@ -253,7 +253,7 @@ spec:
             type: Directory
       script:
         name: "deepvariant-wes-gpu"
-        image: google/deepvariant:1.5.0-gpu
+        image: google/deepvariant:1.9.0-gpu
         # image: gcr.io/deepvariant-docker/deepvariant:1.5.0-gpu
         # image: gcr.io/deepvariant-docker/deepvariant:1.5.0
         resources:
@@ -355,7 +355,7 @@ spec:
         kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
       script:
         name: "deepvariant-wes-gpu"
-        image: google/deepvariant:1.5.0-gpu
+        image: google/deepvariant:1.9.0-gpu
         # image: gcr.io/deepvariant-docker/deepvariant:1.5.0-gpu
         # image: gcr.io/deepvariant-docker/deepvariant:1.5.0
         resources:

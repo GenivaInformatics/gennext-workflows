@@ -1,0 +1,117 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: msi-tmb-coverage-workflow-template
+spec:
+  templates:
+    - name: msi-tmb-coverage-workflow
+      nodeSelector:
+        kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      inputs:
+        parameters:
+          - name: base-dir
+            value: "/runspace/gennext/data/output/"
+          - name: user-id
+            value: "b3eace1a-7deb-4339-8119-2fc09d8dc481"
+          - name: run-id
+            value: "523b7831-77d0-401c-a3f2-f58939e19393"
+          - name: sample-id
+            value: "BRG-B1-S1"
+          - name: ref-base-dir
+            value: "/runspace/gennext/data/ref/"
+          - name: regions-file
+            value: "/runspace/gennext/data/ref/hg38/regions/archer/VariantPlex_Expanded_Solid_Tumor_TargetROI-v1.0_hg38.bed"
+          - name: msi-baseline
+            value: "/runspace/gennext/data/ref/hg38/other/msi/archer_hg38_msissensorpro_baseline.tsv"
+          - name: node-name
+            value: "acurare-01"
+      dag:
+        tasks:
+          - name: mosdepth
+            templateRef:
+              name: mosdepth-template
+              template: mosdepth-exome
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: thresholds
+                  value: "1,5,10,30,50,100,500"
+                - name: input-bam
+                  value: "{{inputs.parameters.base-dir}}/{{inputs.parameters.user-id}}/{{inputs.parameters.run-id}}/bam/{{inputs.parameters.sample-id}}_recal.bam"
+                - name: output-dir
+                  value: "{{inputs.parameters.base-dir}}/{{inputs.parameters.user-id}}/{{inputs.parameters.run-id}}/metrics/mosdepth/"
+                - name: regions-bed-f
+                  value: "{{inputs.parameters.regions-file}}"
+          - name: msisensor-pro
+            templateRef:
+              name: msisensor-pro-template
+              template: msisensor-pro
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: input-bam
+                  value: "{{inputs.parameters.base-dir}}/{{inputs.parameters.user-id}}/{{inputs.parameters.run-id}}/bam/{{inputs.parameters.sample-id}}_recal.bam"
+                - name: output-dir
+                  value: "{{inputs.parameters.base-dir}}/{{inputs.parameters.user-id}}/{{inputs.parameters.run-id}}results/snv/msisensor/"
+                - name: tcga-baseline
+                  value: "{{inputs.parameters.msi-baseline}}"
+          - name: collect-tmb-data
+            templateRef:
+              name: collect-tmb-data-template
+              template: collect-tmb-data
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: duckdb-file
+                  value: "{{inputs.parameters.base-dir}}/{{inputs.parameters.user-id}}/{{inputs.parameters.run-id}}/results/db/{{inputs.parameters.sample-id}}_results.duckdb"
+                - name: target-bed-file
+                  value: "{{inputs.parameters.regions-file}}"
+                - name: af-lower-threshold
+                  value: "0.05"
+                - name: af-upper-threshold
+                  value: "0.95"
+                - name: output-dir
+                  value: "{{inputs.parameters.base-dir}}/{{inputs.parameters.user-id}}/{{inputs.parameters.run-id}}/results/metrics/tmb/"
+          - name: collect-msi-data
+            # collects MSI information
+            templateRef:
+              name: collect-somatic-data-templates
+              template: collect-msi-data
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: msisensorpro-in-f
+                  value: "{{inputs.parameters.base-dir}}/{{inputs.parameters.user-id}}/{{inputs.parameters.run-id}}/results/snv/msisensor/{{inputs.parameters.sample-id}}_fusions_msi"
+            depends: "msisensor-pro"
+          - name: multiqc
+            templateRef:
+              name: multiqc-template
+              template: main
+            arguments:
+              parameters:
+                - name: input-dir
+                  value: "{{inputs.parameters.base-dir}}/{{inputs.parameters.user-id}}/{{inputs.parameters.run-id}}/"
+                - name: output-dir
+                  value: "{{inputs.parameters.base-dir}}/{{inputs.parameters.user-id}}/{{inputs.parameters.run-id}}/metrics/"
+            depends: "mosdepth && collect-tmb-data && collect-msi-data"
+          - name: collect-qc-data
+            templateRef:
+              name: collect-qc-data-templates
+              template: collect-qc-data-bam
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: metrics-dir
+                  value: "{{inputs.parameters.base-dir}}/{{inputs.parameters.user-id}}/{{inputs.parameters.run-id}}/metrics/"
+            depends: "multiqc"

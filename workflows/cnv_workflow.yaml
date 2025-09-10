@@ -1,0 +1,78 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cnv-workflow-template
+spec:
+  templates:
+    - name: cnv-workflow
+      nodeSelector:
+        kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      inputs:
+        parameters:
+          - name: base-dir
+            value: "/runspace/gennext/data/output/6d899599-58bf-4e70-9276-32c4e9678e6f/523b7831-77d0-401c-a3f2-f58939e19393/"
+          - name: tmp-dir
+            value: "/home/berkergun/Temp/cnv_data/tmp/"
+          - name: sample-id
+            value: "BRG-B1-S5"
+          - name: ref-base-dir
+            value: "/runspace/gennext/data/ref/"
+          - name: node-name
+            value: "acurare-01"
+      dag:
+        tasks:
+          - name: annotsv
+            templateRef:
+              name: annotsv-template
+              template: annotsv
+            arguments:
+              parameters:
+                - name: input-vcf-f
+                  value: "{{inputs.parameters.base-dir}}/results/cnv/{{inputs.parameters.sample-id}}.cnv.annotated.filtered.vcf"
+                - name: annotsv-ref-dir
+                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other/AnnotSV/"
+                - name: ref-version
+                  value: "hg38"
+                - name: sv-min-size
+                  value: "20"
+                - name: output-annotsv-tsv-f
+                  value: "{{inputs.parameters.tmp-dir}}/results/cnv/{{inputs.parameters.sample-id}}_CNV_annot.tsv"
+          - name: annotsv-to-oncokb-format
+            templateRef:
+              name: filter-annotsv-template
+              template: annotsv-to-oncokb-format
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: annotsv-tsv
+                  value: "{{tasks.annotsv.outputs.parameters.output-annotsv-tsv-f}}"
+                - name: annotsv-filtered-out-tsv
+                  value: "{{inputs.parameters.base-dir}}/results/cnv/{{inputs.parameters.sample-id}}_CNV_annot_filtered.tsv"
+                - name: annotsv-oncokb-out-tsv
+                  value: "{{inputs.parameters.tmp-dir}}/results/cnv/{{inputs.parameters.sample-id}}_CNV_oncokb.tsv"
+            depends: "annotsv"
+          - name: oncokb-cnv
+            templateRef:
+              name: oncokb-templates
+              template: oncokb-sv
+            arguments:
+              parameters:
+                - name: oncokb-sv-in-f
+                  value: "{{tasks.annotsv-to-oncokb-format.outputs.parameters.annotsv-oncokb-out-tsv}}"
+                - name: oncokb-sv-out-f
+                  value: "{{inputs.parameters.base-dir}}/results/cnv/{{inputs.parameters.sample-id}}_CNV_oncokb_annot.tsv"
+            depends: "annotsv-to-oncokb-format"
+          - name: duckdb-cnv
+            templateRef:
+              name: duckdb-template
+              template: duckdb-cnv
+            arguments:
+              parameters:
+                - name: oncokb-tsv-f
+                  value: "{{tasks.oncokb-cnv.outputs.parameters.oncokb-sv-out-f}}"
+                - name: annotsv-tsv-f
+                  value: "{{tasks.annotsv-to-oncokb-format.outputs.parameters.annotsv-filtered-out-tsv}}"
+                - name: output-duckdb
+                  value: "{{inputs.parameters.base-dir}}/results/db/{{inputs.parameters.sample-id}}_results.duckdb"
+            depends: "oncokb-cnv"

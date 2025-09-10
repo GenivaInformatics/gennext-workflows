@@ -9,23 +9,28 @@ spec:
         parameters:
           - name: sample-id # not Uuid but user defined String value.
           - name: run-id
-          - name: maf-in-f
+          - name: duckdb-file
           - name: msisensorpro-in-f
+          - name: tmb-output-dir
           - name: snv-regions-bed-f
       dag:
         tasks:
           - name: collect-tmb-data
-            template: collect-tmb-data
+            templateRef:
+              name: collect-tmb-data-template
+              template: collect-tmb-data
             arguments:
               parameters:
                 - name: run-id
                   value: "{{inputs.parameters.run-id}}"
                 - name: sample-id
                   value: "{{inputs.parameters.sample-id}}"
-                - name: maf-in-f
-                  value: "{{inputs.parameters.maf-in-f}}"
-                - name: snv-regions-bed-f
+                - name: duckdb-file
+                  value: "{{inputs.parameters.duckdb-file}}"
+                - name: target-bed-file
                   value: "{{inputs.parameters.snv-regions-bed-f}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.tmb-output-dir}}"
           - name: collect-msi-data
             template: collect-msi-data
             arguments:
@@ -90,153 +95,70 @@ spec:
           res = requests.post(url, json=payload)
 
           if res.status_code != 200:
-              raise Exception(dict(res))
+              raise Exception(f"Failed to post data: {res.status_code} - {res.text}")
         env:
           - name: GENNEXT_CLUSTER_TOKEN
             valueFrom:
               secretKeyRef:
                 name: gennext-cluster-secrets
                 key: gennext_cluster_token
-    - name: collect-tmb-data
+    - name: collect-msi-data-v2
       inputs:
         parameters:
           - name: run-id
-          - name: sample-id
-          - name: maf-in-f
-          - name: snv-regions-bed-f
+          - name: sample-id # not Uuid but user defined String value.
+          - name: msisensorpro-in-json
       volumes:
-        - name: maf-in-f
+        - name: msisensorpro-in-json
           hostPath:
-            path: "{{inputs.parameters.maf-in-f}}"
-            type: File
-        - name: snv-regions-bed-f
-          hostPath:
-            path: "{{inputs.parameters.snv-regions-bed-f}}"
+            path: "{{inputs.parameters.msisensorpro-in-json}}"
             type: File
       script:
-        name: "collect-tmb-data"
+        name: "collect-msi-data"
         image: demisto/pandas:1.0.0.80782
-        # includes 'requests' package
         workingDir: /mnt/input/
         volumeMounts:
-          - name: maf-in-f
-            mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['maf-in-f'])}}
-          - name: snv-regions-bed-f
-            mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['snv-regions-bed-f'])}}
+          - name: msisensorpro-in-json
+            mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['msisensorpro-in-json'])}}
         command: [python]
         source: |
-          import pandas as pd
+          import json
           import os, requests
 
           # cluster info
           token = os.environ["GENNEXT_CLUSTER_TOKEN"]
-          addr = "gennext-backend.gennext-dev.svc.cluster.local:3030"
+          addr = "gennext-backend.gennext-prod.svc.cluster.local:3030"
           url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/somatic"
 
           # collect input data
           sample_id = "{{inputs.parameters.sample-id}}"
-          maf_in_f = "/mnt/input/{{=sprig.osBase(inputs.parameters['maf-in-f'])}}"
-          snv_regions_bed_f = "/mnt/input/{{=sprig.osBase(inputs.parameters['snv-regions-bed-f'])}}"
+          msisensorpro_in_json = "/mnt/input/{{=sprig.osBase(inputs.parameters['msisensorpro-in-json'])}}"
 
-          nonsynonymous_variant_labels = ['Missense_Mutation',
-                                          'Nonsense_Mutation',
-                                          'Frame_Shift_Ins',
-                                          'Frame_Shift_Del',
-                                          'Frameshift_INDEL'
-                                          'In_Frame_Del',
-                                          'In_Frame_Ins',
-                                          'Inframe_INDEL',
-                                          'Nonstop_Mutation',
-                                          'Translation_Start_Site']
+          # Load MSI data from JSON file
+          with open(msisensorpro_in_json, 'r') as f:
+              json_data = json.load(f)
 
-          FILTER = ['clustered_events', 'duplicate', 'fragment', 'multiallelic',
-          'n_ratio', 'orientation', 'position', 'slippage', 'haplotype',
-          'germline', 'strict_strand', 'map_qual', 'base_qual', 'contamination',
-          'weak_evidence', 'low_allele_frac', 'normal_artifact', 'panel_of_normals',
-          'strand_bias']
-          included_filter_labels = ['PASS']
+          # Extract MSI data from the JSON structure
+          msi_info = json_data.get("MSI", {})
+          total_sites = msi_info.get("Total Number of Sites", 0)
+          unstable_sites = msi_info.get("Unstable Sites", 0)
+          msi_percentage_decimal = msi_info.get("MSI Percentage", 0.0)
 
-          def is_valid_filter(filter_str):
-              if filter_str == 'PASS':
-                  return True
-              filters = filter_str.split(';')
-              return all(f in FILTER for f in filters)
+          # Format MSI data for API
+          msi_data = {
+            "msiTotalNumberOfSites": int(total_sites),
+            "msiNumberOfSomaticSites": int(unstable_sites),
+            "msiPercentage": str(f'{msi_percentage_decimal * 100:.2f}'),
+            "msiValue": str(f'{msi_percentage_decimal:.3f}'),
+            }
 
-          def find_mislabeled_filter_column(df):
-              for column in df.columns:
-                  if df[column].apply(lambda x: isinstance(x, str) and (';' in x or x == 'PASS')).any():
-                      if df[column].apply(is_valid_filter).all():
-                          return column
-              return None
-
-          # collect maf nonysynonymous variants count
-          maf_df = pd.read_csv(maf_in_f, sep='\t')
-          if included_filter_labels:
-              print("Pre-filter MAF df shape: ", maf_df.shape)
-              filter_column = find_mislabeled_filter_column(maf_df.filter(regex='^Otherinfo', axis=1))
-              maf_df = maf_df[maf_df[filter_column] == 'PASS'] # Would only work for PASS values
-              print("Post-filter MAF df shape: ", maf_df.shape)
-          exonic_variant_counts: dict = maf_df['Variant_Classification'].value_counts().to_dict()
-          nonsynonymous_variant_count: int = sum(map(lambda x: exonic_variant_counts.get(x, 0), nonsynonymous_variant_labels))
-          print("nonsynonymous variant count: ", nonsynonymous_variant_count)
-
-          def merge_intervals(intervals):
-              """
-              Merge overlapping intervals and return the merged list.
-              Assumes intervals is sorted by the start position.
-              """
-              merged = []
-              for interval in intervals:
-                  # If the list of merged intervals is empty or if the current
-                  # interval does not overlap with the previous, simply append it.
-                  if not merged or merged[-1][1] < interval[0]:
-                      merged.append(interval)
-                  else:
-                      # Otherwise, there is overlap, so we merge the current and previous intervals.
-                      merged[-1][1] = max(merged[-1][1], interval[1])
-              return merged
-
-          def load_and_process_bed(file_path):
-              """
-              Load a BED file, merge overlapping intervals, and calculate the total length.
-              """
-              intervals = {}
-              with open(file_path, 'r') as bed_file:
-                  for line in bed_file:
-                      parts = line.strip().split()
-                      chrom, start, end = parts[0], int(parts[1]), int(parts[2])
-                      if chrom not in intervals:
-                          intervals[chrom] = []
-                      intervals[chrom].append([start, end])
-
-              total_length_bp = 0
-              for chrom in intervals.keys():
-                  sorted_intervals = sorted(intervals[chrom], key=lambda x: x[0])
-                  merged_intervals = merge_intervals(sorted_intervals)
-                  for interval in merged_intervals:
-                      total_length_bp += interval[1] - interval[0]
-
-              return total_length_bp
-
-          bed_file_path = snv_regions_bed_f
-          total_length_bp = load_and_process_bed(bed_file_path)
-          total_length_mb = total_length_bp / 1_000_000
-
-          tmb_value = nonsynonymous_variant_count / total_length_mb
-
-          tmb_data = {
-              "tmbValue": str(f'{tmb_value:.2f}'),
-              "tmbVariantCount": int(nonsynonymous_variant_count),
-              "tmbTargetRegionSize": int(total_length_bp)
-          }
-
-          payload = {"runId": "{{inputs.parameters.run-id}}", "sampleId": "{{inputs.parameters.sample-id}}", "somaticData": tmb_data, "token": token }
-          print(payload)
+          print(msi_data)
+          payload = {"runId": "{{inputs.parameters.run-id}}", "sampleId": "{{inputs.parameters.sample-id}}", "somaticData": msi_data, "token": token }
 
           res = requests.post(url, json=payload)
-          if res.status_code != 200:
-              raise Exception(res.text)
 
+          if res.status_code != 200:
+              raise Exception(f"Failed to post data: {res.status_code} - {res.text}")
         env:
           - name: GENNEXT_CLUSTER_TOKEN
             valueFrom:
@@ -250,31 +172,36 @@ spec:
         parameters:
           - name: sample-id # not Uuid but user defined String value.
           - name: run-id
-          - name: maf-in-f
-          - name: msisensorpro-in-f
+          - name: duckdb-file
           - name: snv-regions-bed-f
+          - name: tmb-output-dir
+          - name: msisensorpro-in-f
           - name: node-name
       dag:
         tasks:
           - name: collect-tmb-data
-            template: collect-tmb-data
+            templateRef:
+              name: collect-tmb-data-template
+              template: collect-tmb-data
             arguments:
               parameters:
                 - name: run-id
                   value: "{{inputs.parameters.run-id}}"
                 - name: sample-id
                   value: "{{inputs.parameters.sample-id}}"
-                - name: maf-in-f
-                  value: "{{inputs.parameters.maf-in-f}}"
-                - name: snv-regions-bed-f
+                - name: duckdb-file
+                  value: "{{inputs.parameters.duckdb-file}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.tmb-output-dir}}"
+                - name: target-bed-file
                   value: "{{inputs.parameters.snv-regions-bed-f}}"
           - name: collect-msi-data
-            template: collect-msi-data
+            template: collect-msi-data-v2
             arguments:
               parameters:
                 - name: run-id
                   value: "{{inputs.parameters.run-id}}"
                 - name: sample-id
                   value: "{{inputs.parameters.sample-id}}"
-                - name: msisensorpro-in-f
+                - name: msisensorpro-in-json
                   value: "{{inputs.parameters.msisensorpro-in-f}}"

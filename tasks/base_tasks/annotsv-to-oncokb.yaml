@@ -71,3 +71,72 @@ spec:
             mountPath: "/mnt/input/annotsv/{{=sprig.osBase(inputs.parameters['input-annotsv-tsv'])}}"
           - name: output-annotsv-oncokb-tsv
             mountPath: "/mnt/output/oncokb/"
+    - name: annotsv-to-oncokb-on-node
+      nodeSelector:
+        kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      inputs:
+        parameters:
+          - name: input-annotsv-tsv
+          - name: output-annotsv-oncokb-tsv
+          - name: node-name
+      outputs:
+        parameters:
+          - name: output-annotsv-oncokb-tsv
+            value: "{{inputs.parameters.output-annotsv-oncokb-tsv}}"
+      volumes:
+        - name: input-annotsv-tsv
+          hostPath:
+            path: "{{inputs.parameters.input-annotsv-tsv}}"
+            type: File
+        - name: output-annotsv-oncokb-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-annotsv-oncokb-tsv'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: filter-indelible-script
+        image: quay.io/biocontainers/pyranges:0.0.129--pyh7cba7a3_0
+        workingDir: /mnt/input/
+        command: [python]
+        source: |
+          # set filename variables
+          tsv_file = "/mnt/input/annotsv/{{=sprig.osBase(inputs.parameters['input-annotsv-tsv'])}}"
+          tsv_oncokb_file = "/mnt/output/oncokb/{{=sprig.osBase(inputs.parameters['output-annotsv-oncokb-tsv'])}}"
+
+          # annotsv to oncokb mappings
+          sv_mappings = {
+                  "DEL": "DELETION",
+                  "INS": "INSERTION",
+                  "DUP": "DUPLICATION",
+                  "INV": "INVERSION",
+                  "CNV": "UNKNOWN",  # or DUPLICATION, depending on the context
+                  "BND": "UNKNOWN",  # or TRANSLOCATION/FUSION, depending on the context
+                  "LINE1": "UNKNOWN",
+                  "SVA": "UNKNOWN",
+                  "ALU": "UNKNOWN"
+          }
+
+          # add columns for oncokb annotation
+          with open(tsv_file, 'r') as tsv_file:
+              with open(tsv_oncokb_file, 'w') as tsv_oncokb_file:
+                  header = tsv_file.readline().strip().split("\t")
+                  gene_idx = header.index('Gene_name')
+                  svtype_idx = header.index('SV_type')
+                  oncokb_headers = ['GeneA', 'GeneB', 'Sv_Type']
+                  out_header_cols = header + oncokb_headers
+                  tsv_oncokb_file.write("\t".join(out_header_cols) + "\n")
+                  while line := tsv_file.readline():
+                      values = line.strip().split('\t')
+                      gene = values[gene_idx]
+                      svtype = values[svtype_idx]
+                      oncokb_values = [
+                          gene,
+                          gene,
+                          sv_mappings.get(svtype, "UNKNOWN")
+                      ]
+                      tsv_oncokb_file.write("\t".join(values + oncokb_values) + "\n")
+
+        volumeMounts:
+          - name: input-annotsv-tsv
+            mountPath: "/mnt/input/annotsv/{{=sprig.osBase(inputs.parameters['input-annotsv-tsv'])}}"
+          - name: output-annotsv-oncokb-tsv
+            mountPath: "/mnt/output/oncokb/"

@@ -63,6 +63,8 @@ spec:
           # Run MultiQC with the custom config file
           multiqc \
           /mnt/input/ \
+          -f \
+          -x "rna" \
           -o /mnt/output/ \
           -c /tmp/multiqc_config.yaml
 

@@ -1,0 +1,210 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: collect-tmb-data-template
+spec:
+  templates:
+    - name: collect-tmb-data
+      inputs:
+        parameters:
+          - name: run-id
+          - name: sample-id
+          - name: duckdb-file
+          - name: target-bed-file
+          - name: af-lower-threshold
+            value: "0.05"
+          - name: af-upper-threshold
+            value: "0.95"
+          - name: output-dir
+      volumes:
+        - name: duckdb-file
+          hostPath:
+            path: "{{inputs.parameters.duckdb-file}}"
+            type: File
+        - name: target-bed-file
+          hostPath:
+            path: "{{inputs.parameters.target-bed-file}}"
+            type: File
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: tmb-calculator
+        image: bergun/gennext-tmb-calc:0.1.5
+        workingDir: /mnt/input
+        volumeMounts:
+          - name: duckdb-file
+            mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['duckdb-file'])}}
+            readOnly: true
+          - name: target-bed-file
+            mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}
+            readOnly: true
+          - name: output-dir
+            mountPath: /mnt/output
+        command: [/bin/bash]
+        source: |
+          # Run TMB calculation
+          python /app/calculate_tmb.py \
+            --duckdb "/mnt/input/{{=sprig.osBase(inputs.parameters['duckdb-file'])}}" \
+            --target-bed "/mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}" \
+            --cds-bed "/app/data/gencode_v48_canonical_cds.bed" \
+            --af-lower-threshold "{{inputs.parameters.af-lower-threshold}}" \
+            --af-upper-threshold "{{inputs.parameters.af-upper-threshold}}" \
+            --output-dir "/mnt/output/" \
+            --api-endpoint "http://gennext-backend.gennext-dev.svc.cluster.local:3030/api/v0/runs/{{inputs.parameters.run-id}}/somatic" \
+            --api-token "$GENNEXT_CLUSTER_TOKEN" \
+            --run-id "{{inputs.parameters.run-id}}" \
+            --sample-id "{{inputs.parameters.sample-id}}" \
+            --verbose
+        env:
+          - name: GENNEXT_CLUSTER_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: gennext-cluster-secrets
+                key: gennext_cluster_token
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+    - name: collect-tmb-data-on-node
+      nodeSelector:
+        kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      inputs:
+        parameters:
+          - name: run-id
+          - name: sample-id
+          - name: duckdb-file
+          - name: target-bed-file
+          - name: af-threshold
+            value: "0.05"
+          - name: output-dir
+          - name: node-name
+      volumes:
+        - name: duckdb-file
+          hostPath:
+            path: "{{inputs.parameters.duckdb-file}}"
+            type: File
+        - name: target-bed-file
+          hostPath:
+            path: "{{inputs.parameters.target-bed-file}}"
+            type: File
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: tmb-calculator
+        image: bergun/gennext-tmb-calc:0.1.3
+        workingDir: /mnt/input
+        volumeMounts:
+          - name: duckdb-file
+            mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['duckdb-file'])}}
+            readOnly: true
+          - name: target-bed-file
+            mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}
+            readOnly: true
+          - name: output-dir
+            mountPath: /mnt/output
+        command: [/bin/bash]
+        source: |
+          # Run TMB calculation
+          python /app/calculate_tmb.py \
+            --duckdb "/mnt/input/{{=sprig.osBase(inputs.parameters['duckdb-file'])}}" \
+            --target-bed "/mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}" \
+            --cds-bed "/app/data/gencode_v48_canonical_cds.bed" \
+            --af-threshold "{{inputs.parameters.af-threshold}}" \
+            --output-dir "/mnt/output/" \
+            --api-endpoint "http://gennext-backend.gennext-dev.svc.cluster.local:3030/api/v0/runs/{{inputs.parameters.run-id}}/somatic" \
+            --api-token "$GENNEXT_CLUSTER_TOKEN" \
+            --run-id "{{inputs.parameters.run-id}}" \
+            --sample-id "{{inputs.parameters.sample-id}}" \
+            --verbose
+        env:
+          - name: GENNEXT_CLUSTER_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: gennext-cluster-secrets
+                key: gennext_cluster_token
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+    # Template for using custom CDS bed file
+    - name: collect-tmb-data-custom-cds
+      inputs:
+        parameters:
+          - name: run-id
+          - name: sample-id
+          - name: duckdb-file
+          - name: target-bed-file
+          - name: cds-bed-file
+          - name: af-threshold
+            value: "0.05"
+          - name: output-dir
+      volumes:
+        - name: duckdb-file
+          hostPath:
+            path: "{{inputs.parameters.duckdb-file}}"
+            type: File
+        - name: target-bed-file
+          hostPath:
+            path: "{{inputs.parameters.target-bed-file}}"
+            type: File
+        - name: cds-bed-file
+          hostPath:
+            path: "{{inputs.parameters.cds-bed-file}}"
+            type: File
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      container:
+        name: tmb-calculator
+        image: bergun/gennext-tmb-calc:0.1.3
+        workingDir: /mnt/input
+        volumeMounts:
+          - name: duckdb-file
+            mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['duckdb-file'])}}
+            readOnly: true
+          - name: target-bed-file
+            mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}
+            readOnly: true
+          - name: cds-bed-file
+            mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['cds-bed-file'])}}
+            readOnly: true
+          - name: output-dir
+            mountPath: /mnt/output
+        command: [/bin/bash]
+        script: |
+          # Run TMB calculation
+          python /app/calculate_tmb.py \
+            --duckdb "/mnt/input/{{=sprig.osBase(inputs.parameters['duckdb-file'])}}" \
+            --target-bed "/mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}" \
+            --cds-bed "/mnt/input/{{=sprig.osBase(inputs.parameters['cds-bed-file'])}}" \
+            --af-threshold "{{inputs.parameters.af-threshold}}" \
+            --output-dir "/mnt/output/" \
+            --api-endpoint "http://gennext-backend.gennext-dev.svc.cluster.local:3030/api/v0/runs/{{inputs.parameters.run-id}}/somatic" \
+            --api-token "$GENNEXT_CLUSTER_TOKEN" \
+            --run-id "{{inputs.parameters.run-id}}" \
+            --sample-id "{{inputs.parameters.sample-id}}" \
+            --verbose
+        env:
+          - name: GENNEXT_CLUSTER_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: gennext-cluster-secrets
+                key: gennext_cluster_token
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"

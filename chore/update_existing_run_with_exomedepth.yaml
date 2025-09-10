@@ -1,0 +1,84 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: germline-wes-gpu-workflow
+spec:
+  entrypoint: main
+  templates:
+    - name: germline-wes-gpu-fastq
+      inputs:
+        parameters:
+          - name: user-id
+          - name: run-id
+          - name: run-data
+          - name: input-rel-dir
+          - name: ref-base-dir
+          - name: temp-rel-dir
+          - name: scratch-rel-dir
+          - name: output-rel-dir
+          - name: modules-base-dir
+          - name: annots-base-dir
+          - name: thread-count
+            default: "8"
+      outputs:
+        parameters:
+          - name: bam-output
+            valueFrom:
+              parameter: "{{tasks.pb-applybqsr.outputs.parameters.output-bam}}"
+          # - name: vcf-hc-output
+          #   valueFrom:
+          #     parameter: "{{tasks.haplotypecaller.outputs.parameters.output-vcf}}"
+          - name: vcf-dv-output
+            valueFrom:
+              parameter: "{{tasks.deepvariant.outputs.parameters.output-vcf}}"
+      dag:
+        tasks:
+          - name: exomedepth
+            templateRef:
+              name: exomedepth-template
+              template: exomedepth
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: input-bam
+                  value: "{{inputs.parameters.input-bam}}"
+                - name: ref-regions
+                  value: "/runspace/gennext/data/ref/hg38/regions/gencode.v47.hg38.exons.bed"
+                - name: ref-cohort
+                  value: "/runspace/gennext/data/ref/hg38/other/exomedepth/cohorts/gencode_v47_hg38_exons_cohort.rds"
+                - name: ref-fasta
+                  value: "/runspace/gennext/data/ref/hg38/genome/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set.fa"
+                - name: output-vcf
+                  value: "{{inputs.parameters.temp-rel-dir}}vcf/{{inputs.parameters.sample-id}}_exomedepth_CNV.vcf.gz"
+            depends: "get-abs-ref-dirs && pb-applybqsr"
+          - name: annotsv
+            templateRef:
+              name: annotsv-template
+              template: annotsv
+            arguments:
+              parameters:
+                - name: input-vcf-f
+                  # value: "{{tasks.manta.outputs.parameters.output-diploid-vcf-f}}"
+                  value: "{{tasks.exomedepth.outputs.parameters.output-vcf}}"
+                - name: output-annotsv-tsv-f
+                  value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_annotsv.tsv"
+                - name: ref-version
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
+                - name: annotsv-ref-dir
+                  value: "{{inputs.parameters.ref-base-dir}}{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/other/AnnotSV/"
+                - name: sv-min-size
+                  value: "50"
+            # depends: "manta"
+            depends: "exomedepth"
+          - name: annotsv-create-dummy-tsv
+            templateRef:
+              name: annotsv-template
+              template: annotsv-create-dummy-tsv
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: dummy-annotsv-tsv-f
+                  value: "{{tasks.annotsv.outputs.parameters.output-annotsv-tsv-f}}"
+            depends: "annotsv"

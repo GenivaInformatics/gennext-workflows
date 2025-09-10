@@ -456,6 +456,20 @@ spec:
                 - name: ref-ver
                   # value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
                   value: "hg38"
+          - name: check-file-path
+            templateRef:
+              name: check-file-path
+              template: check-file-path
+            arguments:
+              parameters:
+                - name: input-file-1
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.bam.name')}}"
+                - name: input-file-2
+                  value: "."
+                - name: input-file-3
+                  value: "."
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
           - name: copy-bam-to-scratch
             templateRef:
               name: copy-inputs-to-scratch
@@ -463,11 +477,12 @@ spec:
             arguments:
               parameters:
                 - name: bam
-                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.bam.name')}}"
+                  value: "{{tasks.check-file-path.outputs.parameters.output-file-1}}"
                 - name: input-rel-dir
-                  value: "{{inputs.parameters.input-rel-dir}}"
+                  value: "{{tasks.check-file-path.outputs.parameters.input-rel-dir-1}}"
                 - name: scratch-rel-dir
                   value: "{{inputs.parameters.scratch-rel-dir}}"
+            depends: "check-file-path"
           - name: pb-bam2fq
             templateRef:
               name: parabricks-bam2fq-template

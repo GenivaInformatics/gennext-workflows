@@ -571,25 +571,58 @@ spec:
                 - name: tcga-baseline
                   value: "{{tasks.get-abs-ref-dirs.outputs.parameters.msisensor-pro-baseline}}"
             depends: "pb-applybqsr && get-abs-ref-dirs"
-          - name: collect-somatic-data
-            # collects TMB and MSI information
+          - name: filter-msisensor-pro
             templateRef:
-              name: collect-somatic-data-templates
-              template: collect-somatic-data
+              name: filter-msisensor-pro-template
+              template: filter-msisensor-pro
             arguments:
               parameters:
-                - name: sample-id
-                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: msisensor-pro-tsv
+                # output_tsv is the summary TSV "_all" is the one listing each repeat site
+                  value: "{{tasks.msisensor-pro.outputs.parameters.output-tsv}}_all"
+                - name: regions-bed-f
+                  value: "{{tasks.copy-regions-file-to-scratch.outputs.parameters.regions-file}}"
+                - name: min-coverage
+                  value: "500"
+                - name: filtered-output-tsv
+                  value: "{{inputs.parameters.temp-rel-dir}}results/metrics/msi/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_msi_filtered.tsv"
+                - name: summary-output-json
+                  value: "{{inputs.parameters.temp-rel-dir}}results/metrics/msi/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_msi_filtered_summary.json"
+            depends: "msisensor-pro && copy-regions-file-to-scratch"
+          - name: collect-tmb-data
+            templateRef:
+              name: collect-tmb-data-template
+              template: collect-tmb-data
+            arguments:
+              parameters:
                 - name: run-id
                   value: "{{inputs.parameters.run-id}}"
-                - name: maf-in-f
-                  value: "{{tasks.annovar-to-maf.outputs.parameters.annovar-maf-f}}"
-                - name: msisensorpro-in-f
-                  value: "{{tasks.msisensor-pro.outputs.parameters.output-tsv}}"
-                - name: snv-regions-bed-f
-                  # value: "{{tasks.get-abs-ref-dirs.outputs.parameters.somtest-A3416642-regions-snv}}"
+                - name: sample-id
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: duckdb-file
+                  value: "{{tasks.duckdb-snv.outputs.parameters.output-duckdb}}"
+                - name: target-bed-file
                   value: "{{tasks.copy-regions-file-to-scratch.outputs.parameters.regions-file}}"
-            depends: "annovar-to-maf && msisensor-pro && copy-regions-file-to-scratch"
+                - name: af-lower-threshold
+                  value: "0.05"
+                - name: af-upper-threshold
+                  value: "0.95"
+                - name: output-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}/metrics/tmb/"
+            depends: "duckdb-snv && copy-regions-file-to-scratch"
+          - name: collect-msi-data
+            templateRef:
+              name: collect-somatic-data-templates
+              template: collect-msi-data-v2
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: sample-id
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: msisensorpro-in-json
+                  value: "{{tasks.filter-msisensor-pro.outputs.parameters.summary-output-json}}"
+            depends: "filter-msisensor-pro"
           - name: multiqc
             templateRef:
               name: multiqc-template
@@ -604,7 +637,7 @@ spec:
           - name: collect-qc-data
             templateRef:
               name: collect-qc-data-templates
-              template: collect-qc-data
+              template: collect-qc-data-v2
             arguments:
               parameters:
                 - name: sample-id
@@ -630,7 +663,7 @@ spec:
                   value: "{{inputs.parameters.output-rel-dir}}"
                 - name: temp-rel-dir
                   value: "{{inputs.parameters.temp-rel-dir}}"
-            depends: "collect-qc-data && maf-to-db && collect-somatic-data && duckdb-sv && duckdb-snv && cnvpytor"
+            depends: "collect-qc-data && maf-to-db && collect-msi-data && duckdb-sv && duckdb-snv && cnvpytor"
           - name: clean-scratch
             templateRef:
               name: dir-clean-up
@@ -640,7 +673,7 @@ spec:
                 - name: directory
                   value: "{{inputs.parameters.scratch-rel-dir}}"
             # depends: "copy-temp-to-output"
-            depends: "collect-qc-data && duckdb-sv && duckdb-snv && collect-somatic-data && copy-temp-to-output"
+            depends: "collect-qc-data && duckdb-sv && duckdb-snv && collect-msi-data && copy-temp-to-output"
 
     - name: somatic-testing-dna-gpu-fastq
       inputs:
@@ -1216,25 +1249,58 @@ spec:
                 - name: tcga-baseline
                   value: "{{tasks.get-abs-ref-dirs.outputs.parameters.msisensor-pro-baseline}}"
             depends: "pb-applybqsr && get-abs-ref-dirs"
-          - name: collect-somatic-data
-            # collects TMB and MSI information
+          - name: filter-msisensor-pro
             templateRef:
-              name: collect-somatic-data-templates
-              template: collect-somatic-data
+              name: filter-msisensor-pro-template
+              template: filter-msisensor-pro
             arguments:
               parameters:
-                - name: sample-id
-                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: msisensor-pro-tsv
+                # output_tsv is the summary TSV "_all" is the one listing each repeat site
+                  value: "{{tasks.msisensor-pro.outputs.parameters.output-tsv}}_all"
+                - name: regions-bed-f
+                  value: "{{tasks.copy-regions-file-to-scratch.outputs.parameters.regions-file}}"
+                - name: min-coverage
+                  value: "500"
+                - name: filtered-output-tsv
+                  value: "{{inputs.parameters.temp-rel-dir}}results/metrics/msi/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_msi_filtered.tsv"
+                - name: summary-output-json
+                  value: "{{inputs.parameters.temp-rel-dir}}results/metrics/msi/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_msi_filtered_summary.json"
+            depends: "msisensor-pro && copy-regions-file-to-scratch"
+          - name: collect-tmb-data
+            templateRef:
+              name: collect-tmb-data-template
+              template: collect-tmb-data
+            arguments:
+              parameters:
                 - name: run-id
                   value: "{{inputs.parameters.run-id}}"
-                - name: maf-in-f
-                  value: "{{tasks.annovar-to-maf.outputs.parameters.annovar-maf-f}}"
-                - name: msisensorpro-in-f
-                  value: "{{tasks.msisensor-pro.outputs.parameters.output-tsv}}"
-                - name: snv-regions-bed-f
-                  # value: "{{tasks.get-abs-ref-dirs.outputs.parameters.somtest-A3416642-regions-snv}}"
+                - name: sample-id
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: duckdb-file
+                  value: "{{tasks.duckdb-snv.outputs.parameters.output-duckdb}}"
+                - name: target-bed-file
                   value: "{{tasks.copy-regions-file-to-scratch.outputs.parameters.regions-file}}"
-            depends: "annovar-to-maf && msisensor-pro && copy-regions-file-to-scratch"
+                - name: af-lower-threshold
+                  value: "0.05"
+                - name: af-upper-threshold
+                  value: "0.95"
+                - name: output-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}/metrics/tmb/"
+            depends: "duckdb-snv && copy-regions-file-to-scratch"
+          - name: collect-msi-data
+            templateRef:
+              name: collect-somatic-data-templates
+              template: collect-msi-data-v2
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: sample-id
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: msisensorpro-in-json
+                  value: "{{tasks.filter-msisensor-pro.outputs.parameters.summary-output-json}}"
+            depends: "filter-msisensor-pro"
           - name: multiqc
             templateRef:
               name: multiqc-template
@@ -1249,7 +1315,7 @@ spec:
           - name: collect-qc-data
             templateRef:
               name: collect-qc-data-templates
-              template: collect-qc-data
+              template: collect-qc-data-v2
             arguments:
               parameters:
                 - name: sample-id
@@ -1274,7 +1340,7 @@ spec:
                   value: "{{inputs.parameters.output-rel-dir}}"
                 - name: temp-rel-dir
                   value: "{{inputs.parameters.temp-rel-dir}}"
-            depends: "collect-qc-data && maf-to-db && collect-somatic-data && duckdb-sv && duckdb-snv && cnvpytor"
+            depends: "collect-qc-data && maf-to-db && collect-tmb-data && collect-msi-data && duckdb-sv && duckdb-snv && cnvpytor"
           - name: clean-scratch
             templateRef:
               name: dir-clean-up
@@ -1283,7 +1349,6 @@ spec:
               parameters:
                 - name: directory
                   value: "{{inputs.parameters.scratch-rel-dir}}"
-            # depends: "copy-temp-to-output"
-            depends: "collect-qc-data && verifybamid && mosdepth && duckdb-sv && duckdb-snv"
+            depends: "collect-qc-data && duckdb-sv && duckdb-snv && collect-msi-data && copy-temp-to-output"
 
     # - name: somatic-testing-dna-gpu-vcf
