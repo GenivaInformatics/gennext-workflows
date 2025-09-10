@@ -11,8 +11,6 @@ spec:
           - name: annovar-maf-f
           - name: annovar-oncokb-maf-f
           - name: ref-version
-          - name: tumor-type
-            value: "."
       outputs:
         parameters:
           - name: annovar-oncokb-maf-f
@@ -41,19 +39,13 @@ spec:
               grch_ref_version=$ref_version
           fi;
           
-          tumor_type="{{inputs.parameters.tumor-type}}"
-          
           input_file="/mnt/input/{{=sprig.osBase(inputs.parameters['annovar-maf-f'])}}"
           output_file="/mnt/output/{{=sprig.osBase(inputs.parameters['annovar-oncokb-maf-f'])}}"
           
           # Function to run annotation
           run_annotation() {
               echo "Running OncoKB annotation (attempt $1)..."
-              if [ "$tumor_type" != "." ]; then
-                  python ./MafAnnotator.py -i "$input_file" -o "$output_file" -r "$grch_ref_version" -b ${ONCOKB_API_TOKEN} -t "$tumor_type"
-              else
-                  python ./MafAnnotator.py -i "$input_file" -o "$output_file" -r "$grch_ref_version" -b ${ONCOKB_API_TOKEN}
-              fi
+              python ./MafAnnotator.py -i "$input_file" -o "$output_file" -r "$grch_ref_version" -b ${ONCOKB_API_TOKEN}
               return $?
           }
           
@@ -118,8 +110,6 @@ spec:
         parameters:
           - name: oncokb-sv-in-f
           - name: oncokb-sv-out-f
-          - name: tumor-type
-            value: "."
       outputs:
         parameters:
           - name: oncokb-sv-out-f
@@ -140,16 +130,11 @@ spec:
         source: |
           input_file="/mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-sv-in-f'])}}"
           output_file="/mnt/output/{{=sprig.osBase(inputs.parameters['oncokb-sv-out-f'])}}"
-          tumor_type="{{inputs.parameters.tumor-type}}"
           
           # Function to run annotation
           run_annotation() {
               echo "Running OncoKB SV annotation (attempt $1)..."
-              if [ "$tumor_type" != "." ]; then
-                  python ./StructuralVariantAnnotator.py -i "$input_file" -o "$output_file" -b ${ONCOKB_API_TOKEN} -t "$tumor_type"
-              else
-                  python ./StructuralVariantAnnotator.py -i "$input_file" -o "$output_file" -b ${ONCOKB_API_TOKEN}
-              fi
+              python ./StructuralVariantAnnotator.py -i "$input_file" -o "$output_file" -b ${ONCOKB_API_TOKEN}
               return $?
           }
           
@@ -214,8 +199,6 @@ spec:
         parameters:
           - name: oncokb-fusions-in-f
           - name: oncokb-fusions-out-f
-          - name: tumor-type
-            value: "."
       outputs:
         parameters:
           - name: oncokb-fusions-out-f
@@ -236,16 +219,11 @@ spec:
         source: |
           input_file="/mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-fusions-in-f'])}}"
           output_file="/mnt/output/{{=sprig.osBase(inputs.parameters['oncokb-fusions-out-f'])}}"
-          tumor_type="{{inputs.parameters.tumor-type}}"
           
           # Function to run annotation
           run_annotation() {
               echo "Running OncoKB Fusion annotation (attempt $1)..."
-              if [ "$tumor_type" != "." ]; then
-                  python ./FusionAnnotator.py -i "$input_file" -o "$output_file" -b ${ONCOKB_API_TOKEN} -t "$tumor_type"
-              else
-                  python ./FusionAnnotator.py -i "$input_file" -o "$output_file" -b ${ONCOKB_API_TOKEN}
-              fi
+              python ./FusionAnnotator.py -i "$input_file" -o "$output_file" -b ${ONCOKB_API_TOKEN}
               return $?
           }
           
@@ -314,8 +292,6 @@ spec:
           - name: annovar-oncokb-maf-f
           - name: ref-version
           - name: node-name
-          - name: tumor-type
-            value: "."
       outputs:
         parameters:
           - name: annovar-oncokb-maf-f
@@ -344,19 +320,13 @@ spec:
               grch_ref_version=$ref_version
           fi;
           
-          tumor_type="{{inputs.parameters.tumor-type}}"
-          
           input_file="/mnt/input/{{=sprig.osBase(inputs.parameters['annovar-maf-f'])}}"
           output_file="/mnt/output/{{=sprig.osBase(inputs.parameters['annovar-oncokb-maf-f'])}}"
           
           # Function to run annotation
           run_annotation() {
               echo "Running OncoKB annotation on node (attempt $1)..."
-              if [ "$tumor_type" != "." ]; then
-                  python ./MafAnnotator.py -i "$input_file" -o "$output_file" -r "$grch_ref_version" -b ${ONCOKB_API_TOKEN} -t "$tumor_type"
-              else
-                  python ./MafAnnotator.py -i "$input_file" -o "$output_file" -r "$grch_ref_version" -b ${ONCOKB_API_TOKEN}
-              fi
+              python ./MafAnnotator.py -i "$input_file" -o "$output_file" -r "$grch_ref_version" -b ${ONCOKB_API_TOKEN}
               return $?
           }
           
@@ -424,8 +394,6 @@ spec:
           - name: oncokb-sv-in-f
           - name: oncokb-sv-out-f
           - name: node-name
-          - name: tumor-type
-            value: "."
       outputs:
         parameters:
           - name: oncokb-sv-out-f
@@ -446,16 +414,11 @@ spec:
         source: |
           input_file="/mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-sv-in-f'])}}"
           output_file="/mnt/output/{{=sprig.osBase(inputs.parameters['oncokb-sv-out-f'])}}"
-          tumor_type="{{inputs.parameters.tumor-type}}"
           
           # Function to run annotation
           run_annotation() {
               echo "Running OncoKB SV annotation on node (attempt $1)..."
-              if [ "$tumor_type" != "." ]; then
-                  python ./StructuralVariantAnnotator.py -i "$input_file" -o "$output_file" -b ${ONCOKB_API_TOKEN} -t "$tumor_type"
-              else
-                  python ./StructuralVariantAnnotator.py -i "$input_file" -o "$output_file" -b ${ONCOKB_API_TOKEN}
-              fi
+              python ./StructuralVariantAnnotator.py -i "$input_file" -o "$output_file" -b ${ONCOKB_API_TOKEN}
               return $?
           }
           

@@ -22,6 +22,8 @@ spec:
           - name: sample-files
           - name: process-type
           - name: file-type
+          - name: tumor-type
+            value: "."
       volumes:
         - name: output-dir
           hostPath:
@@ -45,18 +47,26 @@ spec:
               return now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
           def generate_run_info(
-              user_id, run_id, sample_uuid, sample_name, sample_id, sample_files, process_type, file_type, node_id
+              user_id, run_id, sample_uuid, sample_name, sample_id, sample_files, process_type, file_type, node_id, tumor_type
           ):
               sample_files = json.loads(sample_files)
+              
+              # Build sample object
+              sample = {
+                  "sampleName": f"{sample_name}",
+                  "sampleId": f"{sample_id}",
+                  "id": f"{sample_uuid}",
+                  "files": sample_files,
+              }
+              
+              # Add somaticInfo if tumor_type is provided (not default ".")
+              if tumor_type != ".":
+                  sample["somaticInfo"] = {
+                      "tumorType": tumor_type
+                  }
+              
               run_info = {
-                  "samples": [
-                      {
-                          "sampleName": f"{sample_name}",
-                          "sampleId": f"{sample_id}",
-                          "id": f"{sample_uuid}",
-                          "files": sample_files,
-                      }
-                  ],
+                  "samples": [sample],
                   "processType": f"{process_type}",
                   "refVersion": "hg38",
                   "dataType": f"{file_type}",
@@ -82,6 +92,7 @@ spec:
               process_type="{{inputs.parameters.process-type}}",
               file_type="{{inputs.parameters.file-type}}",
               node_id="{{inputs.parameters.node-name}}",
+              tumor_type="{{inputs.parameters.tumor-type}}",
           )
 
           json.dump(run_info, open("/mnt/output/{{inputs.parameters.run-id}}.json", "w"))
