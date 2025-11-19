@@ -32,7 +32,7 @@ spec:
       nodeSelector:
           kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
       script:
-        image: python:3.11-alpine3.18
+        image: demisto/pandas:1.0.0.80782
         command: [python]
         source: |
           import json
@@ -59,8 +59,8 @@ spec:
                   "files": sample_files,
               }
               
-              # Add somaticInfo if tumor_type is provided (not default ".")
-              if tumor_type != ".":
+              # Add somaticInfo if process_type is somatic
+              if process_type in ["som-test-tumor", "som-test-rna", "som-test-tumor-rna"]:
                   sample["somaticInfo"] = {
                       "tumorType": tumor_type
                   }
