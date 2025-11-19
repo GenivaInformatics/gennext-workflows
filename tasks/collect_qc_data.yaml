@@ -19,7 +19,7 @@ spec:
             type: Directory
       script:
         name: "collect-qc-data-bam"
-        image: python:3.12-alpine
+        image: demisto/pandas:1.0.0.80782
         # includes 'requests' package
         workingDir: /mnt/metrics/
         volumeMounts:
@@ -144,7 +144,7 @@ spec:
             type: Directory
       script:
         name: "collect-qc-data"
-        image: python:3.12-alpine
+        image: demisto/pandas:1.0.0.80782
         # includes 'requests' package
         workingDir: /mnt/metrics/
         volumeMounts:
@@ -322,7 +322,7 @@ spec:
             type: Directory
       script:
         name: "collect-qc-data"
-        image: python:3.12-alpine
+        image: demisto/pandas:1.0.0.80782
         # includes 'requests' package
         workingDir: /mnt/metrics/
         volumeMounts:
