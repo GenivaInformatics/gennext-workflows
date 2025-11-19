@@ -53,8 +53,8 @@ spec:
             valueFrom:
               path: /tmp/SCRATCH_BASE_DIR
       script:
-        image: bitnami/kubectl:latest
-        command: [bash]
+        image: alpine/kubectl
+        command: [sh]
         source: |
           NODE_NAME="{{inputs.parameters.node-name}}"
           kubectl get node $NODE_NAME -o jsonpath='{"INPUT_BASE_DIR="}{.metadata.annotations.gennext\.bio/input-base-dir}{"\nOUTPUT_BASE_DIR="}{.metadata.annotations.gennext\.bio/output-base-dir}{"\nREF_BASE_DIR="}{.metadata.annotations.gennext\.bio/ref-base-dir}{"\nTEMP_BASE_DIR="}{.metadata.annotations.gennext\.bio/temp-base-dir}{"\nSCRATCH_BASE_DIR="}{.metadata.annotations.gennext\.bio/input-base-dir}' > /tmp/keyvals_tmp0
