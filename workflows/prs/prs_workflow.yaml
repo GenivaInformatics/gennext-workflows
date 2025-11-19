@@ -115,7 +115,7 @@ spec:
                 - name: batch-workers-count
                   value: "2"
                 - name: pgs-workers-count
-                  value: "30"
+                  value: "16"
                 - name: batch-size
                   value: "200000"
             depends: "genotype-conditional-workflow"
