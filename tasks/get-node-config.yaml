@@ -46,8 +46,8 @@ spec:
             valueFrom:
               path: /tmp/THREAD_COUNT
       script:
-        image: bitnami/kubectl:latest
-        command: [bash]
+        image: alpine/kubectl
+        command: [sh]
         # X_REL_DIR env var's are not relative but the files written are
         source: |
           NODE_NAME="{{inputs.parameters.node-name}}"
