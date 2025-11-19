@@ -365,8 +365,8 @@ spec:
             depends: "verifybamid && pb-applybqsr && mosdepth"
           - name: collect-qc-data
             templateRef:
-              name: collect-qc-data-templates
-              template: collect-qc-data
+              name: collect-qc-data-v2-templates
+              template: collect-qc-data-v2
             arguments:
               parameters:
                 - name: sample-id
@@ -378,6 +378,21 @@ spec:
                 - name: metrics-dir
                   value: "{{inputs.parameters.temp-rel-dir}}metrics/"
             depends: "multiqc && mosdepth && verifybamid"
+          # - name: collect-qc-data
+          #   templateRef:
+          #     name: collect-qc-data-templates
+          #     template: collect-qc-data
+          #   arguments:
+          #     parameters:
+          #       - name: sample-id
+          #         value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+          #       - name: run-id
+          #         value: "{{inputs.parameters.run-id}}"
+          #       - name: sample-fqs-fnames
+          #         value: '["{{=jsonpath(inputs.parameters[''run-data''], ''$.samples[0].files.fqR1.name'')}}", "{{=jsonpath(inputs.parameters[''run-data''], ''$.samples[0].files.fqR2.name'')}}"]'
+          #       - name: metrics-dir
+          #         value: "{{inputs.parameters.temp-rel-dir}}metrics/"
+          #   depends: "multiqc && mosdepth && verifybamid"
           - name: copy-temp-to-output
             templateRef:
               name: copy-temp-to-output
@@ -745,8 +760,8 @@ spec:
             depends: "verifybamid && pb-applybqsr && mosdepth"
           - name: collect-qc-data
             templateRef:
-              name: collect-qc-data-templates
-              template: collect-qc-data
+              name: collect-qc-data-v2-templates
+              template: collect-qc-data-v2
             arguments:
               parameters:
                 - name: sample-id
@@ -754,11 +769,26 @@ spec:
                 - name: run-id
                   value: "{{inputs.parameters.run-id}}"
                 - name: sample-fqs-fnames
-                  # value: '["{{=jsonpath(inputs.parameters[''run-data''], ''$.samples[0].files.fqR1.name'')}}", "{{=jsonpath(inputs.parameters[''run-data''], ''$.samples[0].files.fqR2.name'')}}"]'
                   value: '["{{=sprig.osBase(tasks[''pb-bam2fq''].outputs.parameters[''output-fq-r1''])}}", "{{=sprig.osBase(tasks[''pb-bam2fq''].outputs.parameters[''output-fq-r2''])}}"]'
                 - name: metrics-dir
                   value: "{{inputs.parameters.temp-rel-dir}}metrics/"
             depends: "multiqc && mosdepth && verifybamid"
+          # - name: collect-qc-data
+          #   templateRef:
+          #     name: collect-qc-data-templates
+          #     template: collect-qc-data
+          #   arguments:
+          #     parameters:
+          #       - name: sample-id
+          #         value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+          #       - name: run-id
+          #         value: "{{inputs.parameters.run-id}}"
+          #       - name: sample-fqs-fnames
+          #         # value: '["{{=jsonpath(inputs.parameters[''run-data''], ''$.samples[0].files.fqR1.name'')}}", "{{=jsonpath(inputs.parameters[''run-data''], ''$.samples[0].files.fqR2.name'')}}"]'
+          #         value: '["{{=sprig.osBase(tasks[''pb-bam2fq''].outputs.parameters[''output-fq-r1''])}}", "{{=sprig.osBase(tasks[''pb-bam2fq''].outputs.parameters[''output-fq-r2''])}}"]'
+          #       - name: metrics-dir
+          #         value: "{{inputs.parameters.temp-rel-dir}}metrics/"
+          #   depends: "multiqc && mosdepth && verifybamid"
           - name: copy-temp-to-output
             templateRef:
               name: copy-temp-to-output
