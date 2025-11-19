@@ -279,6 +279,8 @@ spec:
                   value: "{{tasks.star-fusion-to-oncokb.outputs.parameters.star-fusion-oncokb-tsv}}"
                 - name: oncokb-fusions-out-f
                   value: "{{inputs.parameters.temp-rel-dir}}results/fusions/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_fusions_oncokb.tsv"
+                - name: tumor-type
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].somaticInfo.tumorType')}}"
             depends: "star-fusion-to-oncokb"
           - name: duckdb-fusions
             templateRef:
@@ -367,8 +369,8 @@ spec:
             depends: "verifybamid && samtools-sort-index && mosdepth"
           - name: collect-qc-data
             templateRef:
-              name: collect-qc-data-templates
-              template: collect-qc-data
+              name: collect-qc-data-v2-templates
+              template: collect-qc-data-v2
             arguments:
               parameters:
                 - name: sample-id
@@ -645,6 +647,8 @@ spec:
                   value: "{{tasks.star-fusion-to-oncokb.outputs.parameters.star-fusion-oncokb-tsv}}"
                 - name: oncokb-fusions-out-f
                   value: "{{inputs.parameters.temp-rel-dir}}results/fusions/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_fusions_oncokb.tsv"
+                - name: tumor-type
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].somaticInfo.tumorType')}}"
             depends: "star-fusion-to-oncokb"
           - name: duckdb-fusions
             templateRef:

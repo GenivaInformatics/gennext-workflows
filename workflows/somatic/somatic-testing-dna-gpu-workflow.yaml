@@ -367,6 +367,8 @@ spec:
                   value: "{{inputs.parameters.temp-rel-dir}}results/snv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_oncokb.maf"
                 - name: ref-version
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
+                - name: tumor-type
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].somaticInfo.tumorType')}}"
             depends: "annovar-to-maf"
           - name: get-otherinfo-columns
             templateRef:
@@ -489,6 +491,8 @@ spec:
                   value: "{{tasks.annotsv-to-oncokb-format.outputs.parameters.annotsv-oncokb-out-tsv}}"
                 - name: oncokb-sv-out-f
                   value: "{{inputs.parameters.temp-rel-dir}}results/sv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_SV_oncokb_annot.tsv"
+                - name: tumor-type
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].somaticInfo.tumorType')}}"
             depends: "annotsv-to-oncokb-format"
           - name: duckdb-sv
             templateRef:
@@ -636,7 +640,7 @@ spec:
             depends: "verifybamid && pb-applybqsr && mosdepth"
           - name: collect-qc-data
             templateRef:
-              name: collect-qc-data-templates
+              name: collect-qc-data-v2-templates
               template: collect-qc-data-v2
             arguments:
               parameters:
@@ -1045,6 +1049,8 @@ spec:
                   value: "{{inputs.parameters.temp-rel-dir}}results/snv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_oncokb.maf"
                 - name: ref-version
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
+                - name: tumor-type
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].somaticInfo.tumorType')}}"
             depends: "annovar-to-maf"
           - name: get-otherinfo-columns
             templateRef:
@@ -1167,6 +1173,8 @@ spec:
                   value: "{{tasks.annotsv-to-oncokb-format.outputs.parameters.annotsv-oncokb-out-tsv}}"
                 - name: oncokb-sv-out-f
                   value: "{{inputs.parameters.temp-rel-dir}}results/sv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_SV_oncokb_annot.tsv"
+                - name: tumor-type
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].somaticInfo.tumorType')}}"
             depends: "annotsv-to-oncokb-format"
           - name: duckdb-sv
             templateRef:
@@ -1314,7 +1322,7 @@ spec:
             depends: "verifybamid && pb-applybqsr && mosdepth"
           - name: collect-qc-data
             templateRef:
-              name: collect-qc-data-templates
+              name: collect-qc-data-v2-templates
               template: collect-qc-data-v2
             arguments:
               parameters:
