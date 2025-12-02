@@ -1,0 +1,107 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: bed-validator-template
+spec:
+  templates:
+    - name: validate-bed-file
+      inputs:
+        parameters:
+          - name: input-bed-file
+          - name: gtf-file
+          - name: chains-dir
+          - name: output-dir
+          - name: canonical-only
+            value: "true"
+      outputs:
+        parameters:
+          - name: validated-bed-file
+            value: "{{inputs.parameters.output-dir}}/validated.bed"
+          - name: validation-report
+            value: "{{inputs.parameters.output-dir}}/validation_report.json"
+      volumes:
+        - name: input-bed-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bed-file'])}}"
+            type: Directory
+        - name: gtf-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['gtf-file'])}}"
+            type: Directory
+        - name: chains-dir
+          hostPath:
+            path: "{{inputs.parameters.chains-dir}}"
+            type: DirectoryOrCreate
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: bed-validator-script
+        image: bergun/gennext-bed-validator:v0.1.1
+        command: [sh]
+        source: |
+          set -e
+
+          inputBedFile="{{=sprig.osBase(inputs.parameters['input-bed-file'])}}"
+          canonicalOnly="{{inputs.parameters.canonical-only}}"
+
+          # Check if input file is a placeholder (empty or ".")
+          if [ "$inputBedFile" = "." ] || [ -z "$inputBedFile" ]; then
+            echo "No BED file provided (placeholder detected). Skipping validation."
+            # Create empty placeholder files
+            touch /mnt/output/validated.bed
+            echo '{"skipped": true, "reason": "No input file provided"}' > /mnt/output/validation_report.json
+            exit 0
+          fi
+
+          # Build canonical flag
+          canonicalFlag=""
+          if [ "$canonicalOnly" = "true" ]; then
+            canonicalFlag="--canonical-only"
+          fi
+
+          # Run the validator
+          echo "Running BED validator on: $inputBedFile"
+          echo "Canonical only: $canonicalOnly"
+
+          python /app/main.py \
+            /mnt/input/"$inputBedFile" \
+            --gtf /mnt/gtf/{{=sprig.osBase(inputs.parameters['gtf-file'])}} \
+            --chains-dir /mnt/chains/ \
+            --output /mnt/output/validated.bed \
+            --output-report /mnt/output/validation_report.json \
+            $canonicalFlag || {
+              exitCode=$?
+              echo "WARNING: BED validation failed with exit code $exitCode"
+              echo "Continuing workflow with original file..."
+
+              # Copy original file to output
+              cp /mnt/input/"$inputBedFile" /mnt/output/validated.bed
+
+              # Create error report
+              echo "{\"error\": true, \"exit_code\": $exitCode, \"message\": \"Validation failed, using original file\"}" > /mnt/output/validation_report.json
+
+              # Exit successfully (warn but continue)
+              exit 0
+            }
+
+          echo "BED validation completed successfully"
+
+          # Check confidence from report and warn if low
+          if command -v jq >/dev/null 2>&1; then
+            confidence=$(jq -r '.confidence // 1.0' /mnt/output/validation_report.json)
+            if [ "$(echo "$confidence < 0.3" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
+              echo "WARNING: Low confidence in genome version prediction (${confidence})"
+              echo "Please review the validation report for details."
+            fi
+          fi
+        volumeMounts:
+          - name: input-bed-file
+            mountPath: "/mnt/input/"
+          - name: gtf-file
+            mountPath: "/mnt/gtf/"
+          - name: chains-dir
+            mountPath: "/mnt/chains/"
+          - name: output-dir
+            mountPath: "/mnt/output/"

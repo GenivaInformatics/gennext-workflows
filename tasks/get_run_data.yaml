@@ -39,6 +39,12 @@ spec:
             run_data['samples'][0]['files'] = json.loads(run_data['samples'][0]['files'])
           if "regionsFile" not in run_data['samples'][0]['files']:
             run_data['samples'][0]['files']['regionsFile'] = {"name" : ""}
+          # Ensure tumorType exists for somatic workflows
+          if run_data.get('processType') in ["som-test-tumor", "som-test-rna", "som-test-tumor-rna"]:
+            if "somaticInfo" not in run_data['samples'][0]:
+              run_data['samples'][0]['somaticInfo'] = {}
+            if "tumorType" not in run_data['samples'][0]['somaticInfo']:
+              run_data['samples'][0]['somaticInfo']['tumorType'] = "."
           with open(json_f, "w") as f:
             json.dump(run_data, f)
         volumeMounts:

@@ -28,7 +28,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-snv-script
-        image: bergun/oncokb-annotator:v0.0.1
+        image: bergun/oncokb-annotator:v0.1.2
         workingDir: /app/oncokb/
         command: [sh]
         source: |
@@ -138,7 +138,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-sv-script
-        image: bergun/oncokb-annotator:v0.0.1
+        image: bergun/oncokb-annotator:v0.1.2
         command: [sh]
         source: |
           input_file="/mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-sv-in-f'])}}"
@@ -237,7 +237,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-fusions-script
-        image: bergun/oncokb-annotator:v0.0.1
+        image: bergun/oncokb-annotator:v0.1.2
         command: [sh]
         source: |
           input_file="/mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-fusions-in-f'])}}"
@@ -340,7 +340,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-snv-script
-        image: bergun/oncokb-annotator:v0.0.1
+        image: bergun/oncokb-annotator:v0.1.2
         workingDir: /app/oncokb/
         command: [sh]
         source: |
@@ -453,7 +453,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-sv-script
-        image: bergun/oncokb-annotator:v0.0.1
+        image: bergun/oncokb-annotator:v0.1.2
         command: [sh]
         source: |
           input_file="/mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-sv-in-f'])}}"
