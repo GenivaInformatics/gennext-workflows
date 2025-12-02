@@ -122,16 +122,33 @@ spec:
       outputs:
         parameters:
           - name: fq-r1
-            value: "{{inputs.parameters.scratch-rel-dir}}{{inputs.parameters.fq-r1}}"
+            valueFrom:
+              path: /tmp/fq-r1-output.txt
           - name: fq-r2
-            value: "{{inputs.parameters.scratch-rel-dir}}{{inputs.parameters.fq-r2}}"
+            valueFrom:
+              path: /tmp/fq-r2-output.txt
       script:
         image: alpine:latest
         command: [sh]
         source: |
           #!/bin/sh
-          cp "/mnt/input/{{inputs.parameters.fq-r1}}" /mnt/scratch/
-          cp "/mnt/input/{{inputs.parameters.fq-r2}}" /mnt/scratch/
+          # Function to sanitize filenames
+          sanitize_filename() {
+            # Replace spaces with underscores and remove other problematic characters
+            echo "$1" | sed 's/ /_/g' | sed 's/[^a-zA-Z0-9_.-]/_/g'
+          }
+
+          FQ_R1="{{inputs.parameters.fq-r1}}"
+          FQ_R2="{{inputs.parameters.fq-r2}}"
+
+          SANITIZED_R1=$(sanitize_filename "$(basename "$FQ_R1")")
+          SANITIZED_R2=$(sanitize_filename "$(basename "$FQ_R2")")
+
+          cp "/mnt/input/$FQ_R1" "/mnt/scratch/$SANITIZED_R1"
+          cp "/mnt/input/$FQ_R2" "/mnt/scratch/$SANITIZED_R2"
+
+          echo "{{inputs.parameters.scratch-rel-dir}}$SANITIZED_R1" > /tmp/fq-r1-output.txt
+          echo "{{inputs.parameters.scratch-rel-dir}}$SANITIZED_R2" > /tmp/fq-r2-output.txt
         volumeMounts:
           - name: input-rel-dir
             mountPath: /mnt/input/
