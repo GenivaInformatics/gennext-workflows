@@ -1313,6 +1313,31 @@ spec:
                   value: "{{inputs.parameters.output-rel-dir}}"
                 - name: thread-count
                   value: "{{inputs.parameters.thread-count}}"
+          - name: somatic-testing-tumor-vcf
+            when: "{{=jsonpath(inputs.parameters['run-data'], '$.dataType')}} == 'vcf'"
+            templateRef:
+              name: somatic-testing-dna-gpu-workflow
+              template: somatic-testing-dna-gpu-vcf
+            arguments:
+              parameters:
+                - name: user-id
+                  value: "{{inputs.parameters.user-id}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: run-data
+                  value: "{{inputs.parameters.run-data}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+                - name: output-rel-dir
+                  value: "{{inputs.parameters.output-rel-dir}}"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
     - name: main-rna
       inputs:
         parameters:
