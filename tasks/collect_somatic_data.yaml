@@ -165,6 +165,63 @@ spec:
               secretKeyRef:
                 name: gennext-cluster-secrets
                 key: gennext_cluster_token
+    - name: collect-hrd-data
+      inputs:
+        parameters:
+          - name: run-id
+          - name: sample-id
+          - name: hrd-json-f
+      volumes:
+        - name: hrd-json-f
+          hostPath:
+            path: "{{inputs.parameters.hrd-json-f}}"
+            type: File
+      script:
+        name: "collect-hrd-data"
+        image: demisto/pandas:1.0.0.80782
+        workingDir: /mnt/input/
+        volumeMounts:
+          - name: hrd-json-f
+            mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['hrd-json-f'])}}
+        command: [python]
+        source: |
+          import json
+          import os, requests
+
+          # cluster info
+          token = os.environ["GENNEXT_CLUSTER_TOKEN"]
+          addr = "gennext-backend.gennext-prod.svc.cluster.local:3030"
+          url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/somatic"
+
+          # collect input data
+          sample_id = "{{inputs.parameters.sample-id}}"
+          hrd_json_f = "/mnt/input/{{=sprig.osBase(inputs.parameters['hrd-json-f'])}}"
+
+          # Load HRD data from JSON file
+          with open(hrd_json_f, 'r') as f:
+              hrd_data_raw = json.load(f)
+
+          # Map HRD fields (cast floats to int)
+          hrd_data = {
+            "hrdValue": int(hrd_data_raw["HRD"]),
+            "hrdTelomericAi": int(hrd_data_raw["Telomeric_AI"]),
+            "hrdLst": int(hrd_data_raw["LST"]),
+            "hrdSum": int(hrd_data_raw["HRD_sum"]),
+            }
+
+          print(hrd_data)
+          payload = {"runId": "{{inputs.parameters.run-id}}", "sampleId": "{{inputs.parameters.sample-id}}", "somaticData": hrd_data, "token": token }
+
+          res = requests.post(url, json=payload)
+
+          if res.status_code != 200:
+              raise Exception(f"Failed to post data: {res.status_code} - {res.text}")
+        env:
+          - name: GENNEXT_CLUSTER_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: gennext-cluster-secrets
+                key: gennext_cluster_token
     - name: collect-somatic-data-on-node
       nodeSelector:
         kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
