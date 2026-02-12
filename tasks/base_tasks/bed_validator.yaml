@@ -19,6 +19,8 @@ spec:
             value: "{{inputs.parameters.output-dir}}/validated.bed"
           - name: validation-report
             value: "{{inputs.parameters.output-dir}}/validation_report.json"
+          - name: validated-bed-cds-only-file
+            value: "{{inputs.parameters.output-dir}}/validated_cds_only.bed"
       volumes:
         - name: input-bed-file
           hostPath:
@@ -38,7 +40,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: bed-validator-script
-        image: bergun/gennext-bed-validator:v0.1.1
+        image: bergun/gennext-bed-validator:0.1.2
         command: [sh]
         source: |
           set -e
@@ -51,6 +53,7 @@ spec:
             echo "No BED file provided (placeholder detected). Skipping validation."
             # Create empty placeholder files
             touch /mnt/output/validated.bed
+            touch /mnt/output/validated_cds_only.bed
             echo '{"skipped": true, "reason": "No input file provided"}' > /mnt/output/validation_report.json
             exit 0
           fi
@@ -71,6 +74,7 @@ spec:
             --chains-dir /mnt/chains/ \
             --output /mnt/output/validated.bed \
             --output-report /mnt/output/validation_report.json \
+            --output-cds-bed /mnt/output/validated_cds_only.bed \
             $canonicalFlag || {
               exitCode=$?
               echo "WARNING: BED validation failed with exit code $exitCode"
@@ -78,6 +82,7 @@ spec:
 
               # Copy original file to output
               cp /mnt/input/"$inputBedFile" /mnt/output/validated.bed
+              touch /mnt/output/validated_cds_only.bed
 
               # Create error report
               echo "{\"error\": true, \"exit_code\": $exitCode, \"message\": \"Validation failed, using original file\"}" > /mnt/output/validation_report.json

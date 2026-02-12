@@ -571,10 +571,8 @@ spec:
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}metrics/mosdepth/"
                 - name: regions-bed-f
-                  # value: "{{tasks.get-abs-ref-dirs.outputs.parameters.somtest-A3416642-regions-snv}}"
-                  # value: "{{tasks.get-abs-ref-dirs.outputs.parameters.somtest-A3416642-regions-all-tracks}}"
-                  value: "{{tasks.copy-regions-file-to-scratch.outputs.parameters.regions-file}}"
-            depends: "pb-applybqsr && get-abs-ref-dirs && verifybamid && copy-regions-file-to-scratch"
+                  value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-cds-only-file}}"
+            depends: "pb-applybqsr && get-abs-ref-dirs && verifybamid && validate-bed-file"
           - name: msisensor-pro
             templateRef:
               name: msisensor-pro-template
@@ -628,6 +626,22 @@ spec:
                   value: "0.95"
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}/metrics/tmb/"
+                - name: filter-common-variants
+                  value: "true"
+                - name: gnomad-vcf
+                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/gnomad4/gnomad4_1pct.vcf.gz"
+                - name: turkish-variome-vcf
+                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/turkish_variome/turkish_variome_1pct.vcf.gz"
+                - name: common-af-threshold
+                  value: "0.01"
+                - name: filter-multihit
+                  value: "true"
+                - name: multihit-method
+                  value: "poisson"
+                - name: filter-oncogenic
+                  value: "true"
+                - name: oncogenic-tiers
+                  value: "I,II"
             depends: "duckdb-snv && copy-regions-file-to-scratch"
           - name: collect-msi-data
             templateRef:
@@ -1268,10 +1282,8 @@ spec:
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}metrics/mosdepth/"
                 - name: regions-bed-f
-                  # value: "{{tasks.get-abs-ref-dirs.outputs.parameters.somtest-A3416642-regions-snv}}"
-                  # value: "{{tasks.get-abs-ref-dirs.outputs.parameters.somtest-A3416642-regions-all-tracks}}"
-                  value: "{{tasks.copy-regions-file-to-scratch.outputs.parameters.regions-file}}"
-            depends: "pb-applybqsr && get-abs-ref-dirs && verifybamid && copy-regions-file-to-scratch"
+                  value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-cds-only-file}}"
+            depends: "pb-applybqsr && get-abs-ref-dirs && verifybamid && validate-bed-file"
           - name: msisensor-pro
             templateRef:
               name: msisensor-pro-template
@@ -1325,6 +1337,22 @@ spec:
                   value: "0.95"
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}/metrics/tmb/"
+                - name: filter-common-variants
+                  value: "true"
+                - name: gnomad-vcf
+                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/gnomad4/gnomad4_1pct.vcf.gz"
+                - name: turkish-variome-vcf
+                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/turkish_variome/turkish_variome_1pct.vcf.gz"
+                - name: common-af-threshold
+                  value: "0.01"
+                - name: filter-multihit
+                  value: "true"
+                - name: multihit-method
+                  value: "poisson"
+                - name: filter-oncogenic
+                  value: "true"
+                - name: oncogenic-tiers
+                  value: "I,II"
             depends: "duckdb-snv && copy-regions-file-to-scratch"
           - name: collect-msi-data
             templateRef:
@@ -1635,6 +1663,22 @@ spec:
                   value: "0.95"
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}/metrics/tmb/"
+                - name: filter-common-variants
+                  value: "true"
+                - name: gnomad-vcf
+                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/gnomad4/gnomad4_1pct.vcf.gz"
+                - name: turkish-variome-vcf
+                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/turkish_variome/turkish_variome_1pct.vcf.gz"
+                - name: common-af-threshold
+                  value: "0.01"
+                - name: filter-multihit
+                  value: "true"
+                - name: multihit-method
+                  value: "poisson"
+                - name: filter-oncogenic
+                  value: "true"
+                - name: oncogenic-tiers
+                  value: "I,II"
             depends: "duckdb-snv && copy-regions-file-to-scratch"
           - name: copy-temp-to-output
             templateRef:
