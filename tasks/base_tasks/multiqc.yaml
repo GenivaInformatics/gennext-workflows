@@ -40,6 +40,8 @@ spec:
               - 50
               - 100
               - 500
+              - 1000
+              - 2000
 
             # Contig inclusion/exclusion filters
             include_contigs:
