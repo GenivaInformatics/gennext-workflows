@@ -38,7 +38,7 @@ spec:
         command: [sh]
         source: |
           trim_galore \
-          --cores {{inputs.parameters.thread-count}} \
+          --cores {{=sprig.min(sprig.int(inputs.parameters['thread-count']), 16)}} \
           --paired \
           --basename "{{inputs.parameters.sample-name}}" \
           --phred33 \
