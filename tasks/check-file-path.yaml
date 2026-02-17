@@ -47,7 +47,7 @@ spec:
           input_file_3 = Path("{{inputs.parameters.input-file-3}}")
 
           def check_file_path(path, input_dir):
-              if path == '.':
+              if str(path) == '.':
                   return ('.', '.')
               if path.is_absolute():
                   return (str(path.parent)+'/', path.name)

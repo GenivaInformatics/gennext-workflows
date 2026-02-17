@@ -381,7 +381,7 @@ spec:
             echo "$1" | sed 's/ /_/g' | sed 's/[^a-zA-Z0-9_.-]/_/g'
           }
 
-          if [ -n "{{inputs.parameters.provided-regions-file}}" ] && [ -f "/mnt/input/{{inputs.parameters.provided-regions-file}}" ]; then
+          if [ -n "{{inputs.parameters.provided-regions-file}}" ] && [ -s "/mnt/input/{{inputs.parameters.provided-regions-file}}" ]; then
             SOURCE_FILE="{{inputs.parameters.provided-regions-file}}"
             SANITIZED_FILENAME=$(sanitize_filename "$(basename "$SOURCE_FILE")")
 
