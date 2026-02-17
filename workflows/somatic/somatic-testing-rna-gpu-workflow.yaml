@@ -46,7 +46,7 @@ spec:
                 - name: input-file-2
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.fqR2RNA.name')}}"
                 - name: input-file-3
-                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.regionsFileRNA.name')}}"
+                  value: "{{=sprig.default('.', jsonpath(inputs.parameters['run-data'], '$.samples[0].files.regionsFileRNA.name'))}}"
                 - name: input-rel-dir
                   value: "{{inputs.parameters.input-rel-dir}}"
           - name: copy-fastq-to-scratch
@@ -78,7 +78,7 @@ spec:
                 - name: enrichment-kit-regions-file
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.enrichmentKit.filename')}}"
                 - name: default-regions-file
-                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.exome-regions-bed-f}}"
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.cds-regions-bed-f}}"
                 - name: input-rel-dir
                   value: "{{tasks.check-file-path.outputs.parameters.input-rel-dir-3}}"
                 - name: scratch-rel-dir
@@ -448,7 +448,7 @@ spec:
                 - name: input-file-1
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.bamRNA.name')}}"
                 - name: input-file-2
-                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.regionsFileRNA.name')}}"
+                  value: "{{=sprig.default('.', jsonpath(inputs.parameters['run-data'], '$.samples[0].files.regionsFileRNA.name'))}}"
                 - name: input-file-3
                   value: "."
                 - name: input-rel-dir
@@ -471,19 +471,22 @@ spec:
           - name: copy-regions-file-to-scratch
             templateRef:
               name: copy-inputs-to-scratch
-              template: copy-regions-file-to-scratch
+              template: copy-regions-file-to-scratch-v3
             arguments:
               parameters:
-                - name: regions-file
+                - name: provided-regions-file
                   value: "{{tasks.check-file-path.outputs.parameters.output-file-2}}"
-                  # value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.regionsFileRNA.name')}}"
-                  # value: "A3416642_all_merged_Regions.bed"
+                - name: enrichment-kit-regions-file
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.enrichmentKit.filename')}}"
+                - name: default-regions-file
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.cds-regions-bed-f}}"
                 - name: input-rel-dir
                   value: "{{tasks.check-file-path.outputs.parameters.input-rel-dir-2}}"
-                  # value: "{{inputs.parameters.input-rel-dir}}"
                 - name: scratch-rel-dir
                   value: "{{inputs.parameters.scratch-rel-dir}}"
-            depends: "copy-bam-to-scratch && check-file-path"
+                - name: ref-regions-dir
+                  value: "{{inputs.parameters.ref-base-dir}}/{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/regions/"
+            depends: "copy-bam-to-scratch && check-file-path && get-abs-ref-dirs"
           - name: pb-bam2fq
             templateRef:
               name: parabricks-bam2fq-template

@@ -37,6 +37,9 @@ spec:
           - name: exome-regions-bed-f
             valueFrom:
               path: "/tmp/{{inputs.parameters.ref-ver}}.regions.exome"
+          - name: cds-regions-bed-f
+            valueFrom:
+              path: "/tmp/{{inputs.parameters.ref-ver}}.regions.cds"
           - name: annovar-dir
             valueFrom:
               path: "/tmp/{{inputs.parameters.ref-ver}}.other.annovar"

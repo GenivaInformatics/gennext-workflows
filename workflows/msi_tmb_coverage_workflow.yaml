@@ -77,6 +77,22 @@ spec:
                   value: "0.95"
                 - name: output-dir
                   value: "{{inputs.parameters.base-dir}}/{{inputs.parameters.user-id}}/{{inputs.parameters.run-id}}/results/metrics/tmb/"
+                - name: filter-common-variants
+                  value: "true"
+                - name: gnomad-vcf
+                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/gnomad4/gnomad4_1pct.vcf.gz"
+                - name: turkish-variome-vcf
+                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/turkish_variome/turkish_variome_1pct.vcf.gz"
+                - name: common-af-threshold
+                  value: "0.01"
+                - name: filter-multihit
+                  value: "true"
+                - name: multihit-method
+                  value: "poisson"
+                - name: filter-oncogenic
+                  value: "true"
+                - name: oncogenic-tiers
+                  value: "I,II"
           - name: collect-msi-data
             # collects MSI information
             templateRef:

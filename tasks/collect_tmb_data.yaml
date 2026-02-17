@@ -35,6 +35,11 @@ spec:
             value: "true"
           - name: oncogenic-tiers
             value: "I,II"
+          # DETS filtering parameters
+          - name: filter-dets
+            value: "true"
+          - name: dets-threshold
+            value: "2.5"
       volumes:
         - name: duckdb-file
           hostPath:
@@ -58,7 +63,7 @@ spec:
             type: Directory
       script:
         name: tmb-calculator
-        image: bergun/gennext-tmb-calc:0.2.1
+        image: bergun/gennext-tmb-calc:0.3.0
         workingDir: /mnt/input
         volumeMounts:
           - name: duckdb-file
@@ -110,6 +115,11 @@ spec:
           # Add multihit gene filtering if enabled
           if [ "{{inputs.parameters.filter-multihit}}" = "true" ]; then
             CMD="$CMD --filter-multihit --multihit-method {{inputs.parameters.multihit-method}}"
+          fi
+
+          # Add DETS filtering if enabled
+          if [ "{{inputs.parameters.filter-dets}}" = "true" ]; then
+            CMD="$CMD --filter-dets --dets-threshold {{inputs.parameters.dets-threshold}}"
           fi
 
           # Add verbose flag and run
@@ -163,6 +173,11 @@ spec:
             value: "true"
           - name: oncogenic-tiers
             value: "I,II"
+          # DETS filtering parameters
+          - name: filter-dets
+            value: "true"
+          - name: dets-threshold
+            value: "2.5"
       volumes:
         - name: duckdb-file
           hostPath:
@@ -186,7 +201,7 @@ spec:
             type: Directory
       script:
         name: tmb-calculator
-        image: bergun/gennext-tmb-calc:0.2.1
+        image: bergun/gennext-tmb-calc:0.3.0
         workingDir: /mnt/input
         volumeMounts:
           - name: duckdb-file
@@ -240,6 +255,11 @@ spec:
             CMD="$CMD --filter-multihit --multihit-method {{inputs.parameters.multihit-method}}"
           fi
 
+          # Add DETS filtering if enabled
+          if [ "{{inputs.parameters.filter-dets}}" = "true" ]; then
+            CMD="$CMD --filter-dets --dets-threshold {{inputs.parameters.dets-threshold}}"
+          fi
+
           # Add verbose flag and run
           CMD="$CMD --verbose"
           echo "Running: $CMD"
@@ -290,6 +310,11 @@ spec:
             value: "true"
           - name: oncogenic-tiers
             value: "I,II"
+          # DETS filtering parameters
+          - name: filter-dets
+            value: "true"
+          - name: dets-threshold
+            value: "2.5"
       volumes:
         - name: duckdb-file
           hostPath:
@@ -317,7 +342,7 @@ spec:
             type: Directory
       script:
         name: tmb-calculator
-        image: bergun/gennext-tmb-calc:0.2.1
+        image: bergun/gennext-tmb-calc:0.3.0
         workingDir: /mnt/input
         volumeMounts:
           - name: duckdb-file
@@ -372,6 +397,11 @@ spec:
           # Add multihit gene filtering if enabled
           if [ "{{inputs.parameters.filter-multihit}}" = "true" ]; then
             CMD="$CMD --filter-multihit --multihit-method {{inputs.parameters.multihit-method}}"
+          fi
+
+          # Add DETS filtering if enabled
+          if [ "{{inputs.parameters.filter-dets}}" = "true" ]; then
+            CMD="$CMD --filter-dets --dets-threshold {{inputs.parameters.dets-threshold}}"
           fi
 
           # Add verbose flag and run
