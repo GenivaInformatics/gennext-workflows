@@ -1,0 +1,92 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: parabricks-bamsort-template
+spec:
+  templates:
+    # GPU-accelerated coordinate sort via pbrun bamsort. The parabricks
+    # 4.3.1-1 image ships with samtools so the optional pre-filter and the
+    # post-sort index pass share the container.
+    #
+    # apply-proper-pair-filter (default "false"): when "true", a samtools
+    # view -f 2 step runs before the sort to drop orphaned/non-PP reads.
+    # The RNA fusion path needs supplementary alignments (split-reads) for
+    # the read-extractor downstream, so it leaves this off. DNA paths that
+    # need orphan-stripped BAMs can opt in by setting it to "true".
+    - name: parabricks-bamsort
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      inputs:
+        parameters:
+          - name: input-bam
+          - name: output-bam
+          - name: genome-ref
+          - name: thread-count
+          - name: apply-proper-pair-filter
+            default: "false"
+      outputs:
+        parameters:
+          - name: output-bam
+            value: "{{inputs.parameters.output-bam}}"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: output-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-bam'])}}"
+            type: DirectoryOrCreate
+        - name: genome-ref
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['genome-ref'])}}"
+            type: Directory
+      script:
+        name: "parabricks-bamsort-script"
+        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+        command: [bash]
+        source: |
+          set -euo pipefail
+
+          IN_BAM="/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}"
+          OUT_BAM="/mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}"
+          REF="/mnt/ref/genome-fa/{{=sprig.osBase(inputs.parameters['genome-ref'])}}"
+          THREADS="{{inputs.parameters.thread-count}}"
+          APPLY_PP_FILTER="{{inputs.parameters.apply-proper-pair-filter}}"
+
+          SORT_INPUT="${IN_BAM}"
+          PROPER_PAIR_BAM="/tmp/proper_pair.bam"
+          if [ "${APPLY_PP_FILTER}" = "true" ]; then
+            echo "Applying proper-pair filter (samtools view -f 2) before sort"
+            samtools view -@ "${THREADS}" -b -f 2 "${IN_BAM}" -o "${PROPER_PAIR_BAM}"
+            SORT_INPUT="${PROPER_PAIR_BAM}"
+          else
+            echo "Skipping proper-pair filter; passing all reads through to sort"
+          fi
+
+          # GPU coordinate sort. pbrun bamsort splits work between sort and
+          # zip thread pools; defaults are 10 sort + 16 zip but we cap each
+          # half at the requested THREADS so total cores stay within budget.
+          pbrun bamsort \
+            --ref "${REF}" \
+            --in-bam "${SORT_INPUT}" \
+            --out-bam "${OUT_BAM}" \
+            --num-sort-threads "${THREADS}" \
+            --num-zip-threads "${THREADS}"
+
+          # pbrun bamsort does not emit an index; create one.
+          samtools index -@ "${THREADS}" "${OUT_BAM}"
+
+          rm -f "${PROPER_PAIR_BAM}"
+        volumeMounts:
+          - name: input-bam
+            mountPath: /mnt/input/bam/
+          - name: output-bam
+            mountPath: /mnt/output/bam/
+          - name: genome-ref
+            mountPath: /mnt/ref/genome-fa/

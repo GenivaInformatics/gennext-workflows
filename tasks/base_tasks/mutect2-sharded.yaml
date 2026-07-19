@@ -1,0 +1,165 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: mutect2-sharded-template
+  namespace: argo
+spec:
+  templates:
+    - name: mutect2-tumor-only-sharded
+      inputs:
+        parameters:
+          - name: input-bam
+          - name: sample-id
+          - name: genome-ref
+          - name: regions-file
+          - name: sample-scratch-dir
+          - name: output-vcf
+          - name: shards
+            value: "10"
+          - name: hmm-threads
+            value: "2"
+          - name: apply-filter
+            value: "true"
+      outputs:
+        parameters:
+          - name: output-vcf
+            value: "{{inputs.parameters.output-vcf}}"
+          - name: output-stats
+            value: "{{inputs.parameters.output-vcf}}.stats"
+          - name: output-priors
+            value: "{{=sprig.osDir(inputs.parameters['output-vcf'])}}/{{inputs.parameters.sample-id}}.priors.tar.gz"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: genome-ref
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['genome-ref'])}}"
+            type: Directory
+        - name: regions-file
+          hostPath:
+            path: "{{inputs.parameters.regions-file}}"
+            type: File
+        - name: scratch
+          hostPath:
+            path: "{{inputs.parameters.sample-scratch-dir}}"
+            type: Directory
+        - name: output-vcf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-vcf'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: mutect2-tumor-only-sharded
+        image: broadinstitute/gatk:4.6.2.0
+        resources:
+          requests:
+            cpu: "16"
+            memory: "24Gi"
+          limits:
+            cpu: "20"
+            memory: "32Gi"
+        env:
+          - name: REF_FA
+            value: "{{=sprig.osBase(inputs.parameters['genome-ref'])}}"
+          - name: BAM_BASENAME
+            value: "{{=sprig.osBase(inputs.parameters['input-bam'])}}"
+          - name: PANEL_BASENAME
+            value: "{{=sprig.osBase(inputs.parameters['regions-file'])}}"
+          - name: OUT_VCF_BASENAME
+            value: "{{=sprig.osBase(inputs.parameters['output-vcf'])}}"
+          - name: SAMPLE_ID
+            value: "{{inputs.parameters.sample-id}}"
+          - name: SHARDS
+            value: "{{inputs.parameters.shards}}"
+          - name: HMM_THREADS
+            value: "{{inputs.parameters.hmm-threads}}"
+          - name: APPLY_FILTER
+            value: "{{inputs.parameters.apply-filter}}"
+        command: [bash]
+        source: |
+          set -euo pipefail
+
+          REF=/mnt/ref/${REF_FA}
+          BAM=/mnt/input/bam/${BAM_BASENAME}
+          PANEL=/mnt/input/bed/${PANEL_BASENAME}
+          OUT_VCF=/mnt/output/vcf/${OUT_VCF_BASENAME}
+          OUT_DIR=/mnt/output/vcf
+
+          WORK=/mnt/scratch/mutect2
+          rm -rf "$WORK"
+          mkdir -p "$WORK"/{shards,vcfs,f1r2,logs}
+
+          # 1. SplitIntervals
+          gatk SplitIntervals \
+            -R "$REF" -L "$PANEL" \
+            --scatter-count "$SHARDS" \
+            --subdivision-mode BALANCING_WITHOUT_INTERVAL_SUBDIVISION \
+            -O "$WORK/shards"
+
+          # 2. Parallel Mutect2
+          run_shard() {
+            local shard="$1"
+            gatk --java-options "-Xmx4g" Mutect2 \
+              -R "$REF" \
+              -I "$BAM" \
+              -L "$WORK/shards/${shard}-scattered.interval_list" \
+              --tumor-sample "$SAMPLE_ID" \
+              --pileup-detection \
+              --pileup-detection-snp-alt-threshold 0.02 \
+              --pileup-detection-enable-indel-pileup-calling \
+              --pileup-detection-indel-alt-threshold 0.02 \
+              --pileup-detection-absolute-alt-depth 3 \
+              --use-pdhmm \
+              --f1r2-tar-gz "$WORK/f1r2/${shard}.tar.gz" \
+              --native-pair-hmm-threads "$HMM_THREADS" \
+              -O "$WORK/vcfs/${shard}.vcf.gz" \
+              > "$WORK/logs/${shard}.log" 2>&1
+          }
+          export -f run_shard
+          export REF BAM WORK SAMPLE_ID HMM_THREADS
+
+          ls "$WORK/shards"/*-scattered.interval_list \
+            | sed 's|.*/||;s|-scattered.interval_list||' \
+            | xargs -P "$SHARDS" -I {} bash -c 'run_shard "$@"' _ {}
+
+          # 3. Merge
+          VCF_ARGS=();   for f in "$WORK"/vcfs/*.vcf.gz;       do VCF_ARGS+=(-I  "$f"); done
+          STATS_ARGS=(); for f in "$WORK"/vcfs/*.vcf.gz.stats; do STATS_ARGS+=(-stats "$f"); done
+          F1R2_ARGS=();  for f in "$WORK"/f1r2/*.tar.gz;       do F1R2_ARGS+=(-I "$f"); done
+
+          UNFILTERED="$WORK/${SAMPLE_ID}.unfiltered.vcf.gz"
+          PRIORS="$WORK/${SAMPLE_ID}.priors.tar.gz"
+
+          gatk MergeVcfs        "${VCF_ARGS[@]}"   -O "$UNFILTERED"
+          gatk MergeMutectStats "${STATS_ARGS[@]}" -O "$UNFILTERED.stats"
+          gatk --java-options "-Xmx8g -XX:+UseParallelGC" LearnReadOrientationModel \
+                                "${F1R2_ARGS[@]}"  -O "$PRIORS"
+
+          # 4. Filter (FFPE orientation-bias filter included), or pass-through
+          if [ "${APPLY_FILTER}" = "true" ]; then
+            gatk FilterMutectCalls \
+              -R "$REF" \
+              -V "$UNFILTERED" \
+              --stats "$UNFILTERED.stats" \
+              --orientation-bias-artifact-priors "$PRIORS" \
+              -O "$OUT_VCF"
+          else
+            cp "$UNFILTERED" "$OUT_VCF"
+            [ -f "${UNFILTERED}.tbi" ] && cp "${UNFILTERED}.tbi" "${OUT_VCF}.tbi" || true
+          fi
+
+          # Auxiliary outputs alongside the VCF
+          cp "$UNFILTERED.stats" "${OUT_VCF}.stats"
+          cp "$PRIORS" "${OUT_DIR}/${SAMPLE_ID}.priors.tar.gz"
+        volumeMounts:
+          - name: genome-ref
+            mountPath: /mnt/ref/
+          - name: regions-file
+            mountPath: /mnt/input/bed/{{=sprig.osBase(inputs.parameters['regions-file'])}}
+          - name: input-bam
+            mountPath: /mnt/input/bam/
+          - name: scratch
+            mountPath: /mnt/scratch/
+          - name: output-vcf
+            mountPath: /mnt/output/vcf/

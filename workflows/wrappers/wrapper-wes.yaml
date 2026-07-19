@@ -1,0 +1,100 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: wrapper-wes
+  namespace: argo
+spec:
+  workflowMetadata:
+    generateName: "wes-from-sensor-{{workflow.parameters.job-id}}-"
+    labels:
+      gennext.bio/node: "{{workflow.parameters.node-name}}"
+      gennext.bio/user-id: "{{workflow.parameters.user-id}}"
+      gennext.bio/process-type: "{{workflow.parameters.process-type}}"
+    annotations:
+      gennext.bio/user-id: "{{workflow.parameters.user-id}}"
+      gennext.bio/job-id: "{{workflow.parameters.job-id}}"
+      gennext.bio/process-type: "{{workflow.parameters.process-type}}"
+      gennext.bio/node-name: "{{workflow.parameters.node-name}}"
+  serviceAccountName: gennext-workflows
+  entrypoint: main
+  arguments:
+    parameters:
+      - name: node-name
+      - name: user-id
+      - name: job-id
+      - name: process-type
+  podGC:
+    strategy: OnPodSuccess
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node-name}}"
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: get-node-config
+            templateRef:
+              name: get-node-config
+              template: get-node-config
+            arguments:
+              parameters:
+                - name: node-name
+                  value: "{{workflow.parameters.node-name}}"
+                - name: user-id
+                  value: "{{workflow.parameters.user-id}}"
+                - name: job-id
+                  value: "{{workflow.parameters.job-id}}"
+          - name: get-run-data
+            templateRef:
+              name: get-run-data
+              template: get-run-data
+            arguments:
+              parameters:
+                - name: job-id
+                  value: "{{workflow.parameters.job-id}}"
+                - name: input-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.input-rel-dir}}"
+            depends: "get-node-config"
+          - name: run-workflow
+            templateRef:
+              name: germline-wes-gpu-workflow
+              template: main
+            arguments:
+              parameters:
+                - name: user-id
+                  value: "{{workflow.parameters.user-id}}"
+                - name: run-id
+                  value: "{{workflow.parameters.job-id}}"
+                - name: run-data
+                  value: "{{tasks.get-run-data.outputs.parameters.run-data}}"
+                - name: input-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.input-rel-dir}}"
+                - name: temp-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.scratch-rel-dir}}"
+                - name: output-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.output-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.ref-base-dir}}"
+                - name: modules-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.modules-base-dir}}"
+                - name: annots-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.annots-base-dir}}"
+                - name: job-id
+                  value: "{{workflow.parameters.job-id}}"
+                - name: ref-ver
+                  value: "{{=jsonpath(tasks['get-run-data'].outputs.parameters['run-data'], '$.refVersion')}}"
+                - name: thread-count
+                  value: "{{tasks.get-node-config.outputs.parameters.thread-count}}"
+            depends: "get-run-data && get-node-config"
+          - name: set-state-completed
+            templateRef:
+              name: change-run-state-template
+              template: change-run-state
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{workflow.parameters.job-id}}"
+                - name: run-state
+                  value: "completed"
+            depends: "run-workflow.Succeeded"

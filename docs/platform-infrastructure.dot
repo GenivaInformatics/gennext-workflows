@@ -1,0 +1,108 @@
+// Gennext platform — infrastructure overview (top-level)
+// Audience: research poster. A central "country node" manages many edge nodes
+// (one per lab / tenant). Sensitive genomic data rests at the edge and is
+// pulled only on request; file transfers go peer-to-peer when possible, else
+// through the central relay. Intentionally high-level: per-service detail,
+// annotation APIs and databases are omitted.
+//
+// Node label convention: <B>role</B> (bold) · component (normal) · qualifier (smaller).
+// Arrows = request / control direction; genomic data itself stays at the edge.
+//
+// Render:  dot -Tsvg platform-infrastructure.dot -o infra.svg
+//          dot -Tpng -Gdpi=300 platform-infrastructure.dot -o infra.png
+
+digraph gennext_infra {
+    rankdir = TB;
+    compound = true;
+    splines = ortho;
+    nodesep = 0.5;
+    ranksep = 0.7;
+    bgcolor = "white";
+
+    graph [fontname = "Helvetica", fontsize = 14, labelloc = "t"];
+    node  [fontname = "Helvetica", fontsize = 11, shape = box, style = "rounded,filled",
+           penwidth = 1.2, margin = "0.14,0.09"];
+    edge  [fontname = "Helvetica", fontsize = 9, color = "#555555", arrowsize = 0.8];
+
+    label = "Gennext — Platform Infrastructure (overview)\nCentral country node manages many edge nodes · sensitive data stays at the edge · transfers P2P-first, relay fallback";
+
+    // =========================================================================
+    //  USER
+    // =========================================================================
+    user [label = <<B>Clinician / researcher</B><BR/>web browser>, shape = oval,
+          fillcolor = "#FFFFFF", penwidth = 1.5];
+
+    // =========================================================================
+    //  CENTRAL COUNTRY NODE
+    // =========================================================================
+    subgraph cluster_central {
+        label = "Central country node  (gennext + argo)";
+        style = "rounded";
+        color = "#9DB7D6";
+        penwidth = 2;
+        fontsize = 13;
+        fontcolor = "#2F5496";
+
+        fe    [label = <<B>Web UI</B><BR/>Frontend <FONT POINT-SIZE="9">(React)</FONT>>, fillcolor = "#DCE6F2"];
+        be    [label = <<B>Central API</B><BR/>Backend <FONT POINT-SIZE="9">(Rust)</FONT><BR/><FONT POINT-SIZE="9">+ PostgreSQL (users, runs, samples)</FONT>>, fillcolor = "#DCE6F2"];
+        orch  [label = <<B>Batch orchestrator</B><BR/>Orchestrator <FONT POINT-SIZE="9">(Go)</FONT>>, fillcolor = "#E2EFDA"];
+        argo  [label = <<B>Workflow engine</B><BR/>Argo Workflows + Events>, fillcolor = "#E2EFDA"];
+        relay [label = <<B>File-transfer relay</B><BR/>libp2p circuit relay>, fillcolor = "#DAEEF3"];
+    }
+
+    // =========================================================================
+    //  EDGE NODE  (one of many)
+    // =========================================================================
+    subgraph cluster_edge {
+        label = "Edge node  —  one per lab / tenant site  (× N)";
+        style = "rounded";
+        color = "#C9A24B";
+        penwidth = 2;
+        fontsize = 13;
+        fontcolor = "#7A5A12";
+
+        eapi   [label = <<B>Edge API</B><BR/>api-edge <FONT POINT-SIZE="9">(Rust)</FONT>>, fillcolor = "#FFF2CC"];
+        pods   [label = <<B>Analysis pipelines</B><BR/>Argo pods <FONT POINT-SIZE="9">(somatic / germline)</FONT>>, fillcolor = "#FFF2CC"];
+        ftedge [label = <<B>File-transfer peer</B><BR/>ft-edge <FONT POINT-SIZE="9">(libp2p)</FONT>>, fillcolor = "#DAEEF3"];
+        edata  [label = <<B>Local genomic data</B><BR/>BAM · VCF · CNV<BR/><FONT POINT-SIZE="9"><I>sensitive — rests here, pulled on request</I></FONT>>,
+                shape = cylinder, fillcolor = "#D9D2E9", penwidth = 1.5];
+    }
+
+    // =========================================================================
+    //  EXTERNAL (kept minimal)
+    // =========================================================================
+    ext [label = <<B>External annotation</B><BR/><FONT POINT-SIZE="9">OncoKB · Varsome · COSMIC · …</FONT>>,
+         shape = note, style = "filled,dashed", fillcolor = "#FFFDE7"];
+
+    // =========================================================================
+    //  EDGES
+    // =========================================================================
+    // user ↔ central
+    user -> fe [label = "HTTPS"];
+
+    // within central / control plane
+    fe -> be   [label = "REST (auth, runs, results)"];
+    fe -> orch [label = "run status"];
+    be -> orch [label = "submit run"];
+    be -> argo [label = "trigger (events)"];
+    orch -> argo [label = "dispatch workflows (gRPC)"];
+    be -> ext  [label = "annotation lookups", style = dashed];
+
+    // central → edge control: schedule analysis on the edge node
+    argo -> pods [label = "schedule pods\n(data stays at edge)", lhead = cluster_edge];
+
+    // backend pulls results from edge only on request
+    be  -> eapi [label = "variant query (on request)", style = dashed];
+    eapi -> be  [label = "fetch auth key", style = dashed, constraint = false];
+
+    // file transfer: P2P direct first, relay fallback
+    user -> ftedge [label = "P2P file stream (direct)", color = "#1F6E84", penwidth = 1.6, fontcolor = "#1F6E84"];
+    user -> relay  [label = "fallback", style = dashed];
+    relay -> ftedge [label = "circuit relay", style = dashed];
+    ftedge -> relay [label = "register", style = dashed, constraint = false];
+
+    // edge-local reads (data never leaves unless pulled)
+    eapi   -> edata [label = "reads", style = dotted, arrowhead = none];
+    ftedge -> edata [label = "streams", style = dotted, arrowhead = none];
+    pods   -> edata [label = "writes", style = dotted, arrowhead = none];
+}

@@ -1,0 +1,360 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: test-fusion-inspector-
+  namespace: argo
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: main
+  arguments:
+    parameters:
+      # Sample / node / pacing.
+      - name: sample-id
+        value: Agi-S5
+      - name: node-name
+        value: acurare-01
+      - name: thread-count
+        value: "20"
+      - name: umi-length
+        value: "5"
+
+      # Raw (pre-fastp) FASTQ inputs for AGI-S5. Self-contained run that
+      # exercises the full UMI-aware mark-dups architecture: fastp ->
+      # star-align -> samtools-sort -> fgbio-mark-duplicates ->
+      # filter-chimeric-junction -> star-fusion-from-junction (kickstart)
+      # || arriba/extractor -> FI -> propagate-fi-dup-flags.
+      # Expected wall time ~30-40 min.
+      - name: fq-r1
+        value: /runspace/gennext/data/inputs/3c41bacd-22a6-4639-ab15-2fc9141a8d4f/105d5109-fda3-4e9b-a003-9207e5e450b5/Agi-S5_R1.fastq.gz
+      - name: fq-r2
+        value: /runspace/gennext/data/inputs/3c41bacd-22a6-4639-ab15-2fc9141a8d4f/105d5109-fda3-4e9b-a003-9207e5e450b5/Agi-S5_R2.fastq.gz
+
+      # Reference paths.
+      - name: ctat-genome-lib-build-dir
+        value: /runspace/gennext/data/ref/hg38/rna/ctat_genome_lib_build_dir/
+      - name: ref-genome-fa
+        value: /runspace/gennext/data/ref/hg38/rna/ctat_genome_lib_build_dir/ref_genome.fa
+      - name: gene-annotation-gtf
+        value: /runspace/gennext/data/ref/hg38/rna/ctat_genome_lib_build_dir/ref_annot.gtf
+      - name: fusion-report-db-dir
+        value: /runspace/gennext/data/ref/hg38/other/fusion_report_db/
+
+      # Sensitivity presets.
+      - name: starfusion-sensitivity
+        value: full_Monty
+      - name: arriba-sensitivity
+        value: ultra_sensitivity
+
+      # FI breakpoint-spanning window. 0 = chimeric-only (supplementary
+      # reads only) for fast FI runtime; FI's IGV BAM keeps the split-read
+      # evidence and caller-native counts come from fusions.json. Set to
+      # >0 to also collect spanning fragments within ±N bp of breakpoints.
+      - name: breakpoint-window
+        value: "0"
+
+      # Per-run unique paths via {{workflow.name}} so concurrent prototype
+      # submissions don't fight over the same scratch / output / metrics dirs.
+      - name: output-dir
+        value: /runspace/gennext/data/temp/3c41bacd-22a6-4639-ab15-2fc9141a8d4f/105d5109-fda3-4e9b-a003-9207e5e450b5/1d8b02d0-01b9-46ac-a922-5a8dd8588c9b/results/{{workflow.name}}/
+      - name: metrics-dir
+        value: /runspace/gennext/data/temp/3c41bacd-22a6-4639-ab15-2fc9141a8d4f/105d5109-fda3-4e9b-a003-9207e5e450b5/1d8b02d0-01b9-46ac-a922-5a8dd8588c9b/metrics/rna/{{workflow.name}}/
+      - name: scratch-dir
+        value: /runspace/gennext/data/scratch/3c41bacd-22a6-4639-ab15-2fc9141a8d4f/105d5109-fda3-4e9b-a003-9207e5e450b5/1d8b02d0-01b9-46ac-a922-5a8dd8588c9b/{{workflow.name}}/
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node-name}}"
+  tolerations:
+    - key: "nvidia.com/gpu"
+      operator: "Exists"
+      effect: "NoSchedule"
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: compose-read-group-str
+            templateRef:
+              name: compose-read-group-str
+              template: compose-read-group-str-from-fq
+            arguments:
+              parameters:
+                - name: fq-r1
+                  value: "{{workflow.parameters.fq-r1}}"
+                - name: sample-name
+                  value: "{{workflow.parameters.sample-id}}"
+
+          - name: fastp
+            templateRef:
+              name: fastp-template
+              template: fastp
+            arguments:
+              parameters:
+                - name: sample-name
+                  value: "{{workflow.parameters.sample-id}}"
+                - name: fq-r1
+                  value: "{{workflow.parameters.fq-r1}}"
+                - name: fq-r2
+                  value: "{{workflow.parameters.fq-r2}}"
+                - name: thread-count
+                  value: "{{workflow.parameters.thread-count}}"
+                - name: umi-length
+                  value: "{{workflow.parameters.umi-length}}"
+                - name: output-dir
+                  value: "{{workflow.parameters.scratch-dir}}trimmed_reads/"
+                - name: metrics-dir
+                  value: "{{workflow.parameters.metrics-dir}}fastp/"
+
+          # Single STAR alignment shared by both callers. Emits BAM (chimerics
+          # inline for arriba) AND Chimeric.out.junction (for the kickstart
+          # STAR-Fusion call). Replaces the prior star-fusion task that ran
+          # its own internal STAR.
+          - name: star-align
+            templateRef:
+              name: star-align-template
+              template: star-align-arriba
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{workflow.parameters.sample-id}}"
+                - name: read-group-str
+                  value: "{{tasks.compose-read-group-str.outputs.parameters.read-group-str-no-rg-prefix}}"
+                - name: fq-r1
+                  value: "{{tasks.fastp.outputs.parameters.fq-r1}}"
+                - name: fq-r2
+                  value: "{{tasks.fastp.outputs.parameters.fq-r2}}"
+                - name: ctat-genome-lib-build-dir
+                  value: "{{workflow.parameters.ctat-genome-lib-build-dir}}"
+                - name: output-bam
+                  value: "{{workflow.parameters.scratch-dir}}bam/{{workflow.parameters.sample-id}}_unsorted_RNA.bam"
+                - name: output-chimeric-out-fusions
+                  value: "{{workflow.parameters.scratch-dir}}bam/{{workflow.parameters.sample-id}}_Chimeric.out.junction"
+                - name: metrics-dir
+                  value: "{{workflow.parameters.metrics-dir}}star-align/"
+                - name: scratch-dir
+                  value: "{{workflow.parameters.scratch-dir}}star-align/"
+                - name: thread-count
+                  value: "{{workflow.parameters.thread-count}}"
+            depends: "fastp && compose-read-group-str"
+
+          - name: samtools-sort-index-sf
+            templateRef:
+              name: samtools-template
+              template: samtools-sort-index
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{tasks.star-align.outputs.parameters.output-bam}}"
+                - name: output-bam
+                  value: "{{workflow.parameters.scratch-dir}}bam/{{workflow.parameters.sample-id}}_RNA.bam"
+                - name: thread-count
+                  value: "{{workflow.parameters.thread-count}}"
+            depends: "star-align"
+
+          # UMI-aware mark-duplicates. fgbio GroupReadsByUmi
+          # --strategy=Adjacency --edits=1 --mark-duplicates: directed-graph
+          # UMI clustering with 1-edit-distance tolerance; sets 0x400 on
+          # PCR duplicates instead of removing them. All reads stay in the
+          # BAM so FI's IGV bundle keeps the full read pile for inspection.
+          - name: fgbio-mark-duplicates
+            templateRef:
+              name: fgbio-mark-duplicates-template
+              template: fgbio-mark-duplicates
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{workflow.parameters.sample-id}}"
+                - name: input-bam
+                  value: "{{tasks.samtools-sort-index-sf.outputs.parameters.output-bam}}"
+                - name: output-bam
+                  value: "{{workflow.parameters.output-dir}}bam/{{workflow.parameters.sample-id}}_RNA.dedup.bam"
+                - name: output-metrics
+                  value: "{{workflow.parameters.metrics-dir}}fgbio/{{workflow.parameters.sample-id}}_fgbio_family_size.txt"
+                - name: thread-count
+                  value: "{{workflow.parameters.thread-count}}"
+            depends: "samtools-sort-index-sf"
+
+          # Filter Chimeric.out.junction by surviving QNAMEs in the deduped
+          # BAM, then run STAR-Fusion in kickstart mode on the filtered set
+          # so its support counts are UMI-aware.
+          - name: filter-chimeric-junction-by-bam
+            templateRef:
+              name: filter-chimeric-junction-by-bam-template
+              template: filter-chimeric-junction-by-bam
+            arguments:
+              parameters:
+                - name: bam-file
+                  value: "{{tasks.fgbio-mark-duplicates.outputs.parameters.output-bam}}"
+                - name: chimeric-junction-file
+                  value: "{{tasks.star-align.outputs.parameters.output-chimeric-out-fusions}}"
+                - name: output-file
+                  value: "{{workflow.parameters.output-dir}}fusions/star-fusion/{{workflow.parameters.sample-id}}_Chimeric.out.deduped.junction"
+                - name: thread-count
+                  value: "{{workflow.parameters.thread-count}}"
+            depends: "fgbio-mark-duplicates && star-align"
+
+          - name: star-fusion
+            templateRef:
+              name: star-fusion-from-junction-template
+              template: star-fusion-from-junction
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{workflow.parameters.sample-id}}"
+                - name: chimeric-junction-file
+                  value: "{{tasks.filter-chimeric-junction-by-bam.outputs.parameters.output-file}}"
+                - name: ctat-genome-lib-build-dir
+                  value: "{{workflow.parameters.ctat-genome-lib-build-dir}}"
+                - name: output-fusions-tsv
+                  value: "{{workflow.parameters.output-dir}}fusions/star-fusion/{{workflow.parameters.sample-id}}_starfusion.tsv"
+                - name: scratch-dir
+                  value: "{{workflow.parameters.scratch-dir}}star-fusion/"
+                - name: thread-count
+                  value: "{{workflow.parameters.thread-count}}"
+                - name: sensitivity
+                  value: "{{workflow.parameters.starfusion-sensitivity}}"
+            depends: "filter-chimeric-junction-by-bam"
+
+          # Arriba consumes the umi_tools-deduped BAM. -u inside arriba
+          # template is a no-op (no 0x400-flagged records to honor) but
+          # remains as defensive scaffolding.
+          - name: arriba
+            templateRef:
+              name: arriba-fusion-detection-template
+              template: arriba-fusion-detection
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{workflow.parameters.sample-id}}"
+                - name: input-bam
+                  value: "{{tasks.fgbio-mark-duplicates.outputs.parameters.output-bam}}"
+                - name: ref-genome-fa
+                  value: "{{workflow.parameters.ref-genome-fa}}"
+                - name: gene-annotation-gtf
+                  value: "{{workflow.parameters.gene-annotation-gtf}}"
+                - name: output-fusions-tsv
+                  value: "{{workflow.parameters.output-dir}}fusions/arriba/{{workflow.parameters.sample-id}}_fusions.tsv"
+                - name: output-fusions-discarded-tsv
+                  value: "{{workflow.parameters.output-dir}}fusions/arriba/{{workflow.parameters.sample-id}}_fusions.discarded.tsv"
+                - name: sensitivity
+                  value: "{{workflow.parameters.arriba-sensitivity}}"
+                - name: thread-count
+                  value: "{{workflow.parameters.thread-count}}"
+            depends: "fgbio-mark-duplicates"
+
+          - name: fusion-report
+            templateRef:
+              name: fusion-report-template
+              template: fusion-report
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{workflow.parameters.sample-id}}"
+                - name: arriba-fusions-tsv
+                  value: "{{tasks.arriba.outputs.parameters.output-fusions-tsv}}"
+                - name: starfusion-predictions-tsv
+                  value: "{{tasks.star-fusion.outputs.parameters.output-fusions-tsv}}"
+                - name: fusion-report-db-dir
+                  value: "{{workflow.parameters.fusion-report-db-dir}}"
+                - name: output-dir
+                  value: "{{workflow.parameters.output-dir}}fusions/fusion-report/"
+                - name: metrics-dir
+                  value: "{{workflow.parameters.metrics-dir}}fusion-report/"
+            depends: "arriba && star-fusion"
+
+          # Drop artefact gene pairs from fusion-report's outputs. Single
+          # source of truth for the artefact regex set; all downstream
+          # consumers (FI extractor, oncokb, duckdb) see the filtered view.
+          - name: filter-artifact-fusions
+            templateRef:
+              name: filter-artifact-fusions-template
+              template: filter-artifact-fusions
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{workflow.parameters.sample-id}}"
+                - name: input-fusions-json
+                  value: "{{tasks.fusion-report.outputs.parameters.output-fusions-json}}"
+                - name: input-fusion-list-tsv
+                  value: "{{tasks.fusion-report.outputs.parameters.output-fusion-list-tsv}}"
+                - name: output-fusions-json
+                  value: "{{workflow.parameters.output-dir}}fusions/fusion-report/{{workflow.parameters.sample-id}}_fusions.filtered.json"
+                - name: output-fusion-list-tsv
+                  value: "{{workflow.parameters.output-dir}}fusions/fusion-report/{{workflow.parameters.sample-id}}_fusion_list.filtered.tsv"
+            depends: "fusion-report"
+
+          # Pre-filter the marked BAM down to artifact-filtered fusion-relevant
+          # reads (split-reads + ±500 bp around breakpoints, dup-flagged reads
+          # excluded). Emits a tight FASTQ pair for FI's per-contig STAR.
+          - name: extract-fusion-reads
+            templateRef:
+              name: extract-reads-for-fusion-inspector-template
+              template: extract-reads-for-fusion-inspector-on-node
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{workflow.parameters.sample-id}}"
+                - name: input-bam
+                  value: "{{tasks.fgbio-mark-duplicates.outputs.parameters.output-bam}}"
+                - name: starfusion-tsv
+                  value: "{{tasks.star-fusion.outputs.parameters.output-fusions-tsv}}"
+                - name: arriba-tsv
+                  value: "{{tasks.arriba.outputs.parameters.output-fusions-tsv}}"
+                - name: fusion-list-tsv
+                  value: "{{tasks.filter-artifact-fusions.outputs.parameters.output-fusion-list-tsv}}"
+                - name: output-dir
+                  value: "{{workflow.parameters.scratch-dir}}extracted_reads/"
+                - name: thread-count
+                  value: "{{workflow.parameters.thread-count}}"
+                - name: node-name
+                  value: "{{workflow.parameters.node-name}}"
+                - name: breakpoint-window
+                  value: "{{workflow.parameters.breakpoint-window}}"
+            depends: "fgbio-mark-duplicates && filter-artifact-fusions"
+
+          - name: fusion-inspector
+            templateRef:
+              name: fusion-inspector-template
+              template: fusion-inspector-on-node
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{workflow.parameters.sample-id}}"
+                - name: fq-r1
+                  value: "{{tasks.extract-fusion-reads.outputs.parameters.fq-r1}}"
+                - name: fq-r2
+                  value: "{{tasks.extract-fusion-reads.outputs.parameters.fq-r2}}"
+                - name: fusion-list-tsv
+                  value: "{{tasks.extract-fusion-reads.outputs.parameters.filtered-fusion-list-tsv}}"
+                - name: ctat-genome-lib-build-dir
+                  value: "{{workflow.parameters.ctat-genome-lib-build-dir}}"
+                - name: output-dir
+                  value: "{{workflow.parameters.output-dir}}fusions/fusion-inspector/"
+                - name: metrics-dir
+                  value: "{{workflow.parameters.metrics-dir}}fusion-inspector/"
+                - name: scratch-dir
+                  value: "{{workflow.parameters.scratch-dir}}fusion-inspector/"
+                - name: thread-count
+                  value: "{{workflow.parameters.thread-count}}"
+                - name: node-name
+                  value: "{{workflow.parameters.node-name}}"
+            depends: "extract-fusion-reads"
+
+          # Propagate the genome-coord 0x400 flags from fgbio-mark-duplicates
+          # onto FI's consolidated.bam by QNAME. FI re-aligns to fusion
+          # contigs so genome-coord flags don't transfer through the FASTQ
+          # → STAR pipeline naturally; this task walks the upstream marked
+          # BAM, builds the dup-QNAME set, and OR-s 0x400 onto matching
+          # records in the FI consolidated BAM.
+          - name: propagate-fi-dup-flags
+            templateRef:
+              name: propagate-fi-dup-flags-template
+              template: propagate-fi-dup-flags
+            arguments:
+              parameters:
+                - name: upstream-bam
+                  value: "{{tasks.fgbio-mark-duplicates.outputs.parameters.output-bam}}"
+                - name: fi-bam
+                  value: "{{tasks.fusion-inspector.outputs.parameters.output-igv-bam}}"
+                - name: out-bam
+                  value: "{{tasks.fusion-inspector.outputs.parameters.output-igv-bam}}"
+                - name: thread-count
+                  value: "{{workflow.parameters.thread-count}}"
+            depends: "fusion-inspector && fgbio-mark-duplicates"

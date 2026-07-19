@@ -109,6 +109,7 @@ spec:
         - name: input-rel-dir
           hostPath:
             path: "{{inputs.parameters.input-rel-dir}}"
+            type: Directory
         - name: scratch-rel-dir
           hostPath:
             path: "{{inputs.parameters.scratch-rel-dir}}"
@@ -159,6 +160,7 @@ spec:
         - name: input-rel-dir
           hostPath:
             path: "{{inputs.parameters.input-rel-dir}}"
+            type: Directory
         - name: scratch-rel-dir
           hostPath:
             path: "{{inputs.parameters.scratch-rel-dir}}"
@@ -188,6 +190,7 @@ spec:
         - name: input-rel-dir
           hostPath:
             path: "{{inputs.parameters.input-rel-dir}}"
+            type: Directory
         - name: output-rel-dir
           hostPath:
             path: "{{inputs.parameters.output-rel-dir}}"
@@ -225,6 +228,7 @@ spec:
         - name: input-rel-dir
           hostPath:
             path: "{{inputs.parameters.input-rel-dir}}"
+            type: Directory
         - name: scratch-rel-dir
           hostPath:
             path: "{{inputs.parameters.scratch-rel-dir}}"
@@ -381,7 +385,7 @@ spec:
             echo "$1" | sed 's/ /_/g' | sed 's/[^a-zA-Z0-9_.-]/_/g'
           }
 
-          if [ -n "{{inputs.parameters.provided-regions-file}}" ] && [ -s "/mnt/input/{{inputs.parameters.provided-regions-file}}" ]; then
+          if [ "{{inputs.parameters.provided-regions-file}}" != "." ] && [ -f "/mnt/input/{{inputs.parameters.provided-regions-file}}" ]; then
             SOURCE_FILE="{{inputs.parameters.provided-regions-file}}"
             SANITIZED_FILENAME=$(sanitize_filename "$(basename "$SOURCE_FILE")")
 
@@ -389,7 +393,7 @@ spec:
             cp "/mnt/input/$SOURCE_FILE" "/mnt/scratch/$SANITIZED_FILENAME"
             echo "{{inputs.parameters.scratch-rel-dir}}/$SANITIZED_FILENAME" > /tmp/regions-file-output.txt
 
-          elif [ -n "{{inputs.parameters.enrichment-kit-regions-file}}" ] && [ "{{inputs.parameters.enrichment-kit-regions-file}}" != "{{=jsonpath(inputs.parameters['run-data'], '$.enrichmentKit.filename')}}" ]; then
+          elif [ "{{inputs.parameters.enrichment-kit-regions-file}}" != "." ] && [ -f "/mnt/ref/regions/{{inputs.parameters.enrichment-kit-regions-file}}" ]; then
             SOURCE_FILE="{{inputs.parameters.enrichment-kit-regions-file}}"
             SANITIZED_FILENAME=$(sanitize_filename "$(basename "$SOURCE_FILE")")
 
@@ -417,6 +421,7 @@ spec:
         - name: input-rel-dir
           hostPath:
             path: "{{inputs.parameters.input-rel-dir}}"
+            type: Directory
         - name: scratch-rel-dir
           hostPath:
             path: "{{inputs.parameters.scratch-rel-dir}}"
@@ -481,6 +486,7 @@ spec:
         - name: input-rel-dir
           hostPath:
             path: "{{inputs.parameters.input-rel-dir}}"
+            type: Directory
         - name: scratch-rel-dir
           hostPath:
             path: "{{inputs.parameters.scratch-rel-dir}}"

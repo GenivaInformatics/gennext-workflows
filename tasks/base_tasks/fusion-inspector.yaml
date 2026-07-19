@@ -1,0 +1,606 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: fusion-inspector-template
+spec:
+  templates:
+    # Builds fusion contigs (gene A + gene B joined at the breakpoint),
+    # realigns reads to those contigs, and produces an IGV-ready BAM +
+    # session file. Fed by the consolidated, artifact-filtered gene-pair
+    # list from extract-reads-for-fusion-inspector (which also emits the
+    # filtered FASTQ pair). FusionInspector is CPU-only and ships in the
+    # trinityctat/starfusion image (samtools is bundled, used here for the
+    # post-FI dup-marking pass).
+    #
+    # Speed flags applied (see comment near the FusionInspector call for
+    # rationale): --no_remove_dups --fusion_contigs_only --skip_EM.
+    # STAR fusion-tuning flags injected via --STAR_xtra_params so FI's
+    # per-contig STAR uses the same Arriba-recommended values as the
+    # upstream alignment step.
+    #
+    # Dup flags on the consolidated BAM are NOT set here. A separate
+    # downstream task (propagate-fi-dup-flags) transfers the genome-coord
+    # MarkDuplicates verdict onto this BAM by QNAME — which is the dedup
+    # view arriba and star-fusion actually consumed. Running coordinate-
+    # based markdup directly on FI's BAM over-flags fusion-supporting
+    # reads (every supporter aligns at the breakpoint position by
+    # construction; observed 88% spurious dup rate on AGI-S5).
+    - name: fusion-inspector
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: fq-r1
+          - name: fq-r2
+            value: ""
+          - name: fusion-list-tsv
+          - name: ctat-genome-lib-build-dir
+          - name: output-dir
+          - name: metrics-dir
+          - name: scratch-dir
+          - name: thread-count
+      outputs:
+        parameters:
+          - name: output-dir
+            value: "{{inputs.parameters.output-dir}}"
+          - name: output-igv-bam
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_finspector.consolidated.bam"
+          - name: output-igv-html
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_finspector.fusion_inspector_web.html"
+          - name: mqc-tsv
+            value: "{{inputs.parameters.metrics-dir}}{{inputs.parameters.sample-id}}_fusion-inspector_mqc.tsv"
+      volumes:
+        - name: fq-r1
+          hostPath:
+            path: "{{inputs.parameters.fq-r1}}"
+            type: File
+        - name: fq-r2
+          hostPath:
+            path: "{{inputs.parameters.fq-r2}}"
+            type: File
+        - name: fusion-list-tsv
+          hostPath:
+            path: "{{inputs.parameters.fusion-list-tsv}}"
+            type: File
+        - name: ctat-genome-lib-build-dir
+          hostPath:
+            path: "{{inputs.parameters.ctat-genome-lib-build-dir}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+        - name: metrics-dir
+          hostPath:
+            path: "{{inputs.parameters.metrics-dir}}"
+            type: DirectoryOrCreate
+        - name: scratch-dir
+          hostPath:
+            path: "{{inputs.parameters.scratch-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: fusion-inspector
+        image: trinityctat/starfusion:latest
+        command: [bash]
+        source: |
+          set -euo pipefail
+
+          fqR1="{{=sprig.osBase(inputs.parameters['fq-r1'])}}"
+          fqR2="{{=sprig.osBase(inputs.parameters['fq-r2'])}}"
+          FUSION_LIST="/mnt/input/fusion-list/{{=sprig.osBase(inputs.parameters['fusion-list-tsv'])}}"
+          SAMPLE_ID="{{inputs.parameters.sample-id}}"
+          OUT_PREFIX="${SAMPLE_ID}_finspector"
+          MQC_OUT="/mnt/metrics/${SAMPLE_ID}_fusion-inspector_mqc.tsv"
+          THREADS="{{inputs.parameters.thread-count}}"
+
+          # Wipe any prior FusionInspector state aggressively. Stale
+          # chckpts_dir/ from a terminated previous attempt makes the
+          # pipeliner skip steps whose actual outputs no longer exist.
+          rm -rf /mnt/scratch/chckpts_dir /mnt/scratch/fi_workdir /mnt/scratch/IGV_inputs
+          rm -rf /mnt/scratch/* /mnt/scratch/.[!.]* 2>/dev/null || true
+          echo "Scratch contents after wipe:"
+          ls -la /mnt/scratch/ || true
+
+          # Skip cleanly when the upstream consolidated fusion list is empty.
+          # FusionInspector errors out on an empty input rather than producing
+          # an empty session, which would break the prototype on negative
+          # samples.
+          if [ ! -s "${FUSION_LIST}" ]; then
+            echo "Fusion list ${FUSION_LIST} is empty; nothing to inspect."
+            python3 - "${SAMPLE_ID}" "" "${MQC_OUT}" <<'PY'
+          import sys, os
+          sample, tsv_in, out_tsv = sys.argv[1], sys.argv[2], sys.argv[3]
+          os.makedirs(os.path.dirname(out_tsv), exist_ok=True)
+          with open(out_tsv, "w") as fh:
+              fh.write("# id: fusion-inspector\n")
+              fh.write("# section_name: 'FusionInspector (realigned)'\n")
+              fh.write("# description: 'FusionInspector realignment summary; sample had no upstream fusion candidates.'\n")
+              fh.write("# format: 'tsv'\n")
+              fh.write("# plot_type: 'table'\n")
+              fh.write("Sample\tRealigned_fusions\tMedian_junction_reads\tMax_junction_reads\tMedian_FFPM\tMax_FFPM\n")
+              fh.write(f"{sample}\t0\t0\t0\t0.0\t0.0\n")
+          PY
+            exit 0
+          fi
+
+          RIGHT_FQ_ARG=""
+          if [ -n "$fqR2" ]; then
+            RIGHT_FQ_ARG="--right_fq /mnt/input/r2/$fqR2"
+          fi
+
+          # Override FI's auto-computed --limitGenomeGenerateRAM for the
+          # fusion-contig index build (run_FI_STAR.pl:210). FI's
+          # $estimated_ram formula is tight enough that samples with a
+          # large fusion-list candidate count (e.g. 2000+ contigs on
+          # FFPE) trip STAR's "limitGenomeGenerateRAM too small" fatal
+          # error at index build before any alignment happens. STAR's
+          # --STAR_xtra_params channel only flows to alignReads, not to
+          # genomeGenerate, so we patch the Perl source in-place. 24 GB
+          # fits comfortably within the 54Gi pod request.
+          PERL_FI_STAR="/usr/local/src/STAR-Fusion/FusionInspector/util/run_FI_STAR.pl"
+          if [ -f "${PERL_FI_STAR}" ]; then
+            sed -i 's|--limitGenomeGenerateRAM $estimated_ram|--limitGenomeGenerateRAM 24000000000|' "${PERL_FI_STAR}"
+          fi
+
+          echo "Running FusionInspector"
+          echo "  Sample:       ${SAMPLE_ID}"
+          echo "  Fusion list:  ${FUSION_LIST}"
+          echo "  CTAT lib:     /mnt/ref/ctat-lib/"
+          echo "  Out prefix:   ${OUT_PREFIX}"
+
+          # Speed flags (each saves a chunk of the prior 30-40 min runtime):
+          # --no_remove_dups: skip bam_mark_duplicates.py (~17 min). For our
+          #   visualization-only role, dup status is restored downstream by
+          #   the propagate-fi-dup-flags task (QNAME-based, not coordinate-
+          #   based — the latter over-flags fusion-supporting reads).
+          # --fusion_contigs_only: STAR aligns only to fusion contigs, not
+          #   the full CTAT genome. Auto-disables FFPM, which we already
+          #   have from STAR-Fusion + Arriba via fusion-report's fusions.json.
+          # --skip_EM: drop fractional spanning-read assignment EM.
+          #
+          # STAR fusion-tuning flags via --STAR_xtra_params (kept in lockstep
+          # with the FFPE-tuned upstream STAR passes in star-align.yaml and
+          # the STAR-Fusion-bundled STAR, so a read accepted as a fusion
+          # supporter upstream isn't silently dropped when FI realigns to
+          # the fusion contig). Chimeric-specific flags are intentionally
+          # omitted — FI aligns to small per-pair contigs, not the whole
+          # genome, so there are no chimerics to call. Flags that
+          # FI/run_FI_STAR.pl already hardcodes into the alignReads call
+          # (alignSJstitchMismatchNmax 5 -1 5 5, alignSJDBoverhangMin 10,
+          # alignMatesGapMax 25000, alignIntronMax 25000) are also omitted —
+          # STAR errors with "duplicate parameter" if any of these are
+          # passed twice. FI's per-contig defaults for the *Max values are
+          # by design (max_mate_dist = contig length), so we don't fight
+          # them; alignSJstitchMismatchNmax already matches our FFPE value.
+          # --peOverlapNbasesMin 10 / --peOverlapMMp 0.1: enable PE-overlap
+          #   merging. 150 bp PE FFPE inserts overlap heavily.
+          # --alignSplicedMateMapLminOverLmate 0.5: relax mate-map ratio for
+          #   spliced alignments (default 0.66) so partial-mate junction
+          #   reads aren't dropped. Matches Arriba's recommended value.
+          # --alignSJoverhangMin 10: lower splice-junction overhang minimum
+          #   so short anchors over de novo junctions survive.
+          # --alignIntronMin 20: lower bound on intron size (FI does not
+          #   set this; STAR default is 21).
+          # --outFilterMultimapNmax 50: paralog-heavy fusion loci (kinase
+          #   families, IG/TR, NTRK/ROS1/ALK with pseudogenes) keep their
+          #   evidence; STAR default of 10 silently drops these.
+          # --outFilterMismatchNmax 999 / --outFilterMismatchNoverLmax 0.1:
+          #   explicit mismatch ceiling consistent with FFPE-friendly upstream.
+          # --outFilterMatchNminOverLread 0.3 /
+          # --outFilterScoreMinOverLread 0.3 (defaults 0.66): the single
+          #   biggest recovery lever for FFPE — short, partially-damaged
+          #   reads with partial alignments now survive FI's STAR pass.
+          # --outSAMmultNmax 1: mirror upstream Arriba pass; cap BAM size.
+          #
+          # --min_per_id 92 (default 96): FFPE deamination drops borderline
+          # supporters from FI's post-alignment identity check at 96%; 92%
+          # recovers them without admitting noise (chosen to match Arriba's
+          # implicit identity tolerance after its own filters).
+          FusionInspector \
+            --fusions "${FUSION_LIST}" \
+            --genome_lib_dir /mnt/ref/ctat-lib/ \
+            --left_fq "/mnt/input/r1/$fqR1" \
+            $RIGHT_FQ_ARG \
+            -O /mnt/scratch/ \
+            --out_prefix "${OUT_PREFIX}" \
+            --vis \
+            --examine_coding_effect \
+            --min_junction_reads 1 \
+            --min_per_id 92 \
+            --no_remove_dups \
+            --fusion_contigs_only \
+            --skip_EM \
+            --STAR_xtra_params "--peOverlapNbasesMin 10 --peOverlapMMp 0.1 --alignSplicedMateMapLminOverLmate 0.5 --alignSJoverhangMin 10 --alignIntronMin 20 --outFilterMultimapNmax 50 --outFilterMismatchNmax 999 --outFilterMismatchNoverLmax 0.1 --outFilterMatchNminOverLread 0.3 --outFilterScoreMinOverLread 0.3 --outSAMmultNmax 1" \
+            --max_mate_dist 25000 \
+            --CPU "${THREADS}"
+
+          echo "FusionInspector completed; publishing raw consolidated BAM"
+          # Dup flags are intentionally NOT set here. Coordinate-based
+          # markdup on small fusion contigs over-flags fusion-supporting
+          # reads (every supporter sits at the breakpoint position by
+          # construction). The propagate-fi-dup-flags task downstream
+          # transfers the genome-coord MarkDup verdict onto this BAM by
+          # QNAME, which is the dedup view arriba and star-fusion actually
+          # consumed.
+          IGV_DIR="/mnt/scratch/IGV_inputs"
+
+          echo "Publishing outputs"
+          # FusionInspector 1.15.x writes IGV files under <out>/IGV_inputs/
+          # (BAMs, fasta, gtf, bed, cytoBand) and the web report at the top
+          # of <out>. Index extension is *.bam.bai (not .bai).
+          for f in "${OUT_PREFIX}.consolidated.bam" \
+                   "${OUT_PREFIX}.consolidated.bam.bai" \
+                   "${OUT_PREFIX}.junction_reads.bam" \
+                   "${OUT_PREFIX}.junction_reads.bam.bai" \
+                   "${OUT_PREFIX}.spanning_reads.bam" \
+                   "${OUT_PREFIX}.spanning_reads.bam.bai" \
+                   "${OUT_PREFIX}.fa" \
+                   "${OUT_PREFIX}.fa.fai" \
+                   "${OUT_PREFIX}.bed" \
+                   "${OUT_PREFIX}.gtf" \
+                   cytoBand.txt; do
+            if [ -f "${IGV_DIR}/$f" ]; then
+              cp "${IGV_DIR}/$f" "/mnt/output/$f"
+            elif [ -f "/mnt/scratch/$f" ]; then
+              cp "/mnt/scratch/$f" "/mnt/output/$f"
+            fi
+          done
+          # Top-level artefacts: web report + fusion calls TSVs.
+          for f in "${OUT_PREFIX}.fusion_inspector_web.html" \
+                   "${OUT_PREFIX}.FusionInspector.fusions.tsv" \
+                   "${OUT_PREFIX}.FusionInspector.fusions.abridged.tsv"; do
+            if [ -f "/mnt/scratch/$f" ]; then
+              cp "/mnt/scratch/$f" "/mnt/output/$f"
+            fi
+          done
+
+          # Sort + bgzip + tabix the GTF and BED tracks for IGV.js
+          # random-access loading. trinityctat/starfusion bundles htslib 1.9
+          # so bgzip/tabix are already on PATH; no extra pod needed.
+          GTF_OUT="/mnt/output/${OUT_PREFIX}.gtf"
+          BED_OUT="/mnt/output/${OUT_PREFIX}.bed"
+          if [ -f "${GTF_OUT}" ]; then
+            echo "Indexing ${GTF_OUT}"
+            (grep '^#' "${GTF_OUT}" || true; grep -v '^#' "${GTF_OUT}" | LC_ALL=C sort -k1,1 -k4,4n) \
+              | bgzip -c > "${GTF_OUT}.gz"
+            tabix -f -p gff "${GTF_OUT}.gz"
+          fi
+          if [ -f "${BED_OUT}" ]; then
+            echo "Indexing ${BED_OUT}"
+            (grep -E '^(#|track|browser)' "${BED_OUT}" || true; grep -vE '^(#|track|browser)' "${BED_OUT}" | LC_ALL=C sort -k1,1 -k2,2n) \
+              | bgzip -c > "${BED_OUT}.gz"
+            tabix -f -p bed "${BED_OUT}.gz"
+          fi
+          ls -la /mnt/output/
+
+          # Emit MultiQC custom-content TSV: realigned-fusion count plus
+          # junction-read and FFPM distribution summary. Tolerant of header
+          # variants (older FusionInspector emits 'NumCounterFusionLeft'
+          # vs newer 'JunctionReadCount').
+          FI_TSV="/mnt/output/${OUT_PREFIX}.FusionInspector.fusions.tsv"
+          python3 - "${SAMPLE_ID}" "${FI_TSV}" "${MQC_OUT}" <<'PY'
+          import csv, os, statistics, sys
+          # FI's fusions.tsv concatenates read-name lists per fusion; some
+          # rows blow past Python's default 128 KB field limit.
+          csv.field_size_limit(sys.maxsize)
+          sample, tsv_in, out_tsv = sys.argv[1], sys.argv[2], sys.argv[3]
+
+          j_cols = ("JunctionReadCount", "num_J", "Junction_reads")
+          ffpm_cols = ("FFPM", "ffpm")
+
+          j_vals, ffpm_vals = [], []
+          if os.path.exists(tsv_in) and os.path.getsize(tsv_in) > 0:
+              with open(tsv_in) as fh:
+                  reader = csv.DictReader((line.lstrip("#") for line in fh), delimiter="\t")
+                  for row in reader:
+                      for c in j_cols:
+                          if c in row and row[c] not in (None, "", "NA"):
+                              try:
+                                  j_vals.append(int(float(row[c])))
+                                  break
+                              except ValueError:
+                                  pass
+                      for c in ffpm_cols:
+                          if c in row and row[c] not in (None, "", "NA"):
+                              try:
+                                  ffpm_vals.append(float(row[c]))
+                                  break
+                              except ValueError:
+                                  pass
+
+          n = len(j_vals) if j_vals else 0
+          j_med = statistics.median(j_vals) if j_vals else 0
+          j_max = max(j_vals) if j_vals else 0
+          ffpm_med = round(statistics.median(ffpm_vals), 4) if ffpm_vals else 0.0
+          ffpm_max = round(max(ffpm_vals), 4) if ffpm_vals else 0.0
+
+          os.makedirs(os.path.dirname(out_tsv), exist_ok=True)
+          with open(out_tsv, "w") as fh:
+              fh.write("# id: fusion-inspector\n")
+              fh.write("# section_name: 'FusionInspector (realigned)'\n")
+              fh.write("# description: 'Realignment-based confirmation of fusion candidates from fusion-report.'\n")
+              fh.write("# format: 'tsv'\n")
+              fh.write("# plot_type: 'table'\n")
+              fh.write("Sample\tRealigned_fusions\tMedian_junction_reads\tMax_junction_reads\tMedian_FFPM\tMax_FFPM\n")
+              fh.write(f"{sample}\t{n}\t{j_med}\t{j_max}\t{ffpm_med}\t{ffpm_max}\n")
+          PY
+          echo "Wrote MultiQC custom-content TSV to ${MQC_OUT}"
+        volumeMounts:
+          - name: fq-r1
+            mountPath: "/mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}"
+          - name: fq-r2
+            mountPath: "/mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}"
+          - name: fusion-list-tsv
+            mountPath: "/mnt/input/fusion-list/{{=sprig.osBase(inputs.parameters['fusion-list-tsv'])}}"
+          - name: ctat-genome-lib-build-dir
+            mountPath: "/mnt/ref/ctat-lib/"
+          - name: output-dir
+            mountPath: "/mnt/output/"
+          - name: metrics-dir
+            mountPath: "/mnt/metrics/"
+          - name: scratch-dir
+            mountPath: "/mnt/scratch/"
+        resources:
+          requests:
+            memory: 54Gi
+            cpu: "8"
+
+    # Node-pinned variant. Same body as fusion-inspector but adds a
+    # node-name input + nodeSelector so the pod lands on a specific host.
+    # Used by the v2 fusion DAG and the prototype workflow alike.
+    - name: fusion-inspector-on-node
+      nodeSelector:
+        kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: fq-r1
+          - name: fq-r2
+            value: ""
+          - name: fusion-list-tsv
+          - name: ctat-genome-lib-build-dir
+          - name: output-dir
+          - name: metrics-dir
+          - name: scratch-dir
+          - name: thread-count
+          - name: node-name
+      outputs:
+        parameters:
+          - name: output-dir
+            value: "{{inputs.parameters.output-dir}}"
+          - name: output-igv-bam
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_finspector.consolidated.bam"
+          - name: output-igv-html
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_finspector.fusion_inspector_web.html"
+          - name: mqc-tsv
+            value: "{{inputs.parameters.metrics-dir}}{{inputs.parameters.sample-id}}_fusion-inspector_mqc.tsv"
+      volumes:
+        - name: fq-r1
+          hostPath:
+            path: "{{inputs.parameters.fq-r1}}"
+            type: File
+        - name: fq-r2
+          hostPath:
+            path: "{{inputs.parameters.fq-r2}}"
+            type: File
+        - name: fusion-list-tsv
+          hostPath:
+            path: "{{inputs.parameters.fusion-list-tsv}}"
+            type: File
+        - name: ctat-genome-lib-build-dir
+          hostPath:
+            path: "{{inputs.parameters.ctat-genome-lib-build-dir}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+        - name: metrics-dir
+          hostPath:
+            path: "{{inputs.parameters.metrics-dir}}"
+            type: DirectoryOrCreate
+        - name: scratch-dir
+          hostPath:
+            path: "{{inputs.parameters.scratch-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: fusion-inspector
+        image: trinityctat/starfusion:latest
+        command: [bash]
+        source: |
+          set -euo pipefail
+
+          fqR1="{{=sprig.osBase(inputs.parameters['fq-r1'])}}"
+          fqR2="{{=sprig.osBase(inputs.parameters['fq-r2'])}}"
+          FUSION_LIST="/mnt/input/fusion-list/{{=sprig.osBase(inputs.parameters['fusion-list-tsv'])}}"
+          SAMPLE_ID="{{inputs.parameters.sample-id}}"
+          OUT_PREFIX="${SAMPLE_ID}_finspector"
+          MQC_OUT="/mnt/metrics/${SAMPLE_ID}_fusion-inspector_mqc.tsv"
+          THREADS="{{inputs.parameters.thread-count}}"
+
+          rm -rf /mnt/scratch/chckpts_dir /mnt/scratch/fi_workdir /mnt/scratch/IGV_inputs
+          rm -rf /mnt/scratch/* /mnt/scratch/.[!.]* 2>/dev/null || true
+          echo "Scratch contents after wipe:"
+          ls -la /mnt/scratch/ || true
+
+          if [ ! -s "${FUSION_LIST}" ]; then
+            echo "Fusion list ${FUSION_LIST} is empty; nothing to inspect."
+            python3 - "${SAMPLE_ID}" "" "${MQC_OUT}" <<'PY'
+          import sys, os
+          sample, tsv_in, out_tsv = sys.argv[1], sys.argv[2], sys.argv[3]
+          os.makedirs(os.path.dirname(out_tsv), exist_ok=True)
+          with open(out_tsv, "w") as fh:
+              fh.write("# id: fusion-inspector\n")
+              fh.write("# section_name: 'FusionInspector (realigned)'\n")
+              fh.write("# description: 'FusionInspector realignment summary; sample had no upstream fusion candidates.'\n")
+              fh.write("# format: 'tsv'\n")
+              fh.write("# plot_type: 'table'\n")
+              fh.write("Sample\tRealigned_fusions\tMedian_junction_reads\tMax_junction_reads\tMedian_FFPM\tMax_FFPM\n")
+              fh.write(f"{sample}\t0\t0\t0\t0.0\t0.0\n")
+          PY
+            exit 0
+          fi
+
+          # The fusion list passed in is already artifact-filtered upstream
+          # by extract-reads-for-fusion-inspector (which applies the same
+          # regex set so that the BED, the read set, and the FI candidate
+          # count all shrink in lockstep).
+          KEPT=$(wc -l < "${FUSION_LIST}" || echo 0)
+          echo "Candidate count (already filtered upstream): ${KEPT}"
+
+          RIGHT_FQ_ARG=""
+          if [ -n "$fqR2" ]; then
+            RIGHT_FQ_ARG="--right_fq /mnt/input/r2/$fqR2"
+          fi
+
+          # Override FI's auto-computed --limitGenomeGenerateRAM for the
+          # fusion-contig index build (run_FI_STAR.pl:210). FI's
+          # $estimated_ram formula is tight enough that samples with a
+          # large fusion-list candidate count (e.g. 2000+ contigs on
+          # FFPE) trip STAR's "limitGenomeGenerateRAM too small" fatal
+          # error at index build before any alignment happens. STAR's
+          # --STAR_xtra_params channel only flows to alignReads, not to
+          # genomeGenerate, so we patch the Perl source in-place. 24 GB
+          # fits comfortably within the 54Gi pod request.
+          PERL_FI_STAR="/usr/local/src/STAR-Fusion/FusionInspector/util/run_FI_STAR.pl"
+          if [ -f "${PERL_FI_STAR}" ]; then
+            sed -i 's|--limitGenomeGenerateRAM $estimated_ram|--limitGenomeGenerateRAM 24000000000|' "${PERL_FI_STAR}"
+          fi
+
+          echo "Running FusionInspector"
+          echo "  Sample:       ${SAMPLE_ID}"
+          echo "  Fusion list:  ${FUSION_LIST} (${KEPT} candidates)"
+          echo "  CTAT lib:     /mnt/ref/ctat-lib/"
+          echo "  Out prefix:   ${OUT_PREFIX}"
+
+          # See the fusion-inspector body above for the rationale on each
+          # of these --STAR_xtra_params and --min_per_id 92. Keep the two
+          # bodies in lockstep.
+          FusionInspector \
+            --fusions "${FUSION_LIST}" \
+            --genome_lib_dir /mnt/ref/ctat-lib/ \
+            --left_fq "/mnt/input/r1/$fqR1" \
+            $RIGHT_FQ_ARG \
+            -O /mnt/scratch/ \
+            --out_prefix "${OUT_PREFIX}" \
+            --vis \
+            --examine_coding_effect \
+            --min_junction_reads 1 \
+            --min_per_id 92 \
+            --no_remove_dups \
+            --fusion_contigs_only \
+            --skip_EM \
+            --STAR_xtra_params "--peOverlapNbasesMin 10 --peOverlapMMp 0.1 --alignSplicedMateMapLminOverLmate 0.5 --alignSJoverhangMin 10 --alignIntronMin 20 --outFilterMultimapNmax 50 --outFilterMismatchNmax 999 --outFilterMismatchNoverLmax 0.1 --outFilterMatchNminOverLread 0.3 --outFilterScoreMinOverLread 0.3 --outSAMmultNmax 1" \
+            --max_mate_dist 25000 \
+            --CPU "${THREADS}"
+
+          echo "FusionInspector completed; publishing raw consolidated BAM"
+          # Dup flags are intentionally NOT set here. The propagate-fi-dup-flags
+          # task downstream transfers the genome-coord MarkDup verdict by QNAME.
+          IGV_DIR="/mnt/scratch/IGV_inputs"
+
+          echo "Publishing outputs"
+          for f in "${OUT_PREFIX}.consolidated.bam" \
+                   "${OUT_PREFIX}.consolidated.bam.bai" \
+                   "${OUT_PREFIX}.junction_reads.bam" \
+                   "${OUT_PREFIX}.junction_reads.bam.bai" \
+                   "${OUT_PREFIX}.spanning_reads.bam" \
+                   "${OUT_PREFIX}.spanning_reads.bam.bai" \
+                   "${OUT_PREFIX}.fa" \
+                   "${OUT_PREFIX}.fa.fai" \
+                   "${OUT_PREFIX}.bed" \
+                   "${OUT_PREFIX}.gtf" \
+                   cytoBand.txt; do
+            if [ -f "${IGV_DIR}/$f" ]; then
+              cp "${IGV_DIR}/$f" "/mnt/output/$f"
+            elif [ -f "/mnt/scratch/$f" ]; then
+              cp "/mnt/scratch/$f" "/mnt/output/$f"
+            fi
+          done
+          for f in "${OUT_PREFIX}.fusion_inspector_web.html" \
+                   "${OUT_PREFIX}.FusionInspector.fusions.tsv" \
+                   "${OUT_PREFIX}.FusionInspector.fusions.abridged.tsv"; do
+            if [ -f "/mnt/scratch/$f" ]; then
+              cp "/mnt/scratch/$f" "/mnt/output/$f"
+            fi
+          done
+
+          # Sort + bgzip + tabix the GTF and BED tracks for IGV.js loading.
+          GTF_OUT="/mnt/output/${OUT_PREFIX}.gtf"
+          BED_OUT="/mnt/output/${OUT_PREFIX}.bed"
+          if [ -f "${GTF_OUT}" ]; then
+            (grep '^#' "${GTF_OUT}" || true; grep -v '^#' "${GTF_OUT}" | LC_ALL=C sort -k1,1 -k4,4n) \
+              | bgzip -c > "${GTF_OUT}.gz"
+            tabix -f -p gff "${GTF_OUT}.gz"
+          fi
+          if [ -f "${BED_OUT}" ]; then
+            (grep -E '^(#|track|browser)' "${BED_OUT}" || true; grep -vE '^(#|track|browser)' "${BED_OUT}" | LC_ALL=C sort -k1,1 -k2,2n) \
+              | bgzip -c > "${BED_OUT}.gz"
+            tabix -f -p bed "${BED_OUT}.gz"
+          fi
+          ls -la /mnt/output/
+
+          FI_TSV="/mnt/output/${OUT_PREFIX}.FusionInspector.fusions.tsv"
+          python3 - "${SAMPLE_ID}" "${FI_TSV}" "${MQC_OUT}" <<'PY'
+          import csv, os, statistics, sys
+          csv.field_size_limit(sys.maxsize)
+          sample, tsv_in, out_tsv = sys.argv[1], sys.argv[2], sys.argv[3]
+
+          j_cols = ("JunctionReadCount", "num_J", "Junction_reads")
+          ffpm_cols = ("FFPM", "ffpm")
+
+          j_vals, ffpm_vals = [], []
+          if os.path.exists(tsv_in) and os.path.getsize(tsv_in) > 0:
+              with open(tsv_in) as fh:
+                  reader = csv.DictReader((line.lstrip("#") for line in fh), delimiter="\t")
+                  for row in reader:
+                      for c in j_cols:
+                          if c in row and row[c] not in (None, "", "NA"):
+                              try:
+                                  j_vals.append(int(float(row[c])))
+                                  break
+                              except ValueError:
+                                  pass
+                      for c in ffpm_cols:
+                          if c in row and row[c] not in (None, "", "NA"):
+                              try:
+                                  ffpm_vals.append(float(row[c]))
+                                  break
+                              except ValueError:
+                                  pass
+
+          n = len(j_vals) if j_vals else 0
+          j_med = statistics.median(j_vals) if j_vals else 0
+          j_max = max(j_vals) if j_vals else 0
+          ffpm_med = round(statistics.median(ffpm_vals), 4) if ffpm_vals else 0.0
+          ffpm_max = round(max(ffpm_vals), 4) if ffpm_vals else 0.0
+
+          os.makedirs(os.path.dirname(out_tsv), exist_ok=True)
+          with open(out_tsv, "w") as fh:
+              fh.write("# id: fusion-inspector\n")
+              fh.write("# section_name: 'FusionInspector (realigned)'\n")
+              fh.write("# description: 'Realignment-based confirmation of fusion candidates from fusion-report.'\n")
+              fh.write("# format: 'tsv'\n")
+              fh.write("# plot_type: 'table'\n")
+              fh.write("Sample\tRealigned_fusions\tMedian_junction_reads\tMax_junction_reads\tMedian_FFPM\tMax_FFPM\n")
+              fh.write(f"{sample}\t{n}\t{j_med}\t{j_max}\t{ffpm_med}\t{ffpm_max}\n")
+          PY
+          echo "Wrote MultiQC custom-content TSV to ${MQC_OUT}"
+        volumeMounts:
+          - name: fq-r1
+            mountPath: "/mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}"
+          - name: fq-r2
+            mountPath: "/mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}"
+          - name: fusion-list-tsv
+            mountPath: "/mnt/input/fusion-list/{{=sprig.osBase(inputs.parameters['fusion-list-tsv'])}}"
+          - name: ctat-genome-lib-build-dir
+            mountPath: "/mnt/ref/ctat-lib/"
+          - name: output-dir
+            mountPath: "/mnt/output/"
+          - name: metrics-dir
+            mountPath: "/mnt/metrics/"
+          - name: scratch-dir
+            mountPath: "/mnt/scratch/"
+        resources:
+          requests:
+            memory: 54Gi
+            cpu: "8"

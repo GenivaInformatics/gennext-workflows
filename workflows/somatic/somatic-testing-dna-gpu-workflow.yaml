@@ -84,7 +84,7 @@ spec:
             arguments:
               parameters:
                 - name: provided-regions-file
-                  value: "validated.bed"
+                  value: "{{=sprig.osBase(tasks['validate-bed-file'].outputs.parameters['validated-bed-file'])}}"
                 - name: enrichment-kit-regions-file
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.enrichmentKit.filename')}}"
                 - name: default-regions-file
@@ -296,24 +296,11 @@ spec:
                   value: "{{tasks.pb-applybqsr.outputs.parameters.output-bam}}"
                 - name: input-vcf
                   value: "{{tasks.bcftools-filter.outputs.parameters.output-vcf-f}}"
-                - name: vlod-out-tsv
-                  value: "{{inputs.parameters.scratch-rel-dir}}results/snv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_vlod.tsv.gz"
+                - name: vlod-output-vcf
+                  value: "{{inputs.parameters.temp-rel-dir}}results/snv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_mutect2_vlod.vcf" # output returns .gz
                 - name: thread-count
                   value: "{{inputs.parameters.thread-count}}"
             depends: "bcftools-filter && pb-applybqsr"
-          - name: vlod-merge-with-vcf
-            templateRef:
-              name: vlod-template
-              template: vlod-merge-with-vcf
-            arguments:
-              parameters:
-                - name: input-vcf
-                  value: "{{tasks.bcftools-filter.outputs.parameters.output-vcf-f}}"
-                - name: input-vlod-tsv
-                  value: "{{tasks.vlod.outputs.parameters.vlod-out-tsv}}"
-                - name: vlod-merged-output-vcf
-                  value: "{{inputs.parameters.temp-rel-dir}}results/snv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_mutect2_vlod.vcf" # output returns .gz
-            depends: "bcftools-filter && vlod"
           - name: annovar
             templateRef:
               name: annovar-template
@@ -323,14 +310,14 @@ spec:
                 - name: sample-id
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
                 - name: input-vcf-f
-                  value: "{{tasks.vlod-merge-with-vcf.outputs.parameters.vlod-merged-output-vcf}}"
+                  value: "{{tasks.vlod.outputs.parameters.vlod-output-vcf}}"
                 - name: ref-version
                   value: "hg38"
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}results/snv/"
                 - name: annovardb-dir
                   value: "{{tasks.get-abs-ref-dirs.outputs.parameters.annovar-dir}}"
-            depends: "vlod-merge-with-vcf && get-abs-ref-dirs"
+            depends: "vlod && get-abs-ref-dirs"
           - name: cancervar
             templateRef:
               name: cancervar-template
@@ -340,7 +327,7 @@ spec:
                 - name: sample-id
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
                 - name: input-vcf-f
-                  value: "{{tasks.vlod-merge-with-vcf.outputs.parameters.vlod-merged-output-vcf}}"
+                  value: "{{tasks.vlod.outputs.parameters.vlod-output-vcf}}"
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}results/snv/"
                 - name: annovardb-dir
@@ -533,14 +520,14 @@ spec:
                 - name: input-bam
                   value: "{{tasks.pb-applybqsr.outputs.parameters.output-bam}}"
                 - name: input-vcf
-                  value: "{{tasks.vlod-merge-with-vcf.outputs.parameters.vlod-merged-output-vcf}}"
+                  value: "{{tasks.vlod.outputs.parameters.vlod-output-vcf}}"
                 - name: ref-genome-f
                   value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
                 - name: output-f
                   value: "{{inputs.parameters.temp-rel-dir}}results/cnv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}.cnvpytor"
                 - name: thread-count
                   value: "{{inputs.parameters.thread-count}}"
-            depends: "pb-applybqsr && vlod-merge-with-vcf && get-abs-ref-dirs"
+            depends: "pb-applybqsr && vlod && get-abs-ref-dirs"
           - name: verifybamid
             templateRef:
               name: verifybamid-template
@@ -626,6 +613,8 @@ spec:
                   value: "0.95"
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}/metrics/tmb/"
+                - name: cosmic-vcf
+                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other/cosmic/Cosmic_CompleteTargetedScreensMutant_v103_GRCh38.vcf.gz"
                 - name: filter-common-variants
                   value: "true"
                 - name: gnomad-vcf
@@ -634,14 +623,6 @@ spec:
                   value: "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/turkish_variome/turkish_variome_1pct.vcf.gz"
                 - name: common-af-threshold
                   value: "0.01"
-                - name: filter-multihit
-                  value: "true"
-                - name: multihit-method
-                  value: "poisson"
-                - name: filter-oncogenic
-                  value: "false"
-                - name: filter-dets
-                  value: "false"
             depends: "duckdb-snv && copy-regions-file-to-scratch"
           - name: collect-msi-data
             templateRef:
@@ -791,7 +772,7 @@ spec:
             arguments:
               parameters:
                 - name: provided-regions-file
-                  value: "validated.bed"
+                  value: "{{=sprig.osBase(tasks['validate-bed-file'].outputs.parameters['validated-bed-file'])}}"
                 - name: enrichment-kit-regions-file
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.enrichmentKit.filename')}}"
                 - name: default-regions-file
@@ -1007,24 +988,11 @@ spec:
                   value: "{{tasks.pb-applybqsr.outputs.parameters.output-bam}}"
                 - name: input-vcf
                   value: "{{tasks.bcftools-filter.outputs.parameters.output-vcf-f}}"
-                - name: vlod-out-tsv
-                  value: "{{inputs.parameters.scratch-rel-dir}}results/snv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_vlod.tsv.gz"
+                - name: vlod-output-vcf
+                  value: "{{inputs.parameters.temp-rel-dir}}results/snv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_mutect2_vlod.vcf" # output returns .gz
                 - name: thread-count
                   value: "{{inputs.parameters.thread-count}}"
             depends: "bcftools-filter && pb-applybqsr"
-          - name: vlod-merge-with-vcf
-            templateRef:
-              name: vlod-template
-              template: vlod-merge-with-vcf
-            arguments:
-              parameters:
-                - name: input-vcf
-                  value: "{{tasks.bcftools-filter.outputs.parameters.output-vcf-f}}"
-                - name: input-vlod-tsv
-                  value: "{{tasks.vlod.outputs.parameters.vlod-out-tsv}}"
-                - name: vlod-merged-output-vcf
-                  value: "{{inputs.parameters.temp-rel-dir}}results/snv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_mutect2_vlod.vcf" # output returns .gz
-            depends: "bcftools-filter && vlod"
           - name: annovar
             templateRef:
               name: annovar-template
@@ -1034,14 +1002,14 @@ spec:
                 - name: sample-id
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
                 - name: input-vcf-f
-                  value: "{{tasks.vlod-merge-with-vcf.outputs.parameters.vlod-merged-output-vcf}}"
+                  value: "{{tasks.vlod.outputs.parameters.vlod-output-vcf}}"
                 - name: ref-version
                   value: "hg38"
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}results/snv/"
                 - name: annovardb-dir
                   value: "{{tasks.get-abs-ref-dirs.outputs.parameters.annovar-dir}}"
-            depends: "vlod-merge-with-vcf && get-abs-ref-dirs"
+            depends: "vlod && get-abs-ref-dirs"
           - name: cancervar
             templateRef:
               name: cancervar-template
@@ -1051,7 +1019,7 @@ spec:
                 - name: sample-id
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
                 - name: input-vcf-f
-                  value: "{{tasks.vlod-merge-with-vcf.outputs.parameters.vlod-merged-output-vcf}}"
+                  value: "{{tasks.vlod.outputs.parameters.vlod-output-vcf}}"
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}results/snv/"
                 - name: annovardb-dir
@@ -1244,14 +1212,14 @@ spec:
                 - name: input-bam
                   value: "{{tasks.pb-applybqsr.outputs.parameters.output-bam}}"
                 - name: input-vcf
-                  value: "{{tasks.vlod-merge-with-vcf.outputs.parameters.vlod-merged-output-vcf}}"
+                  value: "{{tasks.vlod.outputs.parameters.vlod-output-vcf}}"
                 - name: ref-genome-f
                   value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
                 - name: output-f
                   value: "{{inputs.parameters.temp-rel-dir}}results/cnv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}.cnvpytor"
                 - name: thread-count
                   value: "{{inputs.parameters.thread-count}}"
-            depends: "pb-applybqsr && vlod-merge-with-vcf && get-abs-ref-dirs"
+            depends: "pb-applybqsr && vlod && get-abs-ref-dirs"
           - name: verifybamid
             templateRef:
               name: verifybamid-template
@@ -1337,6 +1305,8 @@ spec:
                   value: "0.95"
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}/metrics/tmb/"
+                - name: cosmic-vcf
+                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other/cosmic/Cosmic_CompleteTargetedScreensMutant_v103_GRCh38.vcf.gz"
                 - name: filter-common-variants
                   value: "true"
                 - name: gnomad-vcf
@@ -1345,14 +1315,6 @@ spec:
                   value: "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/turkish_variome/turkish_variome_1pct.vcf.gz"
                 - name: common-af-threshold
                   value: "0.01"
-                - name: filter-multihit
-                  value: "true"
-                - name: multihit-method
-                  value: "poisson"
-                - name: filter-oncogenic
-                  value: "false"
-                - name: filter-dets
-                  value: "false"
             depends: "duckdb-snv && copy-regions-file-to-scratch"
           - name: collect-msi-data
             templateRef:
@@ -1491,7 +1453,7 @@ spec:
             arguments:
               parameters:
                 - name: provided-regions-file
-                  value: "validated.bed"
+                  value: "{{=sprig.osBase(tasks['validate-bed-file'].outputs.parameters['validated-bed-file'])}}"
                 - name: enrichment-kit-regions-file
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.enrichmentKit.filename')}}"
                 - name: default-regions-file
@@ -1663,6 +1625,8 @@ spec:
                   value: "0.95"
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}/metrics/tmb/"
+                - name: cosmic-vcf
+                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other/cosmic/Cosmic_CompleteTargetedScreensMutant_v103_GRCh38.vcf.gz"
                 - name: filter-common-variants
                   value: "true"
                 - name: gnomad-vcf
@@ -1671,14 +1635,6 @@ spec:
                   value: "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/turkish_variome/turkish_variome_1pct.vcf.gz"
                 - name: common-af-threshold
                   value: "0.01"
-                - name: filter-multihit
-                  value: "true"
-                - name: multihit-method
-                  value: "poisson"
-                - name: filter-oncogenic
-                  value: "false"
-                - name: filter-dets
-                  value: "false"
             depends: "duckdb-snv && copy-regions-file-to-scratch"
           - name: copy-temp-to-output
             templateRef:

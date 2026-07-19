@@ -1,0 +1,172 @@
+// per-sample-somatic-dna-rna — bioinformatics tool & data-flow diagram
+// Audience: research poster. Nodes are labelled "Role — Tool"; edges carry the
+// data artefact that flows between stages. Orchestration plumbing (Argo state
+// changes, scratch staging, BED validation, read-group composition, QC
+// collectors, copy/clean) is intentionally omitted to keep the focus on the
+// analytical pipeline.
+//
+// Node label convention: <B>function / role</B> (bold) · tool name (normal) ·
+// qualifiers / annotations (smaller).
+//
+// Render:  dot -Tsvg somatic-dna-rna-pipeline.dot -o pipeline.svg
+//          dot -Tpng -Gdpi=300 somatic-dna-rna-pipeline.dot -o pipeline.png
+
+digraph somatic_dna_rna {
+    rankdir = TB;
+    compound = true;
+    splines = ortho;
+    nodesep = 0.35;
+    ranksep = 0.5;
+    bgcolor = "white";
+
+    graph [fontname = "Helvetica", fontsize = 14, labelloc = "t"];
+    node  [fontname = "Helvetica", fontsize = 11, shape = box, style = "rounded,filled",
+           penwidth = 1.2, margin = "0.12,0.08"];
+    edge  [fontname = "Helvetica", fontsize = 9, color = "#555555", arrowsize = 0.8];
+
+    // ---- role colour key (by analytical category) ----------------------------
+    // align/preprocess  #DCE6F2   variant calling  #FCE4D6
+    // annotation        #E2EFDA   structural/CNV   #FFF2CC
+    // biomarkers        #F4DDEC   fusion           #DAEEF3   QC #EAEAEA
+
+    labelloc = "t";
+    label = "Gennext — Per-Sample Somatic DNA + RNA Pipeline\nTumour-only · tools by role, edges = data artefact";
+
+    // =========================================================================
+    //  SAMPLE INPUT
+    // =========================================================================
+    sample [label = <<B>Patient tumour sample</B><BR/><FONT POINT-SIZE="9">(FFPE / fresh)</FONT>>,
+            shape = folder, style = filled, fillcolor = "#FFFFFF", penwidth = 1.5];
+
+    // =========================================================================
+    //  DNA-SEQ  (SNV/indel + SV + CNV + MSI/TMB)
+    // =========================================================================
+    subgraph cluster_dna {
+        label = "DNA-seq  —  somatic SNV / indel · structural variants · CNV · MSI / TMB";
+        style = "rounded";
+        color = "#9DB7D6";
+        penwidth = 2;
+        fontsize = 13;
+        fontcolor = "#2F5496";
+
+        // --- preprocessing & alignment ---
+        d_fq    [label = <<B>Raw reads</B><BR/>Tumour FASTQ <FONT POINT-SIZE="9">(R1/R2)</FONT>>, shape = note, fillcolor = "#FFFFFF"];
+        d_trim  [label = <<B>Adapter trimming</B><BR/>Trim Galore>, fillcolor = "#DCE6F2"];
+        d_align [label = <<B>Alignment</B> <FONT POINT-SIZE="9">(GPU BWA-MEM)</FONT><BR/>Parabricks fq2bam>, fillcolor = "#DCE6F2"];
+        d_bqsr  [label = <<B>Base recalibration</B><BR/>Parabricks BQSR / ApplyBQSR>, fillcolor = "#DCE6F2"];
+
+        // --- SNV / indel ---
+        d_call  [label = <<B>Somatic SNV/indel calling</B><BR/>Mutect2 <FONT POINT-SIZE="9">(GPU, sharded)</FONT>>, fillcolor = "#FCE4D6"];
+        d_filt  [label = <<B>Variant filtering</B><BR/>bcftools + VLOD <FONT POINT-SIZE="9">(LOD)</FONT>>, fillcolor = "#FCE4D6"];
+        d_anno  [label = <<B>Functional annotation</B><BR/>ANNOVAR>, fillcolor = "#E2EFDA"];
+        d_cvar  [label = <<B>Clinical interpretation</B><BR/>CancerVar>, fillcolor = "#E2EFDA"];
+        d_okb   [label = <<B>Therapeutic annotation</B><BR/>OncoKB <FONT POINT-SIZE="9">(SNV)</FONT>>, fillcolor = "#E2EFDA"];
+
+        // --- structural variants ---
+        d_manta [label = <<B>SV calling</B><BR/>Manta>, fillcolor = "#FFF2CC"];
+        d_asv   [label = <<B>SV annotation</B><BR/>AnnotSV + OncoKB <FONT POINT-SIZE="9">(SV)</FONT>>, fillcolor = "#FFF2CC"];
+
+        // --- CNV ---
+        d_cnv   [label = <<B>CNV calling</B> <FONT POINT-SIZE="9">(cohort ref)</FONT><BR/>CNVkit<BR/><FONT POINT-SIZE="8"><I>also run as in-batch analysis</I></FONT>>, fillcolor = "#FFF2CC"];
+        d_hrd   [label = <<B>HRD score</B><BR/>scarHRD>, fillcolor = "#FFF2CC"];
+
+        // --- biomarkers ---
+        d_msi   [label = <<B>Microsatellite instability</B><BR/>MSIsensor-pro>, fillcolor = "#F4DDEC"];
+        d_tmb   [label = <<B>Tumour mutational burden</B><BR/>TMB <FONT POINT-SIZE="9">(gnomAD/COSMIC filt.)</FONT>>, fillcolor = "#F4DDEC"];
+
+        // --- QC ---
+        d_qc    [label = <<B>QC</B><BR/><FONT POINT-SIZE="9">FastQC · mosdepth ·<BR/>VerifyBamID · MultiQC</FONT>>, fillcolor = "#EAEAEA"];
+    }
+
+    // =========================================================================
+    //  RNA-SEQ  (gene fusions)
+    // =========================================================================
+    subgraph cluster_rna {
+        label = "RNA-seq  —  gene-fusion detection (UMI-aware, FFPE-tuned)";
+        style = "rounded";
+        color = "#7FB3C4";
+        penwidth = 2;
+        fontsize = 13;
+        fontcolor = "#1F6E84";
+
+        r_fq    [label = <<B>Raw reads</B><BR/>Tumour RNA FASTQ <FONT POINT-SIZE="9">(R1/R2)</FONT>>, shape = note, fillcolor = "#FFFFFF"];
+        r_fastp [label = <<B>Trim + UMI extraction</B><BR/>fastp>, fillcolor = "#DAEEF3"];
+        r_star  [label = <<B>Splice-aware alignment</B><BR/>STAR <FONT POINT-SIZE="9">(+ chimeric junctions)</FONT>>, fillcolor = "#DAEEF3"];
+        r_dedup [label = <<B>UMI-aware mark-duplicates</B><BR/>fgbio GroupReadsByUmi>, fillcolor = "#DAEEF3"];
+
+        r_arr   [label = <<B>Fusion detection</B><BR/>Arriba>, fillcolor = "#FCE4D6"];
+        r_sf    [label = <<B>Fusion detection</B><BR/>STAR-Fusion <FONT POINT-SIZE="9">(kickstart)</FONT>>, fillcolor = "#FCE4D6"];
+        r_rep   [label = <<B>Fusion aggregation + artefact filter</B><BR/>fusion-report>, fillcolor = "#FCE4D6"];
+        r_fi    [label = <<B>In-silico fusion validation</B><BR/>FusionInspector>, fillcolor = "#FCE4D6"];
+        r_okb   [label = <<B>Therapeutic annotation</B><BR/>OncoKB <FONT POINT-SIZE="9">(fusions)</FONT>>, fillcolor = "#E2EFDA"];
+
+        r_qc    [label = <<B>QC</B><BR/><FONT POINT-SIZE="9">FastQC · Picard RNAseqMetrics ·<BR/>RustQC · mosdepth · MultiQC</FONT>>, fillcolor = "#EAEAEA"];
+    }
+
+    // =========================================================================
+    //  RESULTS STORE
+    // =========================================================================
+    db [label = <<B>Results database</B><BR/>DuckDB <FONT POINT-SIZE="9">(SNV · SV · CNV · fusions)</FONT>>,
+        shape = cylinder, style = filled, fillcolor = "#D9D2E9", penwidth = 1.5];
+
+    // =========================================================================
+    //  EDGES  (data flow)
+    // =========================================================================
+    sample -> d_fq  [label = "DNA library"];
+    sample -> r_fq  [label = "RNA library"];
+
+    // DNA flow
+    d_fq    -> d_trim  [label = "FASTQ"];
+    d_trim  -> d_align [label = "trimmed FASTQ"];
+    d_align -> d_bqsr  [label = "aligned BAM"];
+
+    d_bqsr  -> d_call  [label = "analysis-ready BAM"];
+    d_call  -> d_filt  [label = "raw VCF"];
+    d_filt  -> d_anno  [label = "filtered VCF"];
+    d_anno  -> d_cvar  [label = "annotated variants"];
+    d_anno  -> d_okb   [label = "MAF"];
+
+    d_bqsr  -> d_manta [label = "BAM"];
+    d_manta -> d_asv   [label = "SV VCF"];
+
+    d_bqsr  -> d_cnv   [label = "BAM + VLOD VCF"];
+    d_cnv   -> d_hrd   [label = "segments", style = dashed];
+
+    d_bqsr  -> d_msi   [label = "BAM"];
+    d_filt  -> d_tmb   [label = "filtered variants"];
+
+    d_bqsr  -> d_qc    [style = dashed, label = "BAM"];
+
+    // RNA flow
+    r_fq    -> r_fastp [label = "FASTQ"];
+    r_fastp -> r_star  [label = "UMI'd FASTQ"];
+    r_star  -> r_dedup [label = "BAM"];
+
+    r_dedup -> r_arr   [label = "marked BAM"];
+    r_dedup -> r_sf    [label = "dedup'd chimeric\njunctions"];
+    r_arr   -> r_rep   [label = "Arriba calls"];
+    r_sf    -> r_rep   [label = "STAR-Fusion calls"];
+    r_rep   -> r_fi    [label = "candidate fusions"];
+    r_fi    -> r_okb   [label = "validated fusions"];
+
+    r_dedup -> r_qc    [style = dashed, label = "BAM"];
+
+    // into results store
+    d_okb  -> db [label = "SNV"];
+    d_cvar -> db [label = "SNV"];
+    d_asv  -> db [label = "SV"];
+    d_cnv  -> db [label = "CNV"];
+    d_msi  -> db [label = "MSI"];
+    d_tmb  -> db [label = "TMB"];
+    r_okb  -> db [label = "fusions"];
+
+    // =========================================================================
+    //  ALTERNATE ENTRY POINTS (note)
+    // =========================================================================
+    entry [shape = note, fillcolor = "#FFFDE7", style = filled, fontsize = 9,
+           label = "Alternate inputs (skip earlier stages):\l\
+• DNA BAM   → bam2fq → re-align            \l\
+• DNA VCF   → harmonise → annotation       \l\
+• RNA BAM   → bam2fq → STAR-Fusion         \l"];
+    entry -> d_fq [style = dotted, arrowhead = none, color = "#BBBBBB"];
+}

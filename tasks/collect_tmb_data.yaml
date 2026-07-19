@@ -16,6 +16,17 @@ spec:
           - name: af-upper-threshold
             value: "0.95"
           - name: output-dir
+          # DETS filtering parameters
+          - name: filter-dets
+            value: "true"
+          - name: dets-threshold
+            value: "2.5"
+          # Gene blacklist parameters
+          - name: blacklist-genes
+            value: "PHOX2B,CHEK2"
+          # COSMIC filtering parameters
+          - name: cosmic-vcf
+            value: ""
           # Common variant filtering parameters
           - name: filter-common-variants
             value: "true"
@@ -25,21 +36,6 @@ spec:
             value: ""
           - name: common-af-threshold
             value: "0.01"
-          # Multihit gene filtering parameters
-          - name: filter-multihit
-            value: "true"
-          - name: multihit-method
-            value: "poisson"
-          # Oncogenic tier filtering parameters
-          - name: filter-oncogenic
-            value: "true"
-          - name: oncogenic-tiers
-            value: "I,II"
-          # DETS filtering parameters
-          - name: filter-dets
-            value: "true"
-          - name: dets-threshold
-            value: "2.5"
       volumes:
         - name: duckdb-file
           hostPath:
@@ -53,6 +49,10 @@ spec:
           hostPath:
             path: "{{inputs.parameters.output-dir}}"
             type: DirectoryOrCreate
+        - name: cosmic-vcf-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['cosmic-vcf'])}}"
+            type: Directory
         - name: gnomad-vcf-dir
           hostPath:
             path: "{{=sprig.osDir(inputs.parameters['gnomad-vcf'])}}"
@@ -63,7 +63,7 @@ spec:
             type: Directory
       script:
         name: tmb-calculator
-        image: bergun/gennext-tmb-calc:0.3.0
+        image: bergun/gennext-tmb-calc:0.5.0
         workingDir: /mnt/input
         volumeMounts:
           - name: duckdb-file
@@ -74,6 +74,9 @@ spec:
             readOnly: true
           - name: output-dir
             mountPath: /mnt/output
+          - name: cosmic-vcf-dir
+            mountPath: /mnt/cosmic
+            readOnly: true
           - name: gnomad-vcf-dir
             mountPath: /mnt/gnomad
             readOnly: true
@@ -95,9 +98,19 @@ spec:
             --run-id \"{{inputs.parameters.run-id}}\" \
             --sample-id \"{{inputs.parameters.sample-id}}\""
 
-          # Add oncogenic tier filtering if enabled
-          if [ "{{inputs.parameters.filter-oncogenic}}" = "true" ]; then
-            CMD="$CMD --filter-oncogenic --oncogenic-tiers {{inputs.parameters.oncogenic-tiers}}"
+          # Add DETS filtering if enabled
+          if [ "{{inputs.parameters.filter-dets}}" = "true" ]; then
+            CMD="$CMD --filter-dets --dets-threshold {{inputs.parameters.dets-threshold}}"
+          fi
+
+          # Add gene blacklist
+          if [ -n "{{inputs.parameters.blacklist-genes}}" ]; then
+            CMD="$CMD --blacklist-genes {{inputs.parameters.blacklist-genes}}"
+          fi
+
+          # Add COSMIC filtering if VCF provided
+          if [ -n "{{inputs.parameters.cosmic-vcf}}" ]; then
+            CMD="$CMD --filter-cosmic --cosmic-vcf /mnt/cosmic/{{=sprig.osBase(inputs.parameters['cosmic-vcf'])}}"
           fi
 
           # Add common variant filtering if enabled
@@ -110,16 +123,6 @@ spec:
               CMD="$CMD --common-vcf /mnt/turkish/{{=sprig.osBase(inputs.parameters['turkish-variome-vcf'])}}:TR_AF"
             fi
             CMD="$CMD --common-af-threshold {{inputs.parameters.common-af-threshold}}"
-          fi
-
-          # Add multihit gene filtering if enabled
-          if [ "{{inputs.parameters.filter-multihit}}" = "true" ]; then
-            CMD="$CMD --filter-multihit --multihit-method {{inputs.parameters.multihit-method}}"
-          fi
-
-          # Add DETS filtering if enabled
-          if [ "{{inputs.parameters.filter-dets}}" = "true" ]; then
-            CMD="$CMD --filter-dets --dets-threshold {{inputs.parameters.dets-threshold}}"
           fi
 
           # Add verbose flag and run
@@ -154,6 +157,17 @@ spec:
             value: "0.95"
           - name: output-dir
           - name: node-name
+          # DETS filtering parameters
+          - name: filter-dets
+            value: "true"
+          - name: dets-threshold
+            value: "2.5"
+          # Gene blacklist parameters
+          - name: blacklist-genes
+            value: "PHOX2B,CHEK2"
+          # COSMIC filtering parameters
+          - name: cosmic-vcf
+            value: ""
           # Common variant filtering parameters
           - name: filter-common-variants
             value: "true"
@@ -163,21 +177,6 @@ spec:
             value: ""
           - name: common-af-threshold
             value: "0.01"
-          # Multihit gene filtering parameters
-          - name: filter-multihit
-            value: "true"
-          - name: multihit-method
-            value: "poisson"
-          # Oncogenic tier filtering parameters
-          - name: filter-oncogenic
-            value: "true"
-          - name: oncogenic-tiers
-            value: "I,II"
-          # DETS filtering parameters
-          - name: filter-dets
-            value: "true"
-          - name: dets-threshold
-            value: "2.5"
       volumes:
         - name: duckdb-file
           hostPath:
@@ -191,6 +190,10 @@ spec:
           hostPath:
             path: "{{inputs.parameters.output-dir}}"
             type: DirectoryOrCreate
+        - name: cosmic-vcf-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['cosmic-vcf'])}}"
+            type: Directory
         - name: gnomad-vcf-dir
           hostPath:
             path: "{{=sprig.osDir(inputs.parameters['gnomad-vcf'])}}"
@@ -201,7 +204,7 @@ spec:
             type: Directory
       script:
         name: tmb-calculator
-        image: bergun/gennext-tmb-calc:0.3.0
+        image: bergun/gennext-tmb-calc:0.5.0
         workingDir: /mnt/input
         volumeMounts:
           - name: duckdb-file
@@ -212,6 +215,9 @@ spec:
             readOnly: true
           - name: output-dir
             mountPath: /mnt/output
+          - name: cosmic-vcf-dir
+            mountPath: /mnt/cosmic
+            readOnly: true
           - name: gnomad-vcf-dir
             mountPath: /mnt/gnomad
             readOnly: true
@@ -233,9 +239,19 @@ spec:
             --run-id \"{{inputs.parameters.run-id}}\" \
             --sample-id \"{{inputs.parameters.sample-id}}\""
 
-          # Add oncogenic tier filtering if enabled
-          if [ "{{inputs.parameters.filter-oncogenic}}" = "true" ]; then
-            CMD="$CMD --filter-oncogenic --oncogenic-tiers {{inputs.parameters.oncogenic-tiers}}"
+          # Add DETS filtering if enabled
+          if [ "{{inputs.parameters.filter-dets}}" = "true" ]; then
+            CMD="$CMD --filter-dets --dets-threshold {{inputs.parameters.dets-threshold}}"
+          fi
+
+          # Add gene blacklist
+          if [ -n "{{inputs.parameters.blacklist-genes}}" ]; then
+            CMD="$CMD --blacklist-genes {{inputs.parameters.blacklist-genes}}"
+          fi
+
+          # Add COSMIC filtering if VCF provided
+          if [ -n "{{inputs.parameters.cosmic-vcf}}" ]; then
+            CMD="$CMD --filter-cosmic --cosmic-vcf /mnt/cosmic/{{=sprig.osBase(inputs.parameters['cosmic-vcf'])}}"
           fi
 
           # Add common variant filtering if enabled
@@ -248,16 +264,6 @@ spec:
               CMD="$CMD --common-vcf /mnt/turkish/{{=sprig.osBase(inputs.parameters['turkish-variome-vcf'])}}:TR_AF"
             fi
             CMD="$CMD --common-af-threshold {{inputs.parameters.common-af-threshold}}"
-          fi
-
-          # Add multihit gene filtering if enabled
-          if [ "{{inputs.parameters.filter-multihit}}" = "true" ]; then
-            CMD="$CMD --filter-multihit --multihit-method {{inputs.parameters.multihit-method}}"
-          fi
-
-          # Add DETS filtering if enabled
-          if [ "{{inputs.parameters.filter-dets}}" = "true" ]; then
-            CMD="$CMD --filter-dets --dets-threshold {{inputs.parameters.dets-threshold}}"
           fi
 
           # Add verbose flag and run
@@ -291,6 +297,17 @@ spec:
           - name: af-upper-threshold
             value: "0.95"
           - name: output-dir
+          # DETS filtering parameters
+          - name: filter-dets
+            value: "true"
+          - name: dets-threshold
+            value: "2.5"
+          # Gene blacklist parameters
+          - name: blacklist-genes
+            value: "PHOX2B,CHEK2"
+          # COSMIC filtering parameters
+          - name: cosmic-vcf
+            value: ""
           # Common variant filtering parameters
           - name: filter-common-variants
             value: "true"
@@ -300,21 +317,6 @@ spec:
             value: ""
           - name: common-af-threshold
             value: "0.01"
-          # Multihit gene filtering parameters
-          - name: filter-multihit
-            value: "true"
-          - name: multihit-method
-            value: "poisson"
-          # Oncogenic tier filtering parameters
-          - name: filter-oncogenic
-            value: "true"
-          - name: oncogenic-tiers
-            value: "I,II"
-          # DETS filtering parameters
-          - name: filter-dets
-            value: "true"
-          - name: dets-threshold
-            value: "2.5"
       volumes:
         - name: duckdb-file
           hostPath:
@@ -332,6 +334,10 @@ spec:
           hostPath:
             path: "{{inputs.parameters.output-dir}}"
             type: DirectoryOrCreate
+        - name: cosmic-vcf-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['cosmic-vcf'])}}"
+            type: Directory
         - name: gnomad-vcf-dir
           hostPath:
             path: "{{=sprig.osDir(inputs.parameters['gnomad-vcf'])}}"
@@ -342,7 +348,7 @@ spec:
             type: Directory
       script:
         name: tmb-calculator
-        image: bergun/gennext-tmb-calc:0.3.0
+        image: bergun/gennext-tmb-calc:0.5.0
         workingDir: /mnt/input
         volumeMounts:
           - name: duckdb-file
@@ -356,6 +362,9 @@ spec:
             readOnly: true
           - name: output-dir
             mountPath: /mnt/output
+          - name: cosmic-vcf-dir
+            mountPath: /mnt/cosmic
+            readOnly: true
           - name: gnomad-vcf-dir
             mountPath: /mnt/gnomad
             readOnly: true
@@ -377,9 +386,19 @@ spec:
             --run-id \"{{inputs.parameters.run-id}}\" \
             --sample-id \"{{inputs.parameters.sample-id}}\""
 
-          # Add oncogenic tier filtering if enabled
-          if [ "{{inputs.parameters.filter-oncogenic}}" = "true" ]; then
-            CMD="$CMD --filter-oncogenic --oncogenic-tiers {{inputs.parameters.oncogenic-tiers}}"
+          # Add DETS filtering if enabled
+          if [ "{{inputs.parameters.filter-dets}}" = "true" ]; then
+            CMD="$CMD --filter-dets --dets-threshold {{inputs.parameters.dets-threshold}}"
+          fi
+
+          # Add gene blacklist
+          if [ -n "{{inputs.parameters.blacklist-genes}}" ]; then
+            CMD="$CMD --blacklist-genes {{inputs.parameters.blacklist-genes}}"
+          fi
+
+          # Add COSMIC filtering if VCF provided
+          if [ -n "{{inputs.parameters.cosmic-vcf}}" ]; then
+            CMD="$CMD --filter-cosmic --cosmic-vcf /mnt/cosmic/{{=sprig.osBase(inputs.parameters['cosmic-vcf'])}}"
           fi
 
           # Add common variant filtering if enabled
@@ -392,16 +411,6 @@ spec:
               CMD="$CMD --common-vcf /mnt/turkish/{{=sprig.osBase(inputs.parameters['turkish-variome-vcf'])}}:TR_AF"
             fi
             CMD="$CMD --common-af-threshold {{inputs.parameters.common-af-threshold}}"
-          fi
-
-          # Add multihit gene filtering if enabled
-          if [ "{{inputs.parameters.filter-multihit}}" = "true" ]; then
-            CMD="$CMD --filter-multihit --multihit-method {{inputs.parameters.multihit-method}}"
-          fi
-
-          # Add DETS filtering if enabled
-          if [ "{{inputs.parameters.filter-dets}}" = "true" ]; then
-            CMD="$CMD --filter-dets --dets-threshold {{inputs.parameters.dets-threshold}}"
           fi
 
           # Add verbose flag and run

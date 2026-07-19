@@ -75,10 +75,16 @@ spec:
                 - name: scratch-rel-dir
                   value: "{{inputs.parameters.scratch-rel-dir}}/reads/"
             depends: "check-file-path"
-          - name: trim-galore
+          # fastp replaces trim-galore here. fastp is a single multithreaded
+          # process (no pigz/cutadapt fan-out), which removes the I/O contention
+          # seen when several workflows trimmed in parallel.
+          # detect-adapter-for-pe preserves trim-galore's adapter auto-detection;
+          # quality-trim + length-required reproduce its Q20 / min-len-20 defaults.
+          # umi-length=0 disables the RNA-only UMI handling in fastp-template.
+          - name: fastp
             templateRef:
-              name: trim-galore-template
-              template: trim-galore
+              name: fastp-template
+              template: fastp
             arguments:
               parameters:
                 - name: sample-name
@@ -89,8 +95,20 @@ spec:
                   value: "{{tasks.copy-fastq-to-scratch.outputs.parameters.fq-r2}}"
                 - name: output-dir
                   value: "{{inputs.parameters.scratch-rel-dir}}trimmed_reads/"
+                - name: metrics-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}metrics/fastp/"
                 - name: thread-count
                   value: "{{inputs.parameters.thread-count}}"
+                - name: umi-length
+                  value: "0"
+                - name: detect-adapter-for-pe
+                  value: "true"
+                - name: quality-trim
+                  value: "true"
+                - name: cut-mean-quality
+                  value: "20"
+                - name: length-required
+                  value: "20"
             depends: "copy-fastq-to-scratch"
           - name: fastqc
             templateRef:
@@ -126,7 +144,7 @@ spec:
                   value: "{{tasks.copy-fastq-to-scratch.outputs.parameters.fq-r1}}"
                 - name: fq-r2
                   value: "{{tasks.copy-fastq-to-scratch.outputs.parameters.fq-r2}}"
-            depends: "copy-fastq-to-scratch && trim-galore && fastqc && compose-read-group-str"
+            depends: "copy-fastq-to-scratch && fastp && fastqc && compose-read-group-str"
           # - name: bed-split
           #   templateRef:
           #     name: bed-split-template
@@ -166,9 +184,9 @@ spec:
             arguments:
               parameters:
                 - name: input-fq-r1
-                  value: "{{tasks.trim-galore.outputs.parameters.fq-r1}}"
+                  value: "{{tasks.fastp.outputs.parameters.fq-r1}}"
                 - name: input-fq-r2
-                  value: "{{tasks.trim-galore.outputs.parameters.fq-r2}}"
+                  value: "{{tasks.fastp.outputs.parameters.fq-r2}}"
                 - name: genome-ref
                   value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
                 - name: scratch-dir
@@ -179,7 +197,7 @@ spec:
                   value: "{{inputs.parameters.scratch-rel-dir}}bam/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}.bam"
                 - name: output-dupes
                   value: "{{inputs.parameters.temp-rel-dir}}metrics/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}.dupes"
-            depends: "trim-galore && compose-read-group-str && get-abs-ref-dirs"
+            depends: "fastp && compose-read-group-str && get-abs-ref-dirs"
           - name: pb-bqsr
             templateRef:
               name: parabricks-bqsr-template

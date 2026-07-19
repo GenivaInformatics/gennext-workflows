@@ -136,6 +136,17 @@ spec:
           - name: annovar-oncokb-maf
             mountPath: "/mnt/input/oncokb_maf.tsv"
     - name: duckdb-snv
+      # Serialize all writers of a given results DuckDB file. duckdb-snv/-sv/-cnv
+      # run in parallel in the somatic DAGs and all write the same file; without a
+      # lock the last writer to checkpoint clobbers the others' tables (e.g. the
+      # combined_snv view goes missing and downstream collect-tmb-data fails).
+      synchronization:
+        mutex:
+          # Keyed on the workflow name (unique per run, identical across all
+          # writers in that run since they share one Workflow object). Stable
+          # across the concurrent writers of one sample and unique per sample
+          # run, so different samples never block each other.
+          name: "{{workflow.name}}-mutex"
       inputs:
         parameters:
           - name: annovar-oncokb-maf
@@ -507,6 +518,15 @@ spec:
           - name: output-duckdb
             mountPath: "/mnt/output/"
     - name: duckdb-sv
+      # See duckdb-snv: per-file mutex so concurrent writers of the same results
+      # DuckDB serialize instead of clobbering each other.
+      synchronization:
+        mutex:
+          # Keyed on the workflow name (unique per run, identical across all
+          # writers in that run since they share one Workflow object). Stable
+          # across the concurrent writers of one sample and unique per sample
+          # run, so different samples never block each other.
+          name: "{{workflow.name}}-mutex"
       inputs:
         parameters:
           - name: oncokb-tsv-f
@@ -792,6 +812,13 @@ spec:
           - name: annotsv-tsv-f
             mountPath: "/mnt/input/annotsv/annotsv_sv.tsv"
     - name: duckdb-fusions
+      # See duckdb-snv: per-file mutex so concurrent writers of the same results
+      # DuckDB serialize instead of clobbering each other.
+      synchronization:
+        mutex:
+          # Keyed on the workflow name: unique per run, identical across all
+          # writers in that run since they share one Workflow object.
+          name: "{{workflow.name}}-mutex"
       inputs:
         parameters:
           - name: oncokb-tsv-f
@@ -907,11 +934,23 @@ spec:
           - name: oncokb-tsv-f
             mountPath: "/mnt/input/oncokb/oncokb_fusions.tsv"
     - name: duckdb-cnv
+      # See duckdb-snv: per-file mutex so concurrent writers of the same results
+      # DuckDB serialize instead of clobbering each other. Invoked via
+      # run-cnv-cohort, which races duckdb-snv/-sv on the same file.
+      synchronization:
+        mutex:
+          # Keyed on the workflow name (unique per run, identical across all
+          # writers in that run since they share one Workflow object). Stable
+          # across the concurrent writers of one sample and unique per sample
+          # run, so different samples never block each other.
+          name: "{{workflow.name}}-mutex"
       inputs:
         parameters:
           - name: oncokb-tsv-f
           - name: annotsv-tsv-f
           - name: output-duckdb
+          - name: table-suffix
+            default: ""
       outputs:
         parameters:
           - name: output-duckdb
@@ -935,40 +974,40 @@ spec:
         command: ["duckdb", "-init"]
         source: |
           .open "/mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}"
-          CREATE OR REPLACE TABLE oncokb_cnv AS FROM read_csv_auto('/mnt/input/oncokb/oncokb_cnv.tsv', sample_size=-1, header=True, sep='\t');
-          CREATE OR REPLACE TABLE annotsv_cnv AS FROM read_csv_auto('/mnt/input/annotsv/annotsv_cnv.tsv', sample_size=-1, header=True, sep='\t');
-          DROP VIEW IF EXISTS combined_cnv;
-          DROP TABLE IF EXISTS combined_cnv;
-          CREATE OR REPLACE VIEW combined_cnv AS
+          CREATE OR REPLACE TABLE oncokb_cnv{{inputs.parameters.table-suffix}} AS FROM read_csv_auto('/mnt/input/oncokb/oncokb_cnv.tsv', sample_size=-1, header=True, sep='\t');
+          CREATE OR REPLACE TABLE annotsv_cnv{{inputs.parameters.table-suffix}} AS FROM read_csv_auto('/mnt/input/annotsv/annotsv_cnv.tsv', sample_size=-1, header=True, sep='\t');
+          DROP VIEW IF EXISTS combined_cnv{{inputs.parameters.table-suffix}};
+          DROP TABLE IF EXISTS combined_cnv{{inputs.parameters.table-suffix}};
+          CREATE OR REPLACE VIEW combined_cnv{{inputs.parameters.table-suffix}} AS
           WITH annotsv_ordered_cnv AS (
               SELECT
                   ROW_NUMBER() OVER () AS row_id,  -- Create incrementing unique ID
-                  annotsv_cnv.SV_chrom,
-                  annotsv_cnv.SV_start,
-                  annotsv_cnv.SV_end,
-                  annotsv_cnv.SV_length,
-                  annotsv_cnv.SV_type,
-                  annotsv_cnv.REF,
-                  annotsv_cnv.ALT,
-                  annotsv_cnv.INFO,
-                  annotsv_cnv.Paired_Reads,
-                  annotsv_cnv.CytoBand,
-                  annotsv_cnv.Gene_name,
-                  annotsv_cnv.Annotation_mode,
-                  annotsv_cnv.Tx,
-                  annotsv_cnv.Tx_start,
-                  annotsv_cnv.Tx_end,
-                  annotsv_cnv.Overlapped_CDS_length,
-                  annotsv_cnv.Overlapped_CDS_percent,
-                  CAST(annotsv_cnv.OMIM_ID AS VARCHAR) AS OMIM_ID,
-                  annotsv_cnv.OMIM_phenotype,
-                  annotsv_cnv.OMIM_inheritance,
-                  annotsv_cnv.GnomAD_pLI,
-                  annotsv_cnv.ExAC_pLI,
-                  annotsv_cnv.ACMG_class,
-                  annotsv_cnv.AnnotSV_ID
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.SV_chrom,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.SV_start,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.SV_end,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.SV_length,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.SV_type,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.REF,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.ALT,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.INFO,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.Paired_Reads,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.CytoBand,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.Gene_name,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.Annotation_mode,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.Tx,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.Tx_start,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.Tx_end,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.Overlapped_CDS_length,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.Overlapped_CDS_percent,
+                  CAST(annotsv_cnv{{inputs.parameters.table-suffix}}.OMIM_ID AS VARCHAR) AS OMIM_ID,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.OMIM_phenotype,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.OMIM_inheritance,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.GnomAD_pLI,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.ExAC_pLI,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.ACMG_class,
+                  annotsv_cnv{{inputs.parameters.table-suffix}}.AnnotSV_ID
               FROM
-                  annotsv_cnv
+                  annotsv_cnv{{inputs.parameters.table-suffix}}
           )
           SELECT
               annotsv_ordered_cnv.Annotation_mode,
@@ -981,28 +1020,28 @@ spec:
               annotsv_ordered_cnv.ALT,
               annotsv_ordered_cnv.INFO,
               -- Extract FOLD_CHANGE value from INFO column
-              CASE 
-                  WHEN annotsv_ordered_cnv.INFO LIKE '%FOLD_CHANGE=%' 
+              CASE
+                  WHEN annotsv_ordered_cnv.INFO LIKE '%FOLD_CHANGE=%'
                   THEN TRY_CAST(SPLIT_PART(SPLIT_PART(annotsv_ordered_cnv.INFO, 'FOLD_CHANGE=', 2), ';', 1) AS FLOAT)
-                  ELSE NULL 
+                  ELSE NULL
               END AS FOLD_CHANGE,
               -- Extract FOLD_CHANGE_LOG value from INFO column
-              CASE 
-                  WHEN annotsv_ordered_cnv.INFO LIKE '%FOLD_CHANGE_LOG=%' 
+              CASE
+                  WHEN annotsv_ordered_cnv.INFO LIKE '%FOLD_CHANGE_LOG=%'
                   THEN TRY_CAST(SPLIT_PART(SPLIT_PART(annotsv_ordered_cnv.INFO, 'FOLD_CHANGE_LOG=', 2), ';', 1) AS FLOAT)
-                  ELSE NULL 
+                  ELSE NULL
               END AS FOLD_CHANGE_LOG,
               -- Extract PROBES value from INFO column
-              CASE 
-                  WHEN annotsv_ordered_cnv.INFO LIKE '%PROBES=%' 
+              CASE
+                  WHEN annotsv_ordered_cnv.INFO LIKE '%PROBES=%'
                   THEN TRY_CAST(SPLIT_PART(SPLIT_PART(annotsv_ordered_cnv.INFO, 'PROBES=', 2), ';', 1) AS INTEGER)
-                  ELSE NULL 
+                  ELSE NULL
               END AS PROBES,
               -- Extract SIGMA_LEVEL value from INFO column (only present when FILTER=PASS)
-              CASE 
-                  WHEN annotsv_ordered_cnv.INFO LIKE '%SIGMA_LEVEL=%' 
+              CASE
+                  WHEN annotsv_ordered_cnv.INFO LIKE '%SIGMA_LEVEL=%'
                   THEN TRY_CAST(SPLIT_PART(SPLIT_PART(annotsv_ordered_cnv.INFO, 'SIGMA_LEVEL=', 2), ';', 1) AS INTEGER)
-                  ELSE NULL 
+                  ELSE NULL
               END AS SIGMA_LEVEL,
               annotsv_ordered_cnv.Paired_Reads,
               annotsv_ordered_cnv.CytoBand,
@@ -1018,197 +1057,197 @@ spec:
               annotsv_ordered_cnv.GnomAD_pLI,
               annotsv_ordered_cnv.ExAC_pLI,
               annotsv_ordered_cnv.ACMG_class,
-              oncokb_cnv.Sv_Type AS "ONCOKB_SV_TYPE",
-              oncokb_cnv.GeneA AS "ONCOKB_GENE",
-              oncokb_cnv.MUTATION_EFFECT,
-              oncokb_cnv.MUTATION_EFFECT_CITATIONS,
-              oncokb_cnv.ONCOGENIC,
-              oncokb_cnv.GENE_IN_ONCOKB,
-              oncokb_cnv.VARIANT_IN_ONCOKB,
-              oncokb_cnv.LEVEL_1,
-              oncokb_cnv.LEVEL_2,
-              oncokb_cnv.LEVEL_3A,
-              oncokb_cnv.LEVEL_3B,
-              oncokb_cnv.LEVEL_4,
-              oncokb_cnv.LEVEL_R1,
-              oncokb_cnv.LEVEL_R2,
-              oncokb_cnv.HIGHEST_LEVEL,
-              oncokb_cnv.HIGHEST_SENSITIVE_LEVEL,
-              oncokb_cnv.HIGHEST_RESISTANCE_LEVEL,
-              CAST(oncokb_cnv.TX_CITATIONS AS VARCHAR) AS TX_CITATIONS,
-              oncokb_cnv.LEVEL_Dx1,
-              oncokb_cnv.LEVEL_Dx2,
-              oncokb_cnv.LEVEL_Dx3,
-              oncokb_cnv.HIGHEST_DX_LEVEL,
-              CAST(oncokb_cnv.DX_CITATIONS AS VARCHAR) AS DX_CITATIONS,
-              oncokb_cnv.LEVEL_Px1,
-              oncokb_cnv.LEVEL_Px2,
-              oncokb_cnv.LEVEL_Px3,
-              oncokb_cnv.HIGHEST_PX_LEVEL,
-              CAST(oncokb_cnv.PX_CITATIONS AS VARCHAR) AS PX_CITATIONS
+              oncokb_cnv{{inputs.parameters.table-suffix}}.Sv_Type AS "ONCOKB_SV_TYPE",
+              oncokb_cnv{{inputs.parameters.table-suffix}}.GeneA AS "ONCOKB_GENE",
+              oncokb_cnv{{inputs.parameters.table-suffix}}.MUTATION_EFFECT,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.MUTATION_EFFECT_CITATIONS,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.ONCOGENIC,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.GENE_IN_ONCOKB,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.VARIANT_IN_ONCOKB,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_1,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_2,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_3A,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_3B,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_4,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_R1,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_R2,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.HIGHEST_LEVEL,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.HIGHEST_SENSITIVE_LEVEL,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.HIGHEST_RESISTANCE_LEVEL,
+              CAST(oncokb_cnv{{inputs.parameters.table-suffix}}.TX_CITATIONS AS VARCHAR) AS TX_CITATIONS,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_Dx1,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_Dx2,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_Dx3,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.HIGHEST_DX_LEVEL,
+              CAST(oncokb_cnv{{inputs.parameters.table-suffix}}.DX_CITATIONS AS VARCHAR) AS DX_CITATIONS,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_Px1,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_Px2,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_Px3,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.HIGHEST_PX_LEVEL,
+              CAST(oncokb_cnv{{inputs.parameters.table-suffix}}.PX_CITATIONS AS VARCHAR) AS PX_CITATIONS
           FROM
               annotsv_ordered_cnv
-          LEFT JOIN oncokb_cnv ON annotsv_ordered_cnv.AnnotSV_ID = oncokb_cnv.AnnotSV_ID
-          AND annotsv_ordered_cnv.Gene_name = oncokb_cnv.GeneA
+          LEFT JOIN oncokb_cnv{{inputs.parameters.table-suffix}} ON annotsv_ordered_cnv.AnnotSV_ID = oncokb_cnv{{inputs.parameters.table-suffix}}.AnnotSV_ID
+          AND annotsv_ordered_cnv.Gene_name = oncokb_cnv{{inputs.parameters.table-suffix}}.GeneA
           ORDER BY annotsv_ordered_cnv.row_id;  -- Reorder using the original row order;
-          CREATE OR REPLACE VIEW advanced_combined_cnv AS
+          CREATE OR REPLACE VIEW advanced_combined_cnv{{inputs.parameters.table-suffix}} AS
           SELECT
-              annotsv_cnv.SV_chrom,
-              annotsv_cnv.SV_start,
-              annotsv_cnv.SV_end,
-              annotsv_cnv.SV_length,
-              annotsv_cnv.SV_type,
-              annotsv_cnv.Paired_Reads,
-              annotsv_cnv.Split_Reads,
-              annotsv_cnv.Samples_ID,
-              annotsv_cnv.ID,
-              annotsv_cnv.REF,
-              annotsv_cnv.ALT,
-              annotsv_cnv.QUAL,
-              annotsv_cnv.FILTER,
-              annotsv_cnv.INFO,
-              annotsv_cnv.FORMAT,
-              annotsv_cnv.SAMPLE_DATA,
-              annotsv_cnv.Annotation_mode,
-              annotsv_cnv.CytoBand,
-              annotsv_cnv.Gene_name,
-              annotsv_cnv.Gene_count,
-              annotsv_cnv.Tx,
-              annotsv_cnv.Tx_start,
-              annotsv_cnv.Tx_end,
-              annotsv_cnv.Overlapped_tx_length,
-              annotsv_cnv.Overlapped_CDS_length,
-              annotsv_cnv.Overlapped_CDS_percent,
-              annotsv_cnv.Frameshift,
-              annotsv_cnv.Exon_count,
-              annotsv_cnv.Location,
-              annotsv_cnv.Location2,
-              annotsv_cnv.Dist_nearest_SS,
-              annotsv_cnv.Intersect_start,
-              annotsv_cnv.Intersect_end,
-              annotsv_cnv.RE_gene,
-              annotsv_cnv.P_gain_phen,
-              annotsv_cnv.P_gain_hpo,
-              annotsv_cnv.P_gain_source,
-              annotsv_cnv.P_gain_coord,
-              annotsv_cnv.P_loss_phen,
-              annotsv_cnv.P_loss_hpo,
-              annotsv_cnv.P_loss_source,
-              annotsv_cnv.P_loss_coord,
-              annotsv_cnv.P_ins_phen,
-              annotsv_cnv.P_ins_hpo,
-              annotsv_cnv.P_ins_source,
-              annotsv_cnv.P_ins_coord,
-              annotsv_cnv.po_P_gain_phen,
-              annotsv_cnv.po_P_gain_hpo,
-              annotsv_cnv.po_P_gain_source,
-              annotsv_cnv.po_P_gain_coord,
-              annotsv_cnv.po_P_gain_percent,
-              annotsv_cnv.po_P_loss_phen,
-              annotsv_cnv.po_P_loss_hpo,
-              annotsv_cnv.po_P_loss_source,
-              annotsv_cnv.po_P_loss_coord,
-              annotsv_cnv.po_P_loss_percent,
-              annotsv_cnv.P_snvindel_nb,
-              annotsv_cnv.P_snvindel_phen,
-              annotsv_cnv.B_gain_source,
-              annotsv_cnv.B_gain_coord,
-              annotsv_cnv.B_gain_AFmax,
-              annotsv_cnv.B_loss_source,
-              annotsv_cnv.B_loss_coord,
-              annotsv_cnv.B_loss_AFmax,
-              annotsv_cnv.B_ins_source,
-              annotsv_cnv.B_ins_coord,
-              annotsv_cnv.B_inv_source,
-              annotsv_cnv.B_inv_coord,
-              annotsv_cnv.B_inv_AFmax,
-              annotsv_cnv.po_B_gain_allG_source,
-              annotsv_cnv.po_B_gain_allG_coord,
-              annotsv_cnv.po_B_gain_someG_coord,
-              annotsv_cnv.po_B_loss_allG_source,
-              annotsv_cnv.po_B_loss_allG_coord,
-              annotsv_cnv.po_B_loss_someG_source,
-              annotsv_cnv.po_B_loss_someG_coord,
-              annotsv_cnv.TAD_coordinate,
-              annotsv_cnv.ENCODE_experiment,
-              annotsv_cnv.GC_content_left,
-              annotsv_cnv.GC_content_right,
-              annotsv_cnv.Repeat_coord_left,
-              annotsv_cnv.Repeat_type_left,
-              annotsv_cnv.Repeat_coord_right,
-              annotsv_cnv.Repeat_type_right,
-              annotsv_cnv.Gap_left,
-              annotsv_cnv.Gap_right,
-              annotsv_cnv.SegDup_left,
-              annotsv_cnv.SegDup_right,
-              annotsv_cnv.ENCODE_blacklist_left,
-              annotsv_cnv.ENCODE_blacklist_characteristics_left,
-              annotsv_cnv.ENCODE_blacklist_right,
-              annotsv_cnv.ENCODE_blacklist_characteristics_right,
-              annotsv_cnv.ACMG,
-              annotsv_cnv.HI,
-              annotsv_cnv.TS,
-              annotsv_cnv.DDD_HI_percent,
-              annotsv_cnv.DDD_status,
-              annotsv_cnv.DDD_mode,
-              annotsv_cnv.DDD_consequence,
-              annotsv_cnv.DDD_disease,
-              annotsv_cnv.DDD_pmid,
-              annotsv_cnv.ExAC_delZ,
-              annotsv_cnv.ExAC_dupZ,
-              annotsv_cnv.ExAC_cnvZ,
-              annotsv_cnv.ExAC_synZ,
-              annotsv_cnv.ExAC_misZ,
-              annotsv_cnv.GenCC_disease,
-              annotsv_cnv.GenCC_moi,
-              annotsv_cnv.GenCC_classification,
-              annotsv_cnv.GenCC_pmid,
-              CAST(annotsv_cnv.OMIM_ID AS VARCHAR) AS OMIM_ID,
-              annotsv_cnv.OMIM_phenotype,
-              annotsv_cnv.OMIM_inheritance,
-              annotsv_cnv.OMIM_morbid,
-              annotsv_cnv.OMIM_morbid_candidate,
-              annotsv_cnv.LOEUF_bin,
-              annotsv_cnv.GnomAD_pLI,
-              annotsv_cnv.ExAC_pLI,
-              annotsv_cnv.AnnotSV_ranking_score,
-              annotsv_cnv.AnnotSV_ranking_criteria,
-              annotsv_cnv.ACMG_class,
-              annotsv_cnv.Split_Reads_Mates,
-              annotsv_cnv.Nearest_SS_type,
-              annotsv_cnv.B_ins_AFmax,
-              annotsv_cnv.po_B_gain_someG_source,
-              oncokb_cnv.GeneA AS "ONCOKB_GENE",
-              oncokb_cnv.Sv_Type AS "ONCOKB_SV_TYPE",
-              oncokb_cnv.ANNOTATED,
-              oncokb_cnv.GENE_IN_ONCOKB,
-              oncokb_cnv.VARIANT_IN_ONCOKB,
-              oncokb_cnv.MUTATION_EFFECT,
-              oncokb_cnv.MUTATION_EFFECT_CITATIONS,
-              oncokb_cnv.ONCOGENIC,
-              oncokb_cnv.LEVEL_1,
-              oncokb_cnv.LEVEL_2,
-              oncokb_cnv.LEVEL_3A,
-              oncokb_cnv.LEVEL_3B,
-              oncokb_cnv.LEVEL_4,
-              oncokb_cnv.LEVEL_R1,
-              oncokb_cnv.LEVEL_R2,
-              oncokb_cnv.HIGHEST_LEVEL,
-              oncokb_cnv.HIGHEST_SENSITIVE_LEVEL,
-              oncokb_cnv.HIGHEST_RESISTANCE_LEVEL,
-              CAST(oncokb_cnv.TX_CITATIONS AS VARCHAR) AS TX_CITATIONS,
-              oncokb_cnv.LEVEL_Dx1,
-              oncokb_cnv.LEVEL_Dx2,
-              oncokb_cnv.LEVEL_Dx3,
-              oncokb_cnv.HIGHEST_DX_LEVEL,
-              CAST(oncokb_cnv.DX_CITATIONS AS VARCHAR) AS DX_CITATIONS,
-              oncokb_cnv.LEVEL_Px1,
-              oncokb_cnv.LEVEL_Px2,
-              oncokb_cnv.LEVEL_Px3,
-              oncokb_cnv.HIGHEST_PX_LEVEL,
-              CAST(oncokb_cnv.PX_CITATIONS AS VARCHAR) AS PX_CITATIONS,
-          FROM annotsv_cnv
-          JOIN oncokb_cnv ON annotsv_cnv.AnnotSV_ID = oncokb_cnv.AnnotSV_ID;
+              annotsv_cnv{{inputs.parameters.table-suffix}}.SV_chrom,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.SV_start,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.SV_end,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.SV_length,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.SV_type,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Paired_Reads,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Split_Reads,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Samples_ID,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.ID,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.REF,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.ALT,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.QUAL,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.FILTER,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.INFO,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.FORMAT,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.SAMPLE_DATA,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Annotation_mode,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.CytoBand,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Gene_name,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Gene_count,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Tx,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Tx_start,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Tx_end,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Overlapped_tx_length,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Overlapped_CDS_length,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Overlapped_CDS_percent,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Frameshift,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Exon_count,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Location,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Location2,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Dist_nearest_SS,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Intersect_start,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Intersect_end,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.RE_gene,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.P_gain_phen,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.P_gain_hpo,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.P_gain_source,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.P_gain_coord,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.P_loss_phen,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.P_loss_hpo,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.P_loss_source,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.P_loss_coord,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.P_ins_phen,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.P_ins_hpo,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.P_ins_source,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.P_ins_coord,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.po_P_gain_phen,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.po_P_gain_hpo,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.po_P_gain_source,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.po_P_gain_coord,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.po_P_gain_percent,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.po_P_loss_phen,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.po_P_loss_hpo,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.po_P_loss_source,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.po_P_loss_coord,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.po_P_loss_percent,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.P_snvindel_nb,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.P_snvindel_phen,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.B_gain_source,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.B_gain_coord,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.B_gain_AFmax,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.B_loss_source,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.B_loss_coord,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.B_loss_AFmax,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.B_ins_source,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.B_ins_coord,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.B_inv_source,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.B_inv_coord,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.B_inv_AFmax,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.po_B_gain_allG_source,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.po_B_gain_allG_coord,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.po_B_gain_someG_coord,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.po_B_loss_allG_source,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.po_B_loss_allG_coord,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.po_B_loss_someG_source,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.po_B_loss_someG_coord,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.TAD_coordinate,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.ENCODE_experiment,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.GC_content_left,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.GC_content_right,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Repeat_coord_left,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Repeat_type_left,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Repeat_coord_right,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Repeat_type_right,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Gap_left,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Gap_right,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.SegDup_left,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.SegDup_right,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.ENCODE_blacklist_left,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.ENCODE_blacklist_characteristics_left,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.ENCODE_blacklist_right,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.ENCODE_blacklist_characteristics_right,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.ACMG,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.HI,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.TS,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.DDD_HI_percent,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.DDD_status,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.DDD_mode,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.DDD_consequence,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.DDD_disease,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.DDD_pmid,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.ExAC_delZ,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.ExAC_dupZ,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.ExAC_cnvZ,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.ExAC_synZ,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.ExAC_misZ,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.GenCC_disease,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.GenCC_moi,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.GenCC_classification,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.GenCC_pmid,
+              CAST(annotsv_cnv{{inputs.parameters.table-suffix}}.OMIM_ID AS VARCHAR) AS OMIM_ID,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.OMIM_phenotype,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.OMIM_inheritance,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.OMIM_morbid,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.OMIM_morbid_candidate,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.LOEUF_bin,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.GnomAD_pLI,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.ExAC_pLI,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.AnnotSV_ranking_score,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.AnnotSV_ranking_criteria,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.ACMG_class,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Split_Reads_Mates,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.Nearest_SS_type,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.B_ins_AFmax,
+              annotsv_cnv{{inputs.parameters.table-suffix}}.po_B_gain_someG_source,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.GeneA AS "ONCOKB_GENE",
+              oncokb_cnv{{inputs.parameters.table-suffix}}.Sv_Type AS "ONCOKB_SV_TYPE",
+              oncokb_cnv{{inputs.parameters.table-suffix}}.ANNOTATED,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.GENE_IN_ONCOKB,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.VARIANT_IN_ONCOKB,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.MUTATION_EFFECT,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.MUTATION_EFFECT_CITATIONS,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.ONCOGENIC,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_1,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_2,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_3A,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_3B,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_4,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_R1,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_R2,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.HIGHEST_LEVEL,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.HIGHEST_SENSITIVE_LEVEL,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.HIGHEST_RESISTANCE_LEVEL,
+              CAST(oncokb_cnv{{inputs.parameters.table-suffix}}.TX_CITATIONS AS VARCHAR) AS TX_CITATIONS,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_Dx1,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_Dx2,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_Dx3,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.HIGHEST_DX_LEVEL,
+              CAST(oncokb_cnv{{inputs.parameters.table-suffix}}.DX_CITATIONS AS VARCHAR) AS DX_CITATIONS,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_Px1,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_Px2,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_Px3,
+              oncokb_cnv{{inputs.parameters.table-suffix}}.HIGHEST_PX_LEVEL,
+              CAST(oncokb_cnv{{inputs.parameters.table-suffix}}.PX_CITATIONS AS VARCHAR) AS PX_CITATIONS,
+          FROM annotsv_cnv{{inputs.parameters.table-suffix}}
+          JOIN oncokb_cnv{{inputs.parameters.table-suffix}} ON annotsv_cnv{{inputs.parameters.table-suffix}}.AnnotSV_ID = oncokb_cnv{{inputs.parameters.table-suffix}}.AnnotSV_ID;
           .exit
         volumeMounts:
           - name: output-duckdb
@@ -1314,6 +1353,13 @@ spec:
           - name: annovar-oncokb-maf
             mountPath: "/mnt/input/oncokb_maf.tsv"
     - name: duckdb-snv-vcf-only
+      # See duckdb-snv: per-file mutex so concurrent writers of the same results
+      # DuckDB serialize instead of clobbering each other.
+      synchronization:
+        mutex:
+          # Keyed on the workflow name: unique per run, identical across all
+          # writers in that run since they share one Workflow object.
+          name: "{{workflow.name}}-mutex"
       inputs:
         parameters:
           - name: annovar-oncokb-maf
@@ -1675,5 +1721,53 @@ spec:
             mountPath: "/mnt/input/oncokb_snv.tsv"
           - name: cancervar-tsv
             mountPath: "/mnt/input/cancervar_snv.tsv"
+          - name: output-duckdb
+            mountPath: "/mnt/output/"
+    - name: duckdb-fusions-v2
+      # See duckdb-snv: per-file mutex so concurrent writers of the same results
+      # DuckDB serialize instead of clobbering each other.
+      synchronization:
+        mutex:
+          # Keyed on the workflow name: unique per run, identical across all
+          # writers in that run since they share one Workflow object.
+          name: "{{workflow.name}}-mutex"
+      inputs:
+        parameters:
+          - name: fusions-json-f
+          - name: output-duckdb
+      outputs:
+        parameters:
+          - name: output-duckdb
+            value: "{{inputs.parameters.output-duckdb}}"
+      volumes:
+        - name: fusions-json-f
+          hostPath:
+            path: "{{inputs.parameters.fusions-json-f}}"
+            type: File
+        - name: output-duckdb
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-duckdb'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: "duckdb-fusions-v2-script"
+        image: qldrsc/duckdb:latest
+        command: ["duckdb", "-init"]
+        source: |
+          .open "/mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}"
+          CREATE TABLE fusions_with_oncokb AS FROM read_json_auto('/mnt/input/fusions.json', format='array');
+          CREATE VIEW combined_fusions AS
+          SELECT
+              fusions_with_oncokb."Fusion",
+              fusions_with_oncokb."Tools",
+              fusions_with_oncokb."Fusion Indication Index (FII)",
+              fusions_with_oncokb."order_weight",
+              fusions_with_oncokb."clinical_tier",
+              fusions_with_oncokb."OncoKB",
+          FROM
+              fusions_with_oncokb;
+          .exit
+        volumeMounts:
+          - name: fusions-json-f
+            mountPath: "/mnt/input/fusions.json"
           - name: output-duckdb
             mountPath: "/mnt/output/"

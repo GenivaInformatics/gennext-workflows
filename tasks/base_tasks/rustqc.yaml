@@ -1,0 +1,54 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: rustqc-template
+  namespace: argo
+spec:
+  templates:
+    - name: rustqc
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: gene-annotation-gtf
+          - name: input-bam
+          - name: output-dir
+          - name: thread-count
+            default: "8"
+      outputs:
+        parameters:
+          - name: output-dir
+            value: "{{inputs.parameters.output-dir}}"
+      volumes:
+        - name: gene-annotation-gtf
+          hostPath:
+            path: "{{inputs.parameters.gene-annotation-gtf}}"
+            type: File
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: rustqc-script
+        image: ghcr.io/seqeralabs/rustqc:latest
+        command: [sh]
+        source: |
+          rustqc rna \
+            --gtf /mnt/ref/gene_annots/{{=sprig.osBase(inputs.parameters['gene-annotation-gtf'])}} \
+            --paired \
+            --stranded reverse \
+            --skip-dup-check \
+            --sample-name {{inputs.parameters.sample-id}} \
+            --outdir /mnt/output/ \
+            --threads {{inputs.parameters.thread-count}} \
+            /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/mnt/input/bam/"
+          - name: output-dir
+            mountPath: "/mnt/output/"
+          - name: gene-annotation-gtf
+            mountPath: "/mnt/ref/gene_annots/{{=sprig.osBase(inputs.parameters['gene-annotation-gtf'])}}"

@@ -1,0 +1,153 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: fastp-template
+spec:
+  templates:
+    - name: fastp
+      inputs:
+        parameters:
+          - name: fq-r1
+          - name: fq-r2
+          - name: sample-name
+          - name: output-dir
+          - name: metrics-dir
+          - name: thread-count
+          - name: umi-length
+            default: "5"
+          # Adapter sequence auto-detection for PE reads. fastp always removes
+          # adapters via overlap analysis; this flag adds trim-galore-style
+          # sequence-level auto-detection. Default off keeps the RNA path
+          # (which relies on overlap analysis only) unchanged.
+          - name: detect-adapter-for-pe
+            default: "false"
+          # 3' sliding-window quality trimming (trim-galore parity). Default off
+          # preserves fastp's stock quality *filtering* behaviour for RNA.
+          - name: quality-trim
+            default: "false"
+          - name: cut-mean-quality
+            default: "20"
+          # Reads shorter than this are dropped. fastp default is 15.
+          - name: length-required
+            default: "15"
+      outputs:
+        parameters:
+          - name: fq-r1
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-name}}_R1.trimmed.fq.gz"
+          - name: fq-r2
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-name}}_R2.trimmed.fq.gz"
+          - name: fastp-json
+            value: "{{inputs.parameters.metrics-dir}}{{inputs.parameters.sample-name}}_fastp.json"
+          - name: fastp-html
+            value: "{{inputs.parameters.metrics-dir}}{{inputs.parameters.sample-name}}_fastp.html"
+      volumes:
+        - name: fq-r1
+          hostPath:
+            path: "{{inputs.parameters.fq-r1}}"
+            type: File
+        - name: fq-r2
+          hostPath:
+            path: "{{inputs.parameters.fq-r2}}"
+            type: File
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+        - name: metrics-dir
+          hostPath:
+            path: "{{inputs.parameters.metrics-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: "fastp"
+        # 1.3.6: contains the BGZF-reader hang fix (1.3.5) and worker/BGZF thread
+        # limiting (1.3.6). 1.3.3 deadlocked on a futex mid-write on large MGI
+        # inputs at --thread 16 (reader/writer threads parked, ~0% CPU, never exits).
+        image: quay.io/biocontainers/fastp:1.3.6--h43da1c4_0
+        command: [sh]
+        source: |
+          set -euo pipefail
+
+          SAMPLE="{{inputs.parameters.sample-name}}"
+          UMI_LEN="{{inputs.parameters.umi-length}}"
+
+          # UMI extraction is gated on length > 0. Setting umi-length to "0" at
+          # the workflow level disables it without having to swap templates.
+          UMI_ARGS=""
+          if [ "${UMI_LEN}" -gt 0 ]; then
+            UMI_ARGS="--umi --umi_loc=per_read --umi_len=${UMI_LEN} --umi_prefix=UMI"
+            echo "UMI extraction enabled: length=${UMI_LEN}, location=per_read"
+          else
+            echo "UMI extraction disabled (umi-length=0)"
+          fi
+
+          # Adapter sequence auto-detection for PE (trim-galore analog). Overlap
+          # analysis is always on; this adds tail-scan sequence detection.
+          ADAPTER_ARGS=""
+          if [ "{{inputs.parameters.detect-adapter-for-pe}}" = "true" ]; then
+            ADAPTER_ARGS="--detect_adapter_for_pe"
+            echo "PE adapter sequence auto-detection enabled"
+          fi
+
+          # 3' quality trimming (trim-galore default: Q20). When off, fastp only
+          # quality-*filters* (its default), matching prior RNA behaviour.
+          QUALITY_ARGS=""
+          if [ "{{inputs.parameters.quality-trim}}" = "true" ]; then
+            QUALITY_ARGS="--cut_tail --cut_mean_quality {{inputs.parameters.cut-mean-quality}}"
+            echo "3' quality trimming enabled: Q{{inputs.parameters.cut-mean-quality}}"
+          fi
+
+          fastp \
+            --in1 "/mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}" \
+            --in2 "/mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}" \
+            --out1 "/mnt/output/${SAMPLE}_R1.trimmed.fq.gz" \
+            --out2 "/mnt/output/${SAMPLE}_R2.trimmed.fq.gz" \
+            --json "/mnt/metrics/${SAMPLE}_fastp.json" \
+            --html "/mnt/metrics/${SAMPLE}_fastp.html" \
+            --thread {{=sprig.min(sprig.int(inputs.parameters['thread-count']), 16)}} \
+            --length_required {{inputs.parameters.length-required}} \
+            ${ADAPTER_ARGS} \
+            ${QUALITY_ARGS} \
+            ${UMI_ARGS}
+
+          # Strip BGI/MGI-style `/1` `/2` pair suffix from FASTQ headers.
+          # fastp appends the UMI as `:UMI_<R1>_<R2>` AFTER any pair
+          # suffix already present, producing e.g.
+          # `@F350067318L1C001R00100001906/1:UMI_GTAGG_TCACT`.
+          # STAR truncates QNAMEs at the first `/`, so the BAM ends up
+          # with `F350067318L1C001R00100001906` and no UMI — fgbio
+          # CopyUmiFromReadName then fails with "Read did not have
+          # multiple ':'-separated fields". Illumina FASTQs (no `/N`
+          # in headers) are unaffected: the awk substitution is a no-op
+          # there. Only header lines (every 4th line) are touched.
+          if [ -n "${UMI_ARGS}" ]; then
+            # Run R1 and R2 normalisation in parallel — they're
+            # independent zcat|awk|gzip pipelines on different files,
+            # so backgrounding each cuts wall time roughly in half on
+            # multi-core nodes.
+            normalize_headers() {
+              local f="$1"
+              echo "Normalising headers in $f (strip /1 /2 before :UMI_)"
+              zcat "$f" \
+                | awk 'NR%4==1 { sub(/\/[12]:UMI_/, ":UMI_"); sub(/\/[12]$/, "") } 1' \
+                | gzip > "$f.tmp"
+              mv "$f.tmp" "$f"
+            }
+            normalize_headers "/mnt/output/${SAMPLE}_R1.trimmed.fq.gz" &
+            R1_PID=$!
+            normalize_headers "/mnt/output/${SAMPLE}_R2.trimmed.fq.gz" &
+            R2_PID=$!
+            wait "$R1_PID" "$R2_PID"
+          fi
+        volumeMounts:
+          - name: fq-r1
+            mountPath: "/mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}"
+          - name: fq-r2
+            mountPath: "/mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}"
+          - name: output-dir
+            mountPath: "/mnt/output/"
+          - name: metrics-dir
+            mountPath: "/mnt/metrics/"
+        resources:
+          requests:
+            memory: 4Gi
+            cpu: "4"

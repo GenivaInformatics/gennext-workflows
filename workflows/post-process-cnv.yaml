@@ -1,0 +1,437 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: post-process-cnv
+  namespace: argo
+  annotations:
+    gennext.bio/workflow-type: post-process
+    gennext.bio/post-process-step: cnv
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: main
+  onExit: on-exit-handler
+  arguments:
+    parameters:
+      - name: run-id
+      - name: user-id
+      - name: enrichment-kit
+      - name: node-name
+      - name: sample-uuids
+        # JSON array of sample UUID strings: ["uuid1", "uuid2", ...]
+      - name: post-process-steps
+        # JSON array of steps this workflow handles: ["cnv", "hrd"]
+  templates:
+    # =====================================================================
+    # Main DAG
+    # =====================================================================
+    - name: main
+      dag:
+        tasks:
+          # --- Resolve node config (base dirs, thread count) ---
+          - name: get-node-config
+            templateRef:
+              name: get-node-config
+              template: get-node-config
+            arguments:
+              parameters:
+                - name: node-name
+                  value: "{{workflow.parameters.node-name}}"
+                - name: user-id
+                  value: "{{workflow.parameters.user-id}}"
+                - name: job-id
+                  value: "{{workflow.parameters.run-id}}"
+
+          # --- Resolve all paths, ref-paths, sample metadata ---
+          - name: batch-load-and-prepare
+            templateRef:
+              name: load-and-prepare
+              template: batch-load-and-prepare
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{workflow.parameters.run-id}}"
+                - name: sample-uuids
+                  value: "{{workflow.parameters.sample-uuids}}"
+                - name: enrichment-kit
+                  value: "{{workflow.parameters.enrichment-kit}}"
+                - name: output-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.output-rel-dir}}"
+                - name: scratch-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.scratch-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.ref-base-dir}}"
+                - name: thread-count
+                  value: "{{tasks.get-node-config.outputs.parameters.thread-count}}"
+                - name: user-id
+                  value: "{{workflow.parameters.user-id}}"
+                - name: post-process-steps
+                  value: "{{workflow.parameters.post-process-steps}}"
+            depends: get-node-config
+
+          # --- Prepare reference files (access + target + antitarget) ---
+          - name: prepare-references
+            template: cnvkit-prepare-references
+            arguments:
+              parameters:
+                - name: ref-genome
+                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.ref-genome}}"
+                - name: regions-file
+                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.regions-file}}"
+                - name: ref-flat
+                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.ref-flat}}"
+                - name: scratch-cnv-dir
+                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.scratch-cnv-dir}}"
+            depends: batch-load-and-prepare
+
+          # --- Calculate coverage per sample ---
+          - name: coverage
+            template: cnvkit-coverage
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{item.sample-id}}"
+                - name: scratch-cnv-dir
+                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.scratch-cnv-dir}}"
+                - name: output-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.output-rel-dir}}"
+            withParam: "{{tasks.batch-load-and-prepare.outputs.parameters.sample-list}}"
+            depends: prepare-references
+
+          # --- Build pooled reference from all coverage files ---
+          - name: build-pooled-reference
+            template: cnvkit-build-reference
+            arguments:
+              parameters:
+                - name: ref-genome
+                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.ref-genome}}"
+                - name: scratch-cnv-dir
+                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.scratch-cnv-dir}}"
+            depends: coverage
+
+          # --- Per-sample analysis pipeline (analyze → filter → annotsv → oncokb → duckdb) ---
+          - name: per-sample-cnv
+            templateRef:
+              name: per-sample-cnv-analysis
+              template: per-sample-cnv-pipeline
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{item.sample-id}}"
+                - name: scratch-cnv-dir
+                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.scratch-cnv-dir}}"
+                - name: ref-flat
+                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.ref-flat}}"
+                - name: ref-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.ref-base-dir}}"
+                - name: output-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.output-rel-dir}}"
+                - name: run-id
+                  value: "{{workflow.parameters.run-id}}"
+                - name: run-hrd
+                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.run-hrd}}"
+            withParam: "{{tasks.batch-load-and-prepare.outputs.parameters.sample-list}}"
+            depends: build-pooled-reference
+
+          # --- Notify backend: post-processing complete ---
+          - name: set-postprocess-completed
+            template: notify-postprocess-complete
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{workflow.parameters.run-id}}"
+                - name: sample-uuids
+                  value: "{{workflow.parameters.sample-uuids}}"
+                - name: enrichment-kit
+                  value: "{{workflow.parameters.enrichment-kit}}"
+                - name: completed-steps
+                  value: "{{workflow.parameters.post-process-steps}}"
+            depends: per-sample-cnv
+
+          # --- Clean up scratch directory ---
+          - name: clean-scratch
+            templateRef:
+              name: dir-clean-up
+              template: dir-clean-up
+            arguments:
+              parameters:
+                - name: directory
+                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.scratch-cnv-dir}}"
+            depends: set-postprocess-completed
+
+    # =====================================================================
+    # CNVkit: prepare references (access + target + antitarget)
+    # =====================================================================
+    - name: cnvkit-prepare-references
+      inputs:
+        parameters:
+          - name: ref-genome
+          - name: regions-file
+          - name: ref-flat
+          - name: scratch-cnv-dir
+      script:
+        image: quay.io/biocontainers/cnvkit:0.9.13--pyhdfd78af_0
+        command: [sh]
+        source: |
+          set -e
+          mkdir -p /scratch/references /scratch/coverage
+
+          # Generate accessible regions
+          cnvkit.py access \
+            /ref/genome/{{=sprig.osBase(inputs.parameters['ref-genome'])}} \
+            -o /scratch/references/access.bed
+
+          # Process capture regions with gene annotations
+          cnvkit.py target \
+            /ref/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}} \
+            --annotate /ref/refflat/{{=sprig.osBase(inputs.parameters['ref-flat'])}} \
+            --split \
+            -o /scratch/references/targets.bed
+
+          # Generate antitarget regions
+          cnvkit.py antitarget \
+            /scratch/references/targets.bed \
+            -g /scratch/references/access.bed \
+            -o /scratch/references/antitargets.bed
+        volumeMounts:
+          - name: ref-genome-dir
+            mountPath: /ref/genome/
+            readOnly: true
+          - name: regions-dir
+            mountPath: /ref/regions/
+            readOnly: true
+          - name: refflat-dir
+            mountPath: /ref/refflat/
+            readOnly: true
+          - name: scratch
+            mountPath: /scratch/
+      volumes:
+        - name: ref-genome-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['ref-genome'])}}"
+            type: Directory
+        - name: regions-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['regions-file'])}}"
+            type: Directory
+        - name: refflat-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['ref-flat'])}}"
+            type: Directory
+        - name: scratch
+          hostPath:
+            path: "{{inputs.parameters.scratch-cnv-dir}}"
+            type: Directory
+
+    # =====================================================================
+    # CNVkit: calculate coverage per sample
+    # Reads sample-uuid and bam-path from {scratch}/samples/{sample-id}.json
+    # BAM dir is mounted via the output-base-dir (parent of all sample dirs)
+    # =====================================================================
+    - name: cnvkit-coverage
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: scratch-cnv-dir
+          - name: output-base-dir
+      script:
+        image: quay.io/biocontainers/cnvkit:0.9.13--pyhdfd78af_0
+        command: [sh]
+        source: |
+          set -e
+          SAMPLE_ID="{{inputs.parameters.sample-id}}"
+
+          # Read per-sample data from JSON
+          SAMPLE_JSON="/scratch/samples/${SAMPLE_ID}.json"
+          UUID=$(python3 -c "import json; d=json.load(open('${SAMPLE_JSON}')); print(d['sample-uuid'])")
+          BAM_PATH=$(python3 -c "import json; d=json.load(open('${SAMPLE_JSON}')); print(d['bam-path'])")
+
+          # Target coverage
+          cnvkit.py coverage \
+            "$BAM_PATH" \
+            /scratch/references/targets.bed \
+            -o /scratch/coverage/${UUID}.targetcoverage.cnn
+
+          # Antitarget coverage
+          cnvkit.py coverage \
+            "$BAM_PATH" \
+            /scratch/references/antitargets.bed \
+            -o /scratch/coverage/${UUID}.antitargetcoverage.cnn
+        volumeMounts:
+          - name: scratch
+            mountPath: /scratch/
+          - name: output-base
+            mountPath: "{{inputs.parameters.output-base-dir}}"
+            readOnly: true
+      volumes:
+        - name: scratch
+          hostPath:
+            path: "{{inputs.parameters.scratch-cnv-dir}}"
+            type: Directory
+        - name: output-base
+          hostPath:
+            path: "{{inputs.parameters.output-base-dir}}"
+            type: Directory
+
+    # =====================================================================
+    # CNVkit: build pooled reference from all coverage files
+    # =====================================================================
+    - name: cnvkit-build-reference
+      inputs:
+        parameters:
+          - name: ref-genome
+          - name: scratch-cnv-dir
+      script:
+        image: quay.io/biocontainers/cnvkit:0.9.13--pyhdfd78af_0
+        command: [sh]
+        source: |
+          set -e
+          cnvkit.py reference \
+            /scratch/coverage/*.cnn \
+            -f /ref/genome/{{=sprig.osBase(inputs.parameters['ref-genome'])}} \
+            -o /scratch/references/pooled_reference.cnn
+        volumeMounts:
+          - name: ref-genome-dir
+            mountPath: /ref/genome/
+            readOnly: true
+          - name: scratch
+            mountPath: /scratch/
+      volumes:
+        - name: ref-genome-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['ref-genome'])}}"
+            type: Directory
+        - name: scratch
+          hostPath:
+            path: "{{inputs.parameters.scratch-cnv-dir}}"
+            type: Directory
+
+    # =====================================================================
+    # Set multiple samples' state via backend API
+    # =====================================================================
+    - name: set-samples-state
+      inputs:
+        parameters:
+          - name: run-id
+          - name: sample-uuids
+          - name: state
+      script:
+        image: blairy/requests
+        command: [python]
+        source: |
+          import os, json, requests
+          token = os.environ["GENNEXT_CLUSTER_TOKEN"]
+          addr = "gennext-backend.gennext-prod.svc.cluster.local:3030"
+          uuids = json.loads('{{inputs.parameters.sample-uuids}}')
+          for uuid in uuids:
+              url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/samples/{uuid}/state"
+              res = requests.post(url, json={"state": "{{inputs.parameters.state}}", "token": token})
+              if res.status_code != 200:
+                  print(f"Warning: failed to set state for {uuid}: {res.text}")
+        env:
+          - name: GENNEXT_CLUSTER_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: gennext-cluster-secrets
+                key: gennext_cluster_token
+
+    # =====================================================================
+    # Notify backend: PP step complete
+    # =====================================================================
+    - name: notify-postprocess-complete
+      inputs:
+        parameters:
+          - name: run-id
+          - name: sample-uuids
+          - name: enrichment-kit
+          - name: completed-steps
+      script:
+        image: blairy/requests
+        command: [python]
+        source: |
+          import os, json, requests
+          token = os.environ["GENNEXT_CLUSTER_TOKEN"]
+          addr = "gennext-backend.gennext-prod.svc.cluster.local:3030"
+
+          # Set affected samples back to completed
+          uuids = json.loads('{{inputs.parameters.sample-uuids}}')
+          for uuid in uuids:
+              url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/samples/{uuid}/state"
+              res = requests.post(url, json={"state": "completed", "token": token})
+              if res.status_code != 200:
+                  print(f"Warning: failed to set completed for {uuid}: {res.text}")
+
+          # Notify postprocess-complete with completed steps list
+          completed_steps = json.loads('{{inputs.parameters.completed-steps}}')
+          url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/postprocess-complete"
+          res = requests.post(url, json={
+              "token": token,
+              "kit": "{{inputs.parameters.enrichment-kit}}",
+              "completed-steps": completed_steps
+          })
+          if res.status_code != 200:
+              raise Exception(f"postprocess-complete failed: {res.text}")
+        env:
+          - name: GENNEXT_CLUSTER_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: gennext-cluster-secrets
+                key: gennext_cluster_token
+
+    # =====================================================================
+    # onExit: report error on failure
+    # =====================================================================
+    - name: on-exit-handler
+      steps:
+        - - name: set-postprocess-error
+            template: notify-postprocess-error
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{workflow.parameters.run-id}}"
+                - name: sample-uuids
+                  value: "{{workflow.parameters.sample-uuids}}"
+                - name: enrichment-kit
+                  value: "{{workflow.parameters.enrichment-kit}}"
+                - name: step
+                  value: "cnv"
+            when: "{{workflow.status}} == Failed"
+
+    # =====================================================================
+    # Notify backend: PP step failed
+    # =====================================================================
+    - name: notify-postprocess-error
+      inputs:
+        parameters:
+          - name: run-id
+          - name: sample-uuids
+          - name: enrichment-kit
+          - name: step
+      script:
+        image: blairy/requests
+        command: [python]
+        source: |
+          import os, json, requests
+          token = os.environ["GENNEXT_CLUSTER_TOKEN"]
+          addr = "gennext-backend.gennext-prod.svc.cluster.local:3030"
+
+          # Set affected samples back to completed (their data is still valid)
+          uuids = json.loads('{{inputs.parameters.sample-uuids}}')
+          for uuid in uuids:
+              url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/samples/{uuid}/state"
+              res = requests.post(url, json={"state": "completed", "token": token})
+              print(f"Reset {uuid} to completed: {res.status_code}")
+
+          # Notify postprocess-error
+          url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/postprocess-error"
+          res = requests.post(url, json={
+              "token": token,
+              "kit": "{{inputs.parameters.enrichment-kit}}",
+              "step": "{{inputs.parameters.step}}"
+          })
+          print(f"postprocess-error: {res.status_code}")
+        env:
+          - name: GENNEXT_CLUSTER_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: gennext-cluster-secrets
+                key: gennext_cluster_token

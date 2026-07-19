@@ -1,0 +1,38 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: test-fi-acu2-
+  namespace: argo
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: run
+  templates:
+    - name: run
+      dag:
+        tasks:
+          - name: fusion-inspector
+            templateRef:
+              name: fusion-inspector-template
+              template: fusion-inspector-on-node
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "acu-2"
+                - name: fq-r1
+                  value: "/runspace/gennext/data/scratch/972f096e-488d-4752-9b33-7c4ed2090d67/097debda-5597-4857-ab2d-3425eb06313c_sdatzB/1ce7ed06-e550-4ef3-9717-3901493d704a/extracted_reads/acu-2_filtered_R1.fq.gz"
+                - name: fq-r2
+                  value: "/runspace/gennext/data/scratch/972f096e-488d-4752-9b33-7c4ed2090d67/097debda-5597-4857-ab2d-3425eb06313c_sdatzB/1ce7ed06-e550-4ef3-9717-3901493d704a/extracted_reads/acu-2_filtered_R2.fq.gz"
+                - name: fusion-list-tsv
+                  value: "/runspace/gennext/data/scratch/972f096e-488d-4752-9b33-7c4ed2090d67/097debda-5597-4857-ab2d-3425eb06313c_sdatzB/1ce7ed06-e550-4ef3-9717-3901493d704a/extracted_reads/acu-2_fusion_list.filtered.tsv"
+                - name: ctat-genome-lib-build-dir
+                  value: "/runspace/gennext/data/ref/hg38/rna/ctat_genome_lib_build_dir"
+                - name: output-dir
+                  value: "/runspace/gennext/data/temp/fi-test/acu-2/output/"
+                - name: metrics-dir
+                  value: "/runspace/gennext/data/temp/fi-test/acu-2/metrics/"
+                - name: scratch-dir
+                  value: "/runspace/gennext/data/scratch/fi-test/acu-2/"
+                - name: thread-count
+                  value: "8"
+                - name: node-name
+                  value: "acurare-01"

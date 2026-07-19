@@ -1,0 +1,145 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: fusion-report-template
+  namespace: argo
+spec:
+  templates:
+    - name: fusion-report
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: arriba-fusions-tsv
+          - name: starfusion-predictions-tsv
+          - name: fusion-report-db-dir
+          - name: output-dir
+          - name: metrics-dir
+      outputs:
+        parameters:
+          - name: output-dir
+            value: "{{inputs.parameters.output-dir}}"
+          - name: output-fusions-json
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_fusions.json"
+          - name: output-fusion-list-tsv
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_fusion_list.tsv"
+          - name: mqc-tsv
+            value: "{{inputs.parameters.metrics-dir}}{{inputs.parameters.sample-id}}_fusion-report_mqc.tsv"
+      volumes:
+        - name: arriba-fusions-tsv
+          hostPath:
+            path: "{{inputs.parameters.arriba-fusions-tsv}}"
+            type: File
+        - name: starfusion-predictions-tsv
+          hostPath:
+            path: "{{inputs.parameters.starfusion-predictions-tsv}}"
+            type: File
+        - name: fusion-report-db-dir
+          hostPath:
+            path: "{{inputs.parameters.fusion-report-db-dir}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+        - name: metrics-dir
+          hostPath:
+            path: "{{inputs.parameters.metrics-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: fusion-report
+        image: quay.io/biocontainers/fusion-report:4.0.1--py313hdfd78af_0
+        command: [sh]
+        source: |
+          set -euo pipefail
+
+          SAMPLE_ID="{{inputs.parameters.sample-id}}"
+          ARRIBA_FILE="/mnt/input/arriba/{{=sprig.osBase(inputs.parameters['arriba-fusions-tsv'])}}"
+          STARFUSION_FILE="/mnt/input/starfusion/{{=sprig.osBase(inputs.parameters['starfusion-predictions-tsv'])}}"
+          DB_DIR="/mnt/ref/fusion_report_db/"
+
+          echo "Running fusion-report for sample: ${SAMPLE_ID}"
+          echo "  Arriba file:      ${ARRIBA_FILE}"
+          echo "  STAR-Fusion file: ${STARFUSION_FILE}"
+          echo "  Database dir:     ${DB_DIR}"
+
+          fusion_report run \
+            "${SAMPLE_ID}" \
+            /mnt/output/ \
+            "${DB_DIR}" \
+            --arriba "${ARRIBA_FILE}" \
+            --starfusion "${STARFUSION_FILE}" \
+            --allow-multiple-gene-symbols \
+            --no-cosmic
+
+          echo "fusion-report completed successfully"
+          ls -la /mnt/output/
+
+          # fusion-report writes hardcoded fusions.json and fusion_list.tsv;
+          # rename them to embed the sample-id so a directory listing makes
+          # the sample obvious without inspecting parent paths.
+          if [ -f /mnt/output/fusions.json ]; then
+            mv /mnt/output/fusions.json "/mnt/output/${SAMPLE_ID}_fusions.json"
+          fi
+          if [ -f /mnt/output/fusion_list.tsv ]; then
+            mv /mnt/output/fusion_list.tsv "/mnt/output/${SAMPLE_ID}_fusion_list.tsv"
+          fi
+
+          # Emit a MultiQC custom-content TSV summarizing the merged call set:
+          # total unique fusions, per-caller counts, and how many each caller
+          # contributed exclusively. Tolerant of fusion-report JSON shape
+          # changes — defaults to zero counts on parse failure.
+          MQC_OUT="/mnt/metrics/{{inputs.parameters.sample-id}}_fusion-report_mqc.tsv"
+          python3 - "${SAMPLE_ID}" "/mnt/output/${SAMPLE_ID}_fusions.json" "${MQC_OUT}" <<'PY'
+          import json, sys, os
+          sample, fusions_json, out_tsv = sys.argv[1], sys.argv[2], sys.argv[3]
+
+          total = arriba = starfusion = both = arriba_only = sf_only = 0
+          try:
+              with open(fusions_json) as fh:
+                  data = json.load(fh)
+              entries = data.values() if isinstance(data, dict) else data
+              for entry in entries:
+                  total += 1
+                  tools = entry.get("tools") if isinstance(entry, dict) else None
+                  if not tools and isinstance(entry, dict):
+                      tools = list(entry.get("found_in", {}).keys())
+                  tools = {t.lower() for t in (tools or [])}
+                  in_arriba = "arriba" in tools
+                  in_sf = "starfusion" in tools or "star-fusion" in tools or "star_fusion" in tools
+                  arriba += int(in_arriba)
+                  starfusion += int(in_sf)
+                  if in_arriba and in_sf:
+                      both += 1
+                  elif in_arriba:
+                      arriba_only += 1
+                  elif in_sf:
+                      sf_only += 1
+          except Exception as e:
+              sys.stderr.write(f"fusion-report MQC summary fell back to zeros: {e}\n")
+
+          os.makedirs(os.path.dirname(out_tsv), exist_ok=True)
+          with open(out_tsv, "w") as fh:
+              fh.write("# id: fusion-report\n")
+              fh.write("# section_name: 'fusion-report (merged calls)'\n")
+              fh.write("# description: 'Per-caller fusion counts after fusion-report consolidation.'\n")
+              fh.write("# format: 'tsv'\n")
+              fh.write("# plot_type: 'table'\n")
+              fh.write("Sample\tTotal_unique_fusions\tArriba_total\tSTARFusion_total\tBoth_callers\tArriba_only\tSTARFusion_only\n")
+              fh.write(f"{sample}\t{total}\t{arriba}\t{starfusion}\t{both}\t{arriba_only}\t{sf_only}\n")
+          PY
+          echo "Wrote MultiQC custom-content TSV to ${MQC_OUT}"
+        volumeMounts:
+          - name: arriba-fusions-tsv
+            mountPath: "/mnt/input/arriba/{{=sprig.osBase(inputs.parameters['arriba-fusions-tsv'])}}"
+          - name: starfusion-predictions-tsv
+            mountPath: "/mnt/input/starfusion/{{=sprig.osBase(inputs.parameters['starfusion-predictions-tsv'])}}"
+          - name: fusion-report-db-dir
+            mountPath: "/mnt/ref/fusion_report_db/"
+          - name: output-dir
+            mountPath: "/mnt/output/"
+          - name: metrics-dir
+            mountPath: "/mnt/metrics/"
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: "2"

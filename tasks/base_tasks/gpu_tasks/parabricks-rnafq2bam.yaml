@@ -4,6 +4,27 @@ metadata:
   name: parabricks-rnafq2bam-template
 spec:
   templates:
+    # GPU-accelerated STAR alignment via pbrun rna_fq2bam. Chimeric tuning,
+    # read-group fields, and metrics-dir relay are exposed as parameters so
+    # the template can drive both an Arriba-tuned and a STAR-Fusion-tuned
+    # alignment pass without forking. Defaults preserve the prior hard-coded
+    # behavior.
+    #
+    # Note: pbrun rna_fq2bam's --out-chim-type is single-valued and selects
+    # which chimeric artifact gets written:
+    #   Junctions          → Chimeric.out.junction file (consumed by
+    #                        STAR-Fusion kickstart)
+    #   WithinBAM          → chimerics embedded in the main BAM
+    #   WithinBAM_HardClip → BAM-embedded with hard-clipping (Arriba wants)
+    #   WithinBAM_SoftClip → BAM-embedded with soft-clipping
+    # Native STAR accepts space-separated combos; Parabricks does not, so each
+    # pass picks one. min-chim-segment > 0 GATES chimeric detection but does
+    # not by itself produce a junction file — out-chim-type Junctions is also
+    # required for that.
+    #
+    # Flags not exposed by pbrun rna_fq2bam (run at STAR defaults regardless):
+    # chimScoreMin, chimScoreSeparation, chimSegmentReadGapMax,
+    # peOverlapNbasesMin.
     - name: parabricks-rnafq2bam
       tolerations:
         - key: "nvidia.com/gpu"
@@ -13,22 +34,60 @@ spec:
         parameters:
           - name: sample-id
           - name: genome-ref
-          # - name: genome-lib-dir
+          - name: genome-lib-dir
           - name: input-fq-r1
           - name: input-fq-r2
           - name: scratch-dir
           - name: output-bam
           - name: output-dir
           - name: thread-count
-
+          - name: metrics-dir
+          - name: read-group-id-prefix
+            default: "ID:GRPundef"
+          - name: read-group-sm
+            default: ""
+          - name: read-group-lb
+            default: ""
+          - name: read-group-pl
+            default: ""
+          # Chimeric tuning. Defaults match the prior hard-coded values, which
+          # were STAR-Fusion-leaning. The fusion-GPU workflow overrides these
+          # per pass (see somatic-fusion-fastq-gpu.yaml).
+          - name: out-chim-type
+            default: ""
+          - name: min-chim-segment
+            default: "12"
+          - name: min-chim-overhang
+            default: "8"
+          - name: out-chim-format
+            default: "1"
+          - name: chim-score-non-gtag
+            default: "-4"
+          - name: min-non-chim-score-drop
+            default: "10"
+          - name: max-junction-mismatches
+            default: "5 -1 5 5"
+          - name: max-chim-multimap
+            default: "20"
+          - name: chim-multimap-score-range
+            default: "3"
+          # Set "true" to skip pbrun's built-in MarkDuplicates and emit a
+          # sort-only BAM. Lets downstream Picard MarkDup own dup-marking +
+          # metrics for MultiQC parity with the CPU pipeline.
+          - name: no-markdups
+            default: "false"
       outputs:
         parameters:
           - name: output-bam
             value: "{{inputs.parameters.output-bam}}"
           - name: output-dir
             value: "{{inputs.parameters.output-dir}}"
+          # Only valid when out-chim-type=Junctions; with WithinBAM_* the
+          # chimerics live in the main BAM and this file does not exist.
           - name: output-chimeric-junction-file
             value: "{{inputs.parameters.output-dir}}/{{inputs.parameters.sample-id}}_Chimeric.out.junction"
+          - name: star-log-final
+            value: "{{inputs.parameters.metrics-dir}}Log.final.out"
       volumes:
         - name: input-fq-r1
           hostPath:
@@ -54,17 +113,36 @@ spec:
           hostPath:
             path: "{{=sprig.osDir(inputs.parameters['genome-ref'])}}"
             type: Directory
+        - name: genome-lib-dir
+          hostPath:
+            path: "{{inputs.parameters.genome-lib-dir}}"
+            type: Directory
+        - name: metrics-dir
+          hostPath:
+            path: "{{inputs.parameters.metrics-dir}}"
+            type: DirectoryOrCreate
       script:
-        name: "parabricks-germline-rnafq2bam-script"
+        name: "parabricks-rnafq2bam-script"
         image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
         resources:
           limits:
             nvidia.com/gpu: 1
-        command: [sh]
+        command: [bash]
         source: |
+          set -euo pipefail
+
+          # Build optional flag block. Empty values are skipped so the same
+          # template handles both STAR-Fusion and Arriba param sets.
+          OPT_ARGS=""
+          [ -n "{{inputs.parameters.read-group-sm}}" ]            && OPT_ARGS="${OPT_ARGS} --read-group-sm {{inputs.parameters.read-group-sm}}"
+          [ -n "{{inputs.parameters.read-group-lb}}" ]            && OPT_ARGS="${OPT_ARGS} --read-group-lb {{inputs.parameters.read-group-lb}}"
+          [ -n "{{inputs.parameters.read-group-pl}}" ]            && OPT_ARGS="${OPT_ARGS} --read-group-pl {{inputs.parameters.read-group-pl}}"
+          [ -n "{{inputs.parameters.out-chim-type}}" ]            && OPT_ARGS="${OPT_ARGS} --out-chim-type {{inputs.parameters.out-chim-type}}"
+          [ "{{inputs.parameters.no-markdups}}" = "true" ]        && OPT_ARGS="${OPT_ARGS} --no-markdups"
+
           pbrun rna_fq2bam \
-            --ref /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \
-            --genome-lib-dir /mnt/ref/genome/ \
+            --ref /mnt/ref/genome-fa/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \
+            --genome-lib-dir /mnt/ref/star-lib/ \
             --in-fq /mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-fq-r1'])}} /mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-fq-r2'])}} \
             --tmp-dir /mnt/scratch/ \
             --output-dir /mnt/output/dir/ \
@@ -75,20 +153,28 @@ spec:
             --read-files-command zcat \
             --out-sam-strand-field intronMotif \
             --out-sam-unmapped Within \
-            --min-chim-segment 12 \
-            --min-chim-overhang 8 \
-            --out-chim-format 1 \
+            --min-chim-segment {{inputs.parameters.min-chim-segment}} \
+            --min-chim-overhang {{inputs.parameters.min-chim-overhang}} \
+            --out-chim-format {{inputs.parameters.out-chim-format}} \
             --min-align-sjdb-overhang 10 \
             --max-align-mates-gap 100000 \
             --max-intron-size 100000 \
-            --max-junction-mismatches 5 -1 5 5 \
-            --read-group-id-prefix ID:GRPundef \
-            --chim-multimap-score-range 3 \
-            --max-chim-multimap 20 \
-            --min-non-chim-score-drop 10 \
-            --chim-score-non-gtag -4 \
+            --max-junction-mismatches {{inputs.parameters.max-junction-mismatches}} \
+            --read-group-id-prefix {{inputs.parameters.read-group-id-prefix}} \
+            --chim-multimap-score-range {{inputs.parameters.chim-multimap-score-range}} \
+            --max-chim-multimap {{inputs.parameters.max-chim-multimap}} \
+            --min-non-chim-score-drop {{inputs.parameters.min-non-chim-score-drop}} \
+            --chim-score-non-gtag {{inputs.parameters.chim-score-non-gtag}} \
             --align-insertion-flush Right \
-            --num-threads {{inputs.parameters.thread-count}}
+            --num-threads {{inputs.parameters.thread-count}} \
+            ${OPT_ARGS}
+
+          # Relay STAR alignment summary into metrics-dir for MultiQC.
+          for f in Log.final.out SJ.out.tab; do
+            if [ -f "/mnt/output/dir/$f" ]; then
+              cp "/mnt/output/dir/$f" "/mnt/metrics/$f"
+            fi
+          done
         volumeMounts:
           - name: input-fq-r1
             mountPath: "/mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-fq-r1'])}}"
@@ -99,6 +185,10 @@ spec:
           - name: scratch-dir
             mountPath: /mnt/scratch/
           - name: genome-ref
-            mountPath: /mnt/ref/genome/
+            mountPath: /mnt/ref/genome-fa/
+          - name: genome-lib-dir
+            mountPath: /mnt/ref/star-lib/
           - name: output-dir
             mountPath: /mnt/output/dir/
+          - name: metrics-dir
+            mountPath: /mnt/metrics/

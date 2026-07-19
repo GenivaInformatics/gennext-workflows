@@ -1,0 +1,125 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: sortmerna-template
+spec:
+  templates:
+    # Quantify rRNA contamination and emit rRNA-depleted FASTQs for the
+    # downstream STAR fork. FFPE libraries fail rRNA depletion at variable
+    # rates — this step gives us the "% reads classified as rRNA" QC metric
+    # (via SortMeRNA's MultiQC-native log) and recovers effective coverage
+    # by removing rRNA reads, which can't contribute to fusion calls.
+    #
+    # Reference DB: {ref-base-dir}/rna/sortmerna/ contains pre-indexed SILVA + Rfam
+    # FASTA files (e.g. smr_v4.3_default_db.fasta). All *.fasta files are passed as
+    # --ref flags. SortMeRNA caches its index under <workdir>/idx; reusing a workdir
+    # across runs avoids the one-time index build.
+    - name: sortmerna
+      inputs:
+        parameters:
+          - name: sample-name
+          - name: fq-r1
+          - name: fq-r2
+          - name: sortmerna-db-dir
+          - name: output-dir
+          - name: metrics-dir
+          - name: thread-count
+      outputs:
+        parameters:
+          - name: depleted-r1
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-name}}_depleted_R1.fq.gz"
+          - name: depleted-r2
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-name}}_depleted_R2.fq.gz"
+          - name: sortmerna-log
+            value: "{{inputs.parameters.metrics-dir}}{{inputs.parameters.sample-name}}_sortmerna.log"
+      volumes:
+        - name: fq-r1
+          hostPath:
+            path: "{{inputs.parameters.fq-r1}}"
+            type: File
+        - name: fq-r2
+          hostPath:
+            path: "{{inputs.parameters.fq-r2}}"
+            type: File
+        - name: sortmerna-db-dir
+          hostPath:
+            path: "{{inputs.parameters.sortmerna-db-dir}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+        - name: metrics-dir
+          hostPath:
+            path: "{{inputs.parameters.metrics-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: sortmerna
+        image: bergun/sortmerna:v5.0.0
+        command: [bash]
+        source: |
+          set -euo pipefail
+
+          SAMPLE="{{inputs.parameters.sample-name}}"
+          THREADS="{{=sprig.min(sprig.int(inputs.parameters['thread-count']), 16)}}"
+          R1_IN="/mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}"
+          R2_IN="/mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}"
+
+          # Build --ref flags from every FASTA in the DB dir.
+          REF_ARGS=""
+          for fa in /mnt/ref/sortmerna_db/*.fasta /mnt/ref/sortmerna_db/*.fa; do
+            [ -e "$fa" ] || continue
+            REF_ARGS="${REF_ARGS} --ref $fa"
+          done
+          if [ -z "${REF_ARGS}" ]; then
+            echo "ERROR: no *.fasta or *.fa files found under sortmerna-db-dir"
+            ls -la /mnt/ref/sortmerna_db/
+            exit 1
+          fi
+
+          # SortMeRNA writes its workdir to /tmp/smr_work; idx/ caches the
+          # built index across runs on the same node. kv/ + readb/ are
+          # per-run state and get wiped at the start.
+          WORKDIR="/tmp/smr_work"
+          mkdir -p "${WORKDIR}/idx"
+          rm -rf "${WORKDIR}/kvdb" "${WORKDIR}/readb"
+
+          echo "Running SortMeRNA on ${SAMPLE} (threads=${THREADS})"
+          sortmerna \
+            ${REF_ARGS} \
+            --reads "${R1_IN}" \
+            --reads "${R2_IN}" \
+            --workdir "${WORKDIR}" \
+            --fastx \
+            --aligned "${WORKDIR}/${SAMPLE}_rrna" \
+            --other "${WORKDIR}/${SAMPLE}_depleted" \
+            --paired_in \
+            --out2 \
+            --threads "${THREADS}" \
+            -v
+
+          # Publish depleted FASTQs to the scratch output-dir; both STAR runs
+          # consume these.
+          mv "${WORKDIR}/${SAMPLE}_depleted_fwd.fq.gz" "/mnt/output/${SAMPLE}_depleted_R1.fq.gz"
+          mv "${WORKDIR}/${SAMPLE}_depleted_rev.fq.gz" "/mnt/output/${SAMPLE}_depleted_R2.fq.gz"
+
+          # Publish the SortMeRNA log to metrics-dir for MultiQC ingestion.
+          # SortMeRNA writes the log next to the --aligned prefix.
+          cp "${WORKDIR}/${SAMPLE}_rrna.log" "/mnt/metrics/${SAMPLE}_sortmerna.log"
+
+          echo "SortMeRNA completed; depleted FASTQs and log published"
+        volumeMounts:
+          - name: fq-r1
+            mountPath: "/mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}"
+          - name: fq-r2
+            mountPath: "/mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}"
+          - name: sortmerna-db-dir
+            mountPath: "/mnt/ref/sortmerna_db/"
+          - name: output-dir
+            mountPath: "/mnt/output/"
+          - name: metrics-dir
+            mountPath: "/mnt/metrics/"
+        resources:
+          requests:
+            memory: 16Gi
+            cpu: "8"

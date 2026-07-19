@@ -1,0 +1,177 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: filter-artifact-fusions-template
+spec:
+  templates:
+    # Drop well-known fusion-call artefacts from fusion-report's outputs.
+    # Single source of truth for the artefact list across the pipeline:
+    # this filter runs once between fusion-report and all downstream
+    # consumers (oncokb-fusion-annotation, duckdb-fusions,
+    # extract-reads-for-fusion-inspector → FusionInspector). The
+    # user-facing `fusions.json` then only contains real candidates,
+    # not artefacts.
+    #
+    # Filtered classes (regex match on either gene partner OR self-fusion):
+    #   - mitochondrial             : ^MT-
+    #   - immunoglobulin loci       : ^IG[HKL][@JCV], ^IG{H,L,K}-?@, ^TR[ABDG][JCV]
+    #   - sn(o)RNA / rRNA           : ^RNU\d, ^SNORD\d, ^SNORA\d, ^SCARNA\d,
+    #                                  ^RNA5S, ^RNA5-8S, ^RNA28S, ^MIR\d
+    #   - pseudogenes               : \dP\d+$  (digit-anchored to avoid
+    #                                  collapsing real genes like ARHGAP26)
+    #   - antisense lncRNAs         : -AS\d+$
+    #   - unannotated clones        : ^ENSG\d, ^LINC\d, ^A[CLP]\d{6}\.\d, ^FP\d{6}\.\d
+    #   - self-fusions              : geneA == geneB
+    #
+    # Mirrors images/extract-reads-for-fusion-inspector/extract_reads.py
+    # ARTIFACT_PATTERNS so the filter view is identical between fusion
+    # outputs and FI input. Keep both in sync if the list is updated.
+    - name: filter-artifact-fusions
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: input-fusions-json
+          - name: input-fusion-list-tsv
+          - name: output-fusions-json
+          - name: output-fusion-list-tsv
+      outputs:
+        parameters:
+          - name: output-fusions-json
+            value: "{{inputs.parameters.output-fusions-json}}"
+          - name: output-fusion-list-tsv
+            value: "{{inputs.parameters.output-fusion-list-tsv}}"
+      volumes:
+        - name: input-fusions-json
+          hostPath:
+            path: "{{inputs.parameters.input-fusions-json}}"
+            type: File
+        - name: input-fusion-list-tsv
+          hostPath:
+            path: "{{inputs.parameters.input-fusion-list-tsv}}"
+            type: File
+        - name: output-fusions-json
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-fusions-json'])}}"
+            type: DirectoryOrCreate
+        - name: output-fusion-list-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-fusion-list-tsv'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: filter-artifact-fusions
+        image: python:3.12-slim
+        command: [python3]
+        source: |
+          import json
+          import re
+          import sys
+
+          IN_JSON = "/mnt/input/json/{{=sprig.osBase(inputs.parameters['input-fusions-json'])}}"
+          IN_TSV  = "/mnt/input/tsv/{{=sprig.osBase(inputs.parameters['input-fusion-list-tsv'])}}"
+          OUT_JSON = "/mnt/output/json/{{=sprig.osBase(inputs.parameters['output-fusions-json'])}}"
+          OUT_TSV  = "/mnt/output/tsv/{{=sprig.osBase(inputs.parameters['output-fusion-list-tsv'])}}"
+
+          # IMPORTANT: keep this list in sync with
+          # images/extract-reads-for-fusion-inspector/extract_reads.py.
+          ARTIFACT_PATTERNS = [
+              re.compile(r"^MT-"),
+              re.compile(r"^IG[HKL][@JCV]"),
+              re.compile(r"^IGH-?@"),
+              re.compile(r"^IGL-?@"),
+              re.compile(r"^IGK-?@"),
+              re.compile(r"^TR[ABDG][JCV]"),
+              re.compile(r"^RNU\d"),
+              re.compile(r"^SNORD\d"),
+              re.compile(r"^SNORA\d"),
+              re.compile(r"^SCARNA\d"),
+              re.compile(r"^RNA5S"),
+              re.compile(r"^RNA5-8S"),
+              re.compile(r"^RNA28S"),
+              re.compile(r"^MIR\d"),
+              re.compile(r"\dP\d+$"),
+              re.compile(r"-AS\d+$"),
+              re.compile(r"^ENSG\d"),
+              re.compile(r"^LINC\d"),
+              re.compile(r"^AC\d{6}\.\d"),
+              re.compile(r"^AL\d{6}\.\d"),
+              re.compile(r"^AP\d{6}\.\d"),
+              re.compile(r"^FP\d{6}\.\d"),
+          ]
+
+          def is_artifact(gene):
+              return any(p.search(gene) for p in ARTIFACT_PATTERNS)
+
+          def pair_keep(a, b):
+              return bool(a) and bool(b) and a != b \
+                  and not is_artifact(a) and not is_artifact(b)
+
+          def name_keep(name):
+              if "--" not in (name or ""):
+                  return False
+              a, b = name.split("--", 1)
+              return pair_keep(a, b)
+
+          # ---- TSV (one geneA--geneB per line; no header) -----------------------
+          kept_tsv = dropped_tsv = 0
+          with open(IN_TSV) as src, open(OUT_TSV, "w") as dst:
+              for line in src:
+                  s = line.strip()
+                  if not s or s.startswith("#"):
+                      continue
+                  pair = s.split("\t", 1)[0]
+                  if name_keep(pair):
+                      dst.write(s + "\n")
+                      kept_tsv += 1
+                  else:
+                      dropped_tsv += 1
+          print(f"fusion_list.tsv: {kept_tsv} kept, {dropped_tsv} dropped")
+
+          # ---- JSON (fusion-report output) -------------------------------------
+          # fusion-report 4.0.x emits a top-level dict keyed by fusion name; older
+          # versions used a list. Handle both shapes defensively.
+          with open(IN_JSON) as fh:
+              data = json.load(fh)
+
+          kept_json = dropped_json = 0
+          if isinstance(data, dict):
+              filtered = {}
+              for k, v in data.items():
+                  fusion_name = (
+                      v.get("Fusion") if isinstance(v, dict) else None
+                  ) or k
+                  if name_keep(fusion_name):
+                      filtered[k] = v
+                      kept_json += 1
+                  else:
+                      dropped_json += 1
+          elif isinstance(data, list):
+              filtered = []
+              for entry in data:
+                  fusion_name = entry.get("Fusion") or entry.get("fusion") or ""
+                  if name_keep(fusion_name):
+                      filtered.append(entry)
+                      kept_json += 1
+                  else:
+                      dropped_json += 1
+          else:
+              # Unknown shape; pass through unchanged but warn.
+              print(f"WARN: fusions.json top-level is {type(data).__name__}; "
+                    "passing through unfiltered", file=sys.stderr)
+              filtered = data
+
+          with open(OUT_JSON, "w") as fh:
+              json.dump(filtered, fh, indent=2)
+          print(f"fusions.json: {kept_json} kept, {dropped_json} dropped")
+        volumeMounts:
+          - name: input-fusions-json
+            mountPath: "/mnt/input/json/{{=sprig.osBase(inputs.parameters['input-fusions-json'])}}"
+          - name: input-fusion-list-tsv
+            mountPath: "/mnt/input/tsv/{{=sprig.osBase(inputs.parameters['input-fusion-list-tsv'])}}"
+          - name: output-fusions-json
+            mountPath: "/mnt/output/json/"
+          - name: output-fusion-list-tsv
+            mountPath: "/mnt/output/tsv/"
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: "1"

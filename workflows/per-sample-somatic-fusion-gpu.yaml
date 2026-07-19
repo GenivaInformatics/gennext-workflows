@@ -1,0 +1,148 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: per-sample-somatic-fusion-gpu
+  namespace: argo
+  annotations:
+    gennext.bio/expected-pods-fastq: "28"
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: main
+  onExit: on-exit-handler
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node-name}}"
+  arguments:
+    parameters:
+      - name: sample-uuid
+      - name: sample-id
+      - name: run-id
+      - name: user-id
+      - name: input-rel-dir
+      - name: output-rel-dir
+      - name: temp-rel-dir
+      - name: scratch-rel-dir
+      - name: ref-base-dir
+      - name: thread-count
+      - name: node-name
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: set-sample-running
+            templateRef:
+              name: change-sample-state-template
+              template: change-sample-state
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{workflow.parameters.run-id}}"
+                - name: sample-uuid
+                  value: "{{workflow.parameters.sample-uuid}}"
+                - name: sample-state
+                  value: "running"
+          - name: load-and-prepare-rna
+            templateRef:
+              name: load-and-prepare
+              template: load-and-prepare-rna
+            arguments:
+              parameters:
+                - name: sample-uuid
+                  value: "{{workflow.parameters.sample-uuid}}"
+                - name: run-id
+                  value: "{{workflow.parameters.run-id}}"
+                - name: input-rel-dir
+                  value: "{{workflow.parameters.input-rel-dir}}"
+                - name: output-rel-dir
+                  value: "{{workflow.parameters.output-rel-dir}}"
+                - name: temp-rel-dir
+                  value: "{{workflow.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{workflow.parameters.scratch-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{workflow.parameters.ref-base-dir}}"
+
+          # Prototype scope: FASTQ inputs only. BAM-input fusion calling
+          # would skip both STAR runs and FusionInspector's FASTQ-driven
+          # realignment, which defeats the design — see prototype plan.
+          - name: run-fusion-fastq
+            when: "'{{tasks.load-and-prepare-rna.outputs.parameters.rna-file-type}}' == 'fastq'"
+            templateRef:
+              name: somatic-fusion-fastq-gpu-v2
+              template: somatic-testing-fusion-fastq-gpu
+            arguments:
+              parameters:
+                - name: user-id
+                  value: "{{workflow.parameters.user-id}}"
+                - name: run-id
+                  value: "{{workflow.parameters.run-id}}"
+                - name: sample-id
+                  value: "{{tasks.load-and-prepare-rna.outputs.parameters.sample-id}}"
+                - name: sample-uuid
+                  value: "{{workflow.parameters.sample-uuid}}"
+                - name: rna-input-files
+                  value: "{{tasks.load-and-prepare-rna.outputs.parameters.rna-input-files}}"
+                - name: tumor-type
+                  value: "{{tasks.load-and-prepare-rna.outputs.parameters.tumor-type}}"
+                - name: ref-version
+                  value: "{{tasks.load-and-prepare-rna.outputs.parameters.ref-version}}"
+                - name: ref-paths
+                  value: "{{tasks.load-and-prepare-rna.outputs.parameters.ref-paths}}"
+                - name: ref-base-dir
+                  value: "{{workflow.parameters.ref-base-dir}}"
+                - name: sample-input-dir
+                  value: "{{tasks.load-and-prepare-rna.outputs.parameters.sample-input-dir}}"
+                - name: sample-output-dir
+                  value: "{{tasks.load-and-prepare-rna.outputs.parameters.sample-output-dir}}"
+                - name: sample-temp-dir
+                  value: "{{tasks.load-and-prepare-rna.outputs.parameters.sample-temp-dir}}"
+                - name: sample-scratch-dir
+                  value: "{{tasks.load-and-prepare-rna.outputs.parameters.sample-scratch-dir}}"
+                - name: thread-count
+                  value: "{{workflow.parameters.thread-count}}"
+            depends: "set-sample-running && load-and-prepare-rna"
+
+          - name: set-sample-completed
+            when: "'{{tasks.load-and-prepare-rna.outputs.parameters.has-post-processing}}' == 'false'"
+            templateRef:
+              name: change-sample-state-template
+              template: change-sample-state
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{workflow.parameters.run-id}}"
+                - name: sample-uuid
+                  value: "{{workflow.parameters.sample-uuid}}"
+                - name: sample-state
+                  value: "completed"
+            depends: "run-fusion-fastq.Succeeded || run-fusion-fastq.Skipped"
+
+          - name: set-sample-postprocessing
+            when: "'{{tasks.load-and-prepare-rna.outputs.parameters.has-post-processing}}' == 'true'"
+            templateRef:
+              name: change-sample-state-template
+              template: change-sample-state
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{workflow.parameters.run-id}}"
+                - name: sample-uuid
+                  value: "{{workflow.parameters.sample-uuid}}"
+                - name: sample-state
+                  value: "post_processing"
+            depends: "run-fusion-fastq.Succeeded || run-fusion-fastq.Skipped"
+
+    - name: on-exit-handler
+      steps:
+        - - name: set-sample-error
+            templateRef:
+              name: change-sample-state-template
+              template: change-sample-state
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{workflow.parameters.run-id}}"
+                - name: sample-uuid
+                  value: "{{workflow.parameters.sample-uuid}}"
+                - name: sample-state
+                  value: "error"
+            when: "{{workflow.status}} == Failed"

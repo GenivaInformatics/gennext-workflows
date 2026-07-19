@@ -1,0 +1,89 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: batch-orchestrator-prototype
+  namespace: gennext-dev
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: main
+  arguments:
+    parameters:
+      - name: samples
+        # JSON array of sample objects, e.g.:
+        # [{"id":"uuid-1","sampleId":"TUMOR-A"},{"id":"uuid-2","sampleId":"TUMOR-B"},{"id":"uuid-3","sampleId":"TUMOR-C"}]
+  templates:
+    # -------------------------------------------------------------------------
+    # main: orchestrator DAG
+    # -------------------------------------------------------------------------
+    - name: main
+      dag:
+        tasks:
+          - name: fan-out-samples
+            template: fan-out-samples
+            arguments:
+              parameters:
+                - name: samples
+                  value: "{{workflow.parameters.samples}}"
+
+    # -------------------------------------------------------------------------
+    # fan-out-samples: iterates over samples array, spawns a child workflow
+    # per sample via withParam. Each iteration calls submit-sample-workflow
+    # which creates a separate Workflow resource.
+    # continueOn.failed allows remaining samples to proceed if one fails.
+    # -------------------------------------------------------------------------
+    - name: fan-out-samples
+      inputs:
+        parameters:
+          - name: samples
+      steps:
+        - - name: process-sample
+            template: submit-sample-workflow
+            arguments:
+              parameters:
+                - name: sample-json
+                  value: "{{item}}"
+            withParam: "{{inputs.parameters.samples}}"
+            continueOn:
+              failed: true
+
+    # -------------------------------------------------------------------------
+    # submit-sample-workflow: creates a child Workflow as a K8s resource.
+    # The parent waits for successCondition/failureCondition.
+    # Each child is a separate Workflow visible in the Argo UI.
+    #
+    # Concurrency is controlled via synchronization semaphore backed by
+    # the batch-sample-semaphore ConfigMap. Only N samples run at a time.
+    # -------------------------------------------------------------------------
+    - name: submit-sample-workflow
+      inputs:
+        parameters:
+          - name: sample-json
+      synchronization:
+        semaphore:
+          configMapKeyRef:
+            name: batch-sample-semaphore
+            key: max-concurrent
+      resource:
+        action: create
+        successCondition: status.phase == Succeeded
+        failureCondition: status.phase in (Failed, Error)
+        manifest: |
+          apiVersion: argoproj.io/v1alpha1
+          kind: Workflow
+          metadata:
+            generateName: sample-job-
+            namespace: gennext-dev
+            labels:
+              gennext.bio/orchestrator: "{{workflow.name}}"
+              gennext.bio/sample-id: "{{=jsonpath(inputs.parameters['sample-json'], '$.sampleId')}}"
+          spec:
+            serviceAccountName: gennext-workflows
+            entrypoint: sample-work
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{=jsonpath(inputs.parameters['sample-json'], '$.sampleId')}}"
+                - name: sample-uuid
+                  value: "{{=jsonpath(inputs.parameters['sample-json'], '$.id')}}"
+            workflowTemplateRef:
+              name: sample-worker-prototype

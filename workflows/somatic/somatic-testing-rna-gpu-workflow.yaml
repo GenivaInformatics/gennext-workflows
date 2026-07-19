@@ -177,6 +177,8 @@ spec:
                   value: "{{inputs.parameters.temp-rel-dir}}results/fusions/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_fusions.tsv"
                 - name: output-chimeric-out-fusions
                   value: "{{inputs.parameters.temp-rel-dir}}results/fusions/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_Chimeric.out.junction"
+                - name: metrics-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}metrics/rna/star-fusion/"
                 - name: scratch-dir
                   value: "{{inputs.parameters.scratch-rel-dir}}star-fusion/"
                 - name: ctat-genome-lib-build-dir
@@ -588,6 +590,8 @@ spec:
                   value: "{{inputs.parameters.temp-rel-dir}}results/fusions/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_fusions.tsv"
                 - name: output-chimeric-out-fusions
                   value: "{{inputs.parameters.temp-rel-dir}}results/fusions/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_Chimeric.out.junction"
+                - name: metrics-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}metrics/rna/star-fusion/"
                 - name: scratch-dir
                   value: "{{inputs.parameters.scratch-rel-dir}}star-fusion/"
                 - name: ctat-genome-lib-build-dir

@@ -1,0 +1,428 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: per-sample-cnv-analysis
+  namespace: argo
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: per-sample-cnv-pipeline
+  templates:
+    - name: per-sample-cnv-pipeline
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: scratch-cnv-dir
+          - name: ref-flat
+          - name: ref-base-dir
+          - name: output-base-dir
+          - name: run-id
+          - name: run-hrd
+      dag:
+        tasks:
+          # --- Resolve per-sample paths from scratch JSON ---
+          - name: resolve-sample
+            template: resolve-sample-data
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: scratch-cnv-dir
+                  value: "{{inputs.parameters.scratch-cnv-dir}}"
+
+          # --- CNVkit: fix + segment + call + scatter + export ---
+          - name: analyze
+            template: cnvkit-analyze
+            arguments:
+              parameters:
+                - name: sample-uuid
+                  value: "{{tasks.resolve-sample.outputs.parameters.sample-uuid}}"
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: scratch-cnv-dir
+                  value: "{{inputs.parameters.scratch-cnv-dir}}"
+                - name: output-cnv-dir
+                  value: "{{tasks.resolve-sample.outputs.parameters.output-cnv-dir}}"
+                - name: vcf-path
+                  value: "{{tasks.resolve-sample.outputs.parameters.vcf-path}}"
+            depends: resolve-sample
+
+          # --- Python: threshold + filter + gene annotate ---
+          - name: post-process
+            template: cnvkit-post-process
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: scratch-cnv-dir
+                  value: "{{inputs.parameters.scratch-cnv-dir}}"
+                - name: output-cnv-dir
+                  value: "{{tasks.resolve-sample.outputs.parameters.output-cnv-dir}}"
+                - name: ref-flat
+                  value: "{{inputs.parameters.ref-flat}}"
+            depends: analyze
+
+          # --- AnnotSV structural variant annotation ---
+          - name: annotsv
+            templateRef:
+              name: annotsv-template
+              template: annotsv-with-fallback
+            arguments:
+              parameters:
+                - name: input-vcf-f
+                  value: "{{tasks.resolve-sample.outputs.parameters.output-cnv-dir}}/{{inputs.parameters.sample-id}}.cnv.filtered.annotated.vcf"
+                - name: annotsv-ref-dir
+                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other/AnnotSV/"
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: ref-version
+                  value: "hg38"
+                - name: sv-min-size
+                  value: "20"
+                - name: vcf-pass-only
+                  value: "true"
+                - name: output-annotsv-tsv-f
+                  value: "{{tasks.resolve-sample.outputs.parameters.output-cnv-dir}}/{{inputs.parameters.sample-id}}_CNV_annot.tsv"
+            depends: post-process
+
+          # --- Convert AnnotSV to OncoKB format ---
+          - name: annotsv-to-oncokb
+            templateRef:
+              name: filter-annotsv-template
+              template: annotsv-to-oncokb-format
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: annotsv-tsv
+                  value: "{{tasks.resolve-sample.outputs.parameters.output-cnv-dir}}/{{inputs.parameters.sample-id}}_CNV_annot.tsv"
+                - name: annotsv-filtered-out-tsv
+                  value: "{{tasks.resolve-sample.outputs.parameters.output-cnv-dir}}/{{inputs.parameters.sample-id}}_CNV_annot_filtered.tsv"
+                - name: annotsv-oncokb-out-tsv
+                  value: "{{tasks.resolve-sample.outputs.parameters.output-cnv-dir}}/{{inputs.parameters.sample-id}}_CNV_oncokb.tsv"
+            depends: annotsv
+
+          # --- OncoKB clinical annotation ---
+          - name: oncokb-cnv
+            templateRef:
+              name: oncokb-templates
+              template: oncokb-sv
+            arguments:
+              parameters:
+                - name: oncokb-sv-in-f
+                  value: "{{tasks.resolve-sample.outputs.parameters.output-cnv-dir}}/{{inputs.parameters.sample-id}}_CNV_oncokb.tsv"
+                - name: oncokb-sv-out-f
+                  value: "{{tasks.resolve-sample.outputs.parameters.output-cnv-dir}}/{{inputs.parameters.sample-id}}_CNV_oncokb_annot.tsv"
+                - name: tumor-type
+                  value: "{{tasks.resolve-sample.outputs.parameters.tumor-type}}"
+            depends: annotsv-to-oncokb
+
+          # --- Write results to DuckDB ---
+          - name: duckdb-cnv
+            templateRef:
+              name: duckdb-template
+              template: duckdb-cnv
+            arguments:
+              parameters:
+                - name: oncokb-tsv-f
+                  value: "{{tasks.resolve-sample.outputs.parameters.output-cnv-dir}}/{{inputs.parameters.sample-id}}_CNV_oncokb_annot.tsv"
+                - name: annotsv-tsv-f
+                  value: "{{tasks.resolve-sample.outputs.parameters.output-cnv-dir}}/{{inputs.parameters.sample-id}}_CNV_annot_filtered.tsv"
+                - name: output-duckdb
+                  value: "{{inputs.parameters.output-base-dir}}{{tasks.resolve-sample.outputs.parameters.sample-uuid}}/results/db/{{inputs.parameters.sample-id}}_results.duckdb"
+            depends: oncokb-cnv
+
+          # --- scarHRD analysis (conditional) ---
+          - name: scarhrd
+            template: scarhrd
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: output-cnv-dir
+                  value: "{{tasks.resolve-sample.outputs.parameters.output-cnv-dir}}"
+                - name: output-hrd-dir
+                  value: "{{inputs.parameters.output-base-dir}}{{tasks.resolve-sample.outputs.parameters.sample-uuid}}/metrics/hrd/"
+            when: "'{{inputs.parameters.run-hrd}}' == 'true'"
+            depends: analyze
+
+          # --- Collect HRD data and POST to backend ---
+          - name: collect-hrd-data
+            templateRef:
+              name: collect-somatic-data-templates
+              template: collect-hrd-data
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: hrd-json-f
+                  value: "{{inputs.parameters.output-base-dir}}{{tasks.resolve-sample.outputs.parameters.sample-uuid}}/metrics/hrd/{{inputs.parameters.sample-id}}_hrd.json"
+            when: "'{{inputs.parameters.run-hrd}}' == 'true'"
+            depends: scarhrd
+
+    # =====================================================================
+    # Resolve per-sample data from scratch JSON file
+    # =====================================================================
+    - name: resolve-sample-data
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: scratch-cnv-dir
+      outputs:
+        parameters:
+          - name: sample-uuid
+            valueFrom:
+              path: /tmp/sample_uuid.txt
+          - name: bam-path
+            valueFrom:
+              path: /tmp/bam_path.txt
+          - name: vcf-path
+            valueFrom:
+              path: /tmp/vcf_path.txt
+          - name: output-cnv-dir
+            valueFrom:
+              path: /tmp/output_cnv_dir.txt
+          - name: tumor-type
+            valueFrom:
+              path: /tmp/tumor_type.txt
+      script:
+        image: python:3.13-alpine
+        command: [python]
+        source: |
+          import json, os
+          with open("/scratch/samples/{{inputs.parameters.sample-id}}.json") as f:
+              sample = json.load(f)
+          # Batch CNV outputs land in batch_results/ so the cohort CNV pipeline
+          # (per-sample-cnv-cohort-analysis) can write to cohort_results/ side-by-side.
+          batch_cnv_dir = os.path.join(sample["output-cnv-dir"].rstrip("/"), "batch_results")
+          for key, path, value in [
+              ("sample-uuid", "/tmp/sample_uuid.txt", sample["sample-uuid"]),
+              ("bam-path", "/tmp/bam_path.txt", sample["bam-path"]),
+              ("vcf-path", "/tmp/vcf_path.txt", sample["vcf-path"]),
+              ("output-cnv-dir", "/tmp/output_cnv_dir.txt", batch_cnv_dir),
+              ("tumor-type", "/tmp/tumor_type.txt", sample["tumor-type"]),
+          ]:
+              with open(path, "w") as f:
+                  f.write(value)
+        volumeMounts:
+          - name: scratch
+            mountPath: /scratch/
+            readOnly: true
+      volumes:
+        - name: scratch
+          hostPath:
+            path: "{{inputs.parameters.scratch-cnv-dir}}"
+            type: Directory
+
+    # =====================================================================
+    # CNVkit: analyze (fix + segment + call + scatter + export)
+    # =====================================================================
+    - name: cnvkit-analyze
+      inputs:
+        parameters:
+          - name: sample-uuid
+          - name: sample-id
+          - name: scratch-cnv-dir
+          - name: output-cnv-dir
+          - name: vcf-path
+      script:
+        image: quay.io/biocontainers/cnvkit:0.9.13--pyhdfd78af_0
+        command: [sh]
+        source: |
+          set -e
+          UUID="{{inputs.parameters.sample-uuid}}"
+          SAMPLE_ID="{{inputs.parameters.sample-id}}"
+          VCF="/vcf/{{=sprig.osBase(inputs.parameters['vcf-path'])}}"
+          mkdir -p /output
+
+          # Fix (normalize) coverage against pooled reference. CNVkit 0.9.13
+          # doesn't support --drop-low-coverage on fix (the flag applies to
+          # segment/call/genemetrics, where the actual filtering matters);
+          # low-coverage bins are still emitted to .cnr with log2=-20 sentinel
+          # but get excluded downstream by the --drop-low-coverage on segment.
+          cnvkit.py fix \
+            /scratch/coverage/${UUID}.targetcoverage.cnn \
+            /scratch/coverage/${UUID}.antitargetcoverage.cnn \
+            /scratch/references/pooled_reference.cnn \
+            -o /output/${SAMPLE_ID}.cnr
+
+          # Segment via CBS with smoothing for tumor robustness.
+          cnvkit.py segment \
+            --smooth-cbs \
+            --drop-low-coverage \
+            /output/${SAMPLE_ID}.cnr \
+            -o /output/${SAMPLE_ID}.cns
+
+          # Call with BAF from VCF (produces cn1, cn2 columns).
+          cnvkit.py call \
+            --drop-low-coverage \
+            /output/${SAMPLE_ID}.cns \
+            -v "$VCF" \
+            -i ${SAMPLE_ID} \
+            --ploidy 2 \
+            -o /output/${SAMPLE_ID}.call.cns
+
+          # Scatter plot with BAF track
+          cnvkit.py scatter \
+            /output/${SAMPLE_ID}.cnr \
+            -s /output/${SAMPLE_ID}.call.cns \
+            -v "$VCF" \
+            -o /output/${SAMPLE_ID}-scatter.png
+
+          # Export to VCF from the called segments. Must be .call.cns (integer
+          # cn calls), not .cns: exporting from .cns loses every CNV because
+          # cnvkit re-derives copy number by naive ploidy rounding of the modest
+          # log2 values, collapsing all segments to neutral → empty VCF.
+          cnvkit.py export vcf \
+            /output/${SAMPLE_ID}.call.cns \
+            --cnr /output/${SAMPLE_ID}.cnr \
+            -i ${SAMPLE_ID} \
+            -o /output/${SAMPLE_ID}.cnv.vcf
+
+          # Per-gene log2/fold summary, computed straight off .cnr so it's
+          # robust to segmentation choices (catches focal oncogenic events
+          # that get diluted into broader segments). Mirrors the same step
+          # in per-sample-cnv-cohort-analysis.yaml's cnvkit-analyze. Non-fatal
+          # so a genemetrics failure doesn't tank an otherwise-good run.
+          # Thresholds: log2 >= 0.3 (~|fold|>1.23), min 1 probe per gene.
+          cnvkit.py genemetrics \
+            --drop-low-coverage \
+            /output/${SAMPLE_ID}.cnr \
+            -t 0.3 \
+            -m 1 \
+            -o /output/${SAMPLE_ID}.genemetrics.tsv \
+            || echo "genemetrics failed (non-fatal)" >&2
+        volumeMounts:
+          - name: scratch
+            mountPath: /scratch/
+            readOnly: true
+          - name: output-cnv
+            mountPath: /output/
+          - name: vcf-dir
+            mountPath: /vcf/
+            readOnly: true
+      volumes:
+        - name: scratch
+          hostPath:
+            path: "{{inputs.parameters.scratch-cnv-dir}}"
+            type: Directory
+        - name: output-cnv
+          hostPath:
+            path: "{{inputs.parameters.output-cnv-dir}}"
+            type: DirectoryOrCreate
+        - name: vcf-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['vcf-path'])}}"
+            type: Directory
+
+    # =====================================================================
+    # Post-process (threshold + filter + gene annotate)
+    # =====================================================================
+    - name: cnvkit-post-process
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: scratch-cnv-dir
+          - name: output-cnv-dir
+          - name: ref-flat
+      container:
+        # Batch path uses --sigma-source=spread so thresholds derive from the
+        # self-pooled reference's per-bin SD (real noise) rather than its
+        # consensus log2 column (which carries the batch cohort's CNV dynamic
+        # range and previously inflated sigma_1 past every real call). See
+        # gennext-cnv-analysis v0.4.0.
+        image: bergun/gennext-cnv-analysis:0.4.0
+        args:
+          - "batch-post-process"
+          - "--vcf=/output/{{inputs.parameters.sample-id}}.cnv.vcf"
+          - "--reference=/scratch/references/pooled_reference.cnn"
+          - "--refflat=/refflat/{{=sprig.osBase(inputs.parameters['ref-flat'])}}"
+          - "--output-dir=/output/"
+          - "--sample-id={{inputs.parameters.sample-id}}"
+          - "--sigma-source=spread"
+          - "--verbose"
+        volumeMounts:
+          - name: scratch
+            mountPath: /scratch/
+            readOnly: true
+          - name: output-cnv
+            mountPath: /output/
+          - name: refflat-dir
+            mountPath: /refflat/
+            readOnly: true
+      volumes:
+        - name: scratch
+          hostPath:
+            path: "{{inputs.parameters.scratch-cnv-dir}}"
+            type: Directory
+        - name: output-cnv
+          hostPath:
+            path: "{{inputs.parameters.output-cnv-dir}}"
+            type: DirectoryOrCreate
+        - name: refflat-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['ref-flat'])}}"
+            type: Directory
+
+    # =====================================================================
+    # scarHRD: HRD score calculation from CNVkit call.cns
+    # =====================================================================
+    - name: scarhrd
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: output-cnv-dir
+          - name: output-hrd-dir
+      script:
+        image: bergun/gennext-scarhrd-cli:0.1.0
+        command: [bash, -euo, pipefail, -c]
+        args:
+          - |
+            set -euo pipefail
+            mkdir -p /mnt/hrd-output
+
+            SAMPLE_ID="{{inputs.parameters.sample-id}}"
+            CNS="/mnt/output/${SAMPLE_ID}.call.cns"
+            HRD_JSON="/mnt/hrd-output/${SAMPLE_ID}_hrd.json"
+
+            # scarHRD needs allele-specific copy numbers (cn1/cn2). cnvkit only
+            # emits those when there are enough reads/variants to call BAF; a
+            # near-empty sample yields a plain call.cns without them. In that
+            # case emit a zero-filled fallback so collect-hrd-data still runs
+            # and the sample completes instead of failing the whole workflow.
+            if [[ ! -s "$CNS" ]] || ! head -n1 "$CNS" | grep -qw cn1 || ! head -n1 "$CNS" | grep -qw cn2; then
+                echo "WARN: ${CNS} lacks cn1/cn2 (insufficient reads for allele-specific CN). Writing zero-filled HRD fallback." >&2
+                cat > "$HRD_JSON" <<EOF
+            {"HRD": 0, "Telomeric_AI": 0, "LST": 0, "HRD_sum": 0}
+            EOF
+                exit 0
+            fi
+
+            scarhrd-cli \
+                --input "$CNS" \
+                --sample-id "$SAMPLE_ID" \
+                --sequenza-output "/mnt/hrd-output/${SAMPLE_ID}_sequenza.txt" \
+                --hrd-tsv-output "/mnt/hrd-output/${SAMPLE_ID}_hrd.tsv" \
+                --hrd-json-output "$HRD_JSON"
+        volumeMounts:
+          - name: output-cnv
+            mountPath: /mnt/output
+            readOnly: true
+          - name: hrd-output
+            mountPath: /mnt/hrd-output
+        securityContext:
+          runAsUser: 0
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: "1"
+      volumes:
+        - name: output-cnv
+          hostPath:
+            path: "{{inputs.parameters.output-cnv-dir}}"
+            type: Directory
+        - name: hrd-output
+          hostPath:
+            path: "{{inputs.parameters.output-hrd-dir}}"
+            type: DirectoryOrCreate

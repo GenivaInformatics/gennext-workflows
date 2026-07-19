@@ -1,0 +1,78 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: picard-markduplicates-template
+spec:
+  templates:
+    # Coordinate-based MarkDuplicates. The DNA-path workflows still use this
+    # template (their libraries are not UMI-based, so coord-only dedup is
+    # appropriate).
+    #
+    # The RNA fusion workflow (`somatic-fusion-fastq-gpu-v2` and the
+    # prototype at `workflows/prototypes/test-fusion-inspector.yaml`) NO
+    # LONGER uses this template — it now uses `umi-tools-dedup-template`
+    # because those FFPE libraries carry true 5 bp UMIs (extracted by fastp
+    # into the QNAME suffix). Coord-only dedup over-collapses UMI-distinct
+    # molecules; coord+UMI dedup is the correct primitive there.
+    - name: picard-markduplicates
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: input-bam
+          - name: output-bam
+          - name: output-metrics
+      outputs:
+        parameters:
+          - name: output-bam
+            value: "{{inputs.parameters.output-bam}}"
+          - name: output-metrics
+            value: "{{inputs.parameters.output-metrics}}"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: output-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-bam'])}}"
+            type: DirectoryOrCreate
+        - name: output-metrics
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-metrics'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: picard-markduplicates
+        image: broadinstitute/gatk:4.6.2.0
+        command: [bash]
+        source: |
+          set -euo pipefail
+
+          BAM_IN="/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}"
+          BAM_OUT="/mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}"
+          METRICS_OUT="/mnt/output/metrics/{{=sprig.osBase(inputs.parameters['output-metrics'])}}"
+
+          echo "Running MarkDuplicates (via GATK4)"
+          echo "  Input:    ${BAM_IN}"
+          echo "  Output:   ${BAM_OUT}"
+          echo "  Metrics:  ${METRICS_OUT}"
+
+          gatk --java-options "-Xmx12G" MarkDuplicates \
+            -I "${BAM_IN}" \
+            -O "${BAM_OUT}" \
+            -M "${METRICS_OUT}" \
+            --ASSUME_SORT_ORDER coordinate \
+            --VALIDATION_STRINGENCY LENIENT \
+            --CREATE_INDEX true
+
+          echo "MarkDuplicates completed"
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/mnt/input/bam/"
+          - name: output-bam
+            mountPath: "/mnt/output/bam/"
+          - name: output-metrics
+            mountPath: "/mnt/output/metrics/"
+        resources:
+          requests:
+            memory: 16Gi
+            cpu: "4"

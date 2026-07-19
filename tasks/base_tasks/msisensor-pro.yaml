@@ -13,6 +13,8 @@ spec:
           - name: tcga-baseline
           - name: input-bam
           - name: output-dir
+          - name: regions-bed-f
+            default: ""
       outputs:
         parameters:
           - name: output-tsv
@@ -30,14 +32,25 @@ spec:
           hostPath:
             path: "{{inputs.parameters.tcga-baseline}}"
             type: File
+        - name: regions-bed-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['regions-bed-f'] != '' ? inputs.parameters['regions-bed-f'] : '/tmp/empty')}}"
+            type: DirectoryOrCreate
       script:
         name: "msisensor-pro-script"
-        image: pengjia1110/msisensor-pro:latest
+        image: quay.io/biocontainers/msisensor-pro:1.3.0--hd979922_1
         command: [sh]
         source: |
+          REGIONS_BED="{{inputs.parameters.regions-bed-f}}"
+          BED_FLAG=""
+          if [ -n "$REGIONS_BED" ]; then
+            BED_FLAG="-e /mnt/bed/$(basename "$REGIONS_BED")"
+          fi
+
           msisensor-pro pro \
           -d /ref/msisensor-pro/{{=sprig.osBase(inputs.parameters['tcga-baseline'])}} \
           -t /mnt/input/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+          $BED_FLAG \
           -o /mnt/output/{{inputs.parameters.sample-id}}_fusions_msi
         volumeMounts:
           - name: input-bam
@@ -46,3 +59,5 @@ spec:
             mountPath: "/mnt/output/"
           - name: tcga-baseline
             mountPath: "/ref/msisensor-pro/{{=sprig.osBase(inputs.parameters['tcga-baseline'])}}"
+          - name: regions-bed-f
+            mountPath: "/mnt/bed/"

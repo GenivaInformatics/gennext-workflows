@@ -36,7 +36,7 @@ spec:
             type: File
       script:
         name: mutect2-mark-calls-script
-        image: broadinstitute/gatk:4.6.1.0
+        image: broadinstitute/gatk:4.6.2.0
         command: [sh]
         source: |
           regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";
@@ -99,7 +99,7 @@ spec:
             type: File
       script:
         name: mutect2-tumor-only
-        image: broadinstitute/gatk:4.6.1.0
+        image: broadinstitute/gatk:4.6.2.0
         command: [sh]
         source: |
           regionsFile="{{=sprig.osBase(inputs.parameters['regions-file'])}}";

@@ -1,0 +1,224 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: somatic-dna-vcf-v2
+  namespace: argo
+spec:
+  templates:
+    - name: somatic-testing-dna-gpu-vcf-v2
+      inputs:
+        parameters:
+          - name: user-id
+          - name: run-id
+          - name: sample-id
+          - name: sample-uuid
+          - name: dna-input-files
+          - name: tumor-type
+          - name: ref-version
+          - name: ref-paths
+          - name: ref-base-dir
+          - name: sample-input-dir
+          - name: sample-output-dir
+          - name: sample-temp-dir
+          - name: sample-scratch-dir
+          - name: vcf-is-prefiltered
+            default: "false"
+          - name: thread-count
+            default: "20"
+      dag:
+        tasks:
+          - name: validate-bed-file
+            templateRef:
+              name: bed-validator-template
+              template: validate-bed-file
+            arguments:
+              parameters:
+                - name: input-bed-file
+                  value: "{{=jsonpath(inputs.parameters['dna-input-files'], '$.regionsFile')}}"
+                - name: gtf-file
+                  value: "{{inputs.parameters.ref-base-dir}}/{{inputs.parameters.ref-version}}/gene_annots/gencode.v49.basic.annotation.MANE_Select.gtf.gz"
+                - name: chains-dir
+                  value: "{{inputs.parameters.ref-base-dir}}/{{inputs.parameters.ref-version}}/other/chains/"
+                - name: output-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}/metrics/bed_validation/"
+          - name: vcf-harmonizer
+            templateRef:
+              name: vcf-harmonizer-template
+              template: vcf-harmonizer-full
+            arguments:
+              parameters:
+                - name: input-vcf
+                  value: "{{=jsonpath(inputs.parameters['dna-input-files'], '$.vcf')}}"
+                - name: output-vcf
+                  value: "{{inputs.parameters.sample-scratch-dir}}vcf/{{inputs.parameters.sample-id}}_harmonized.vcf.gz"
+                - name: target-genome
+                  value: "hg38"
+                - name: caller
+                  value: "auto"
+                - name: ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}"
+          - name: bcftools-filter
+            templateRef:
+              name: bcftools-template
+              template: bcftools-filter-and-bed
+            arguments:
+              parameters:
+                - name: do-filter
+                  value: "{{=inputs.parameters['vcf-is-prefiltered'] == 'true' ? '' : 'PASS'}}"
+                - name: input-vcf-f
+                  value: "{{tasks.vcf-harmonizer.outputs.parameters.output-vcf}}"
+                - name: output-vcf-f
+                  value: "{{inputs.parameters.sample-temp-dir}}/results/snv/vcf/{{inputs.parameters.sample-id}}_filtered.vcf.gz"
+                - name: regions-file
+                  value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-file}}"
+            depends: "vcf-harmonizer && validate-bed-file"
+          - name: annovar
+            templateRef:
+              name: annovar-template
+              template: annovar
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: input-vcf-f
+                  value: "{{tasks.bcftools-filter.outputs.parameters.output-vcf-f}}"
+                - name: ref-version
+                  value: "hg38"
+                - name: output-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}results/snv/"
+                - name: annovardb-dir
+                  value: "{{=jsonpath(inputs.parameters['ref-paths'], '$.other.annovar')}}"
+            depends: "bcftools-filter"
+          - name: cancervar
+            templateRef:
+              name: cancervar-template
+              template: cancervar
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: input-vcf-f
+                  value: "{{tasks.bcftools-filter.outputs.parameters.output-vcf-f}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}results/snv/"
+                - name: annovardb-dir
+                  value: "{{=jsonpath(inputs.parameters['ref-paths'], '$.other.annovar')}}"
+            depends: "annovar"
+          - name: annovar-to-maf
+            templateRef:
+              name: annovar-to-maf-template
+              template: annovar-to-maf
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: annovar-out-f
+                  value: "{{tasks.annovar.outputs.parameters.annovar-out-f}}"
+            depends: "annovar"
+          - name: maf-to-db
+            templateRef:
+              name: maf-to-db-template
+              template: maf-to-db
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-uuid}}"
+                - name: input-maf
+                  value: "{{tasks.annovar-to-maf.outputs.parameters.annovar-maf-f}}"
+                - name: batch-size
+                  value: "1000"
+            depends: "annovar-to-maf"
+          - name: oncokb-snv
+            templateRef:
+              name: oncokb-templates
+              template: oncokb-snv
+            arguments:
+              parameters:
+                - name: annovar-maf-f
+                  value: "{{tasks.annovar-to-maf.outputs.parameters.annovar-maf-f}}"
+                - name: annovar-oncokb-maf-f
+                  value: "{{inputs.parameters.sample-temp-dir}}results/snv/{{inputs.parameters.sample-id}}_oncokb.maf"
+                - name: ref-version
+                  value: "{{inputs.parameters.ref-version}}"
+                - name: tumor-type
+                  value: "{{inputs.parameters.tumor-type}}"
+            depends: "annovar-to-maf"
+          - name: get-otherinfo-columns
+            templateRef:
+              name: duckdb-template
+              template: determine-otherinfo-column-vcf-only
+            arguments:
+              parameters:
+                - name: annovar-oncokb-maf
+                  value: "{{tasks.oncokb-snv.outputs.parameters.annovar-oncokb-maf-f}}"
+            depends: "oncokb-snv"
+          - name: duckdb-snv
+            templateRef:
+              name: duckdb-template
+              template: duckdb-snv-vcf-only
+            arguments:
+              parameters:
+                - name: annovar-oncokb-maf
+                  value: "{{tasks.oncokb-snv.outputs.parameters.annovar-oncokb-maf-f}}"
+                - name: cancervar-tsv
+                  value: "{{tasks.cancervar.outputs.parameters.cancervar-out-f}}"
+                - name: filter-column-name
+                  value: "{{tasks.get-otherinfo-columns.outputs.parameters.filter-column-name}}"
+                - name: sample-column-name
+                  value: "{{tasks.get-otherinfo-columns.outputs.parameters.sample-column-name}}"
+                - name: output-duckdb
+                  value: "{{inputs.parameters.sample-temp-dir}}results/db/{{inputs.parameters.sample-id}}_results.duckdb"
+            depends: "oncokb-snv && cancervar && get-otherinfo-columns"
+          - name: collect-tmb-data
+            templateRef:
+              name: collect-tmb-data-template
+              template: collect-tmb-data
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: duckdb-file
+                  value: "{{tasks.duckdb-snv.outputs.parameters.output-duckdb}}"
+                - name: target-bed-file
+                  value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-file}}"
+                - name: af-lower-threshold
+                  value: "0.05"
+                - name: af-upper-threshold
+                  value: "0.95"
+                - name: output-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}/metrics/tmb/"
+                - name: cosmic-vcf
+                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other/cosmic/Cosmic_CompleteTargetedScreensMutant_v103_GRCh38.vcf.gz"
+                - name: filter-common-variants
+                  value: "true"
+                - name: gnomad-vcf
+                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/gnomad4/gnomad4_1pct.vcf.gz"
+                - name: turkish-variome-vcf
+                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/turkish_variome/turkish_variome_1pct.vcf.gz"
+                - name: common-af-threshold
+                  value: "0.01"
+            depends: "duckdb-snv && validate-bed-file"
+          - name: copy-temp-to-output
+            templateRef:
+              name: copy-temp-to-output
+              template: copy-temp-to-output
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: output-rel-dir
+                  value: "{{inputs.parameters.sample-output-dir}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}"
+            depends: "collect-tmb-data && maf-to-db && duckdb-snv"
+          - name: clean-scratch
+            templateRef:
+              name: dir-clean-up
+              template: dir-clean-up
+            arguments:
+              parameters:
+                - name: directory
+                  value: "{{inputs.parameters.sample-scratch-dir}}"
+            depends: "copy-temp-to-output"

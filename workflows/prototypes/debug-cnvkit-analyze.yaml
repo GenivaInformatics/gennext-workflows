@@ -1,0 +1,201 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: debug-cnvkit-analyze-
+  namespace: argo
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: cnvkit-analyze-debug
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node-name}}"
+  arguments:
+    parameters:
+      - name: node-name
+        value: acurare-01
+      - name: sample-id
+        value: AU26-P-100333786
+
+      # Chromosome bin-count threshold for segment reporting; chroms below
+      # this are still segmented (cheap for CBS) but filtered before
+      # export vcf. Default 20 matches per-sample-cnv-cohort-analysis.yaml.
+      - name: min-bins-per-chrom
+        value: "20"
+
+      # Kit reference dir (built by ensure-kit-reference; bed-stem is the
+      # *validated* bed basename, so the dir is `<stem>.valid`).
+      - name: kit-dir-host
+        value: /runspace/gennext/data/ref/hg38/other/cnvkit/NanOnCT_Panel_v1.0_target_hg38.valid
+
+      # Coverage CNNs from the failed run's scratch dir (still present).
+      - name: coverage-dir-host
+        value: /runspace/gennext/data/scratch/b3eace1a-7deb-4339-8119-2fc09d8dc481/f2e3bf6f-ebd3-46a3-880c-628c6e17a527_MooXT6/b1c00de8-97ab-4b05-a48e-18298fb940d9/cnv/coverage
+
+      # BAF VCF from the failed run's temp dir.
+      - name: vcf-dir-host
+        value: /runspace/gennext/data/temp/b3eace1a-7deb-4339-8119-2fc09d8dc481/f2e3bf6f-ebd3-46a3-880c-628c6e17a527_MooXT6/b1c00de8-97ab-4b05-a48e-18298fb940d9/results/snv
+      - name: vcf-name
+        value: AU26-P-100333786_mutect2_vlod.vcf.gz
+
+      # Workspace on the node — purely ephemeral.
+      - name: workdir-host
+        value: /tmp/cnv-debug/{{workflow.name}}
+
+  templates:
+    - name: cnvkit-analyze-debug
+      inputs:
+        parameters:
+          - name: sample-id
+            value: "{{workflow.parameters.sample-id}}"
+          - name: vcf-name
+            value: "{{workflow.parameters.vcf-name}}"
+          - name: min-bins-per-chrom
+            value: "{{workflow.parameters.min-bins-per-chrom}}"
+      script:
+        image: quay.io/biocontainers/cnvkit:0.9.13--pyhdfd78af_0
+        command: [sh]
+        source: |
+          set -eu
+          SAMPLE_ID="{{inputs.parameters.sample-id}}"
+          VCF="/vcf/{{inputs.parameters.vcf-name}}"
+          KIT_DIR="/kits"
+          MIN_BINS="{{inputs.parameters.min-bins-per-chrom}}"
+
+          # Keep the R-stderr unmasking patch so any future failure remains
+          # diagnosable in pod logs.
+          python3 - <<'PYEOF'
+          import pathlib
+          p = pathlib.Path("/usr/local/lib/python3.10/site-packages/cnvlib/core.py")
+          src = p.read_text()
+          marker = "except subprocess.CalledProcessError as exc:"
+          inject = (
+              "except subprocess.CalledProcessError as exc:\n"
+              "        import sys as _sys\n"
+              "        _sys.stderr.write('==== R stderr ====\\n' + (exc.stderr.decode(errors='replace') if exc.stderr else '') + '\\n')\n"
+              "        _sys.stderr.write('==== R stdout ====\\n' + (exc.stdout.decode(errors='replace') if exc.stdout else '') + '\\n')\n"
+              "        _sys.stderr.flush()"
+          )
+          if "==== R stderr ====" in src:
+              print("already patched")
+          else:
+              new = src.replace(marker, inject, 1)
+              assert new != src, "patch marker not found in cnvlib/core.py"
+              p.write_text(new)
+              print("patched cnvlib/core.py")
+          PYEOF
+
+          mkdir -p /work/output
+          cd /work
+
+          echo "==== inputs ===="
+          ls -la /kits /coverage /vcf
+          echo "================"
+
+          cnvkit.py fix \
+            /coverage/${SAMPLE_ID}.targetcoverage.cnn \
+            /coverage/${SAMPLE_ID}.antitargetcoverage.cnn \
+            "$KIT_DIR/pooled_reference.cnn" \
+            -o /work/output/${SAMPLE_ID}.cnr
+
+          awk -v MIN="$MIN_BINS" '
+            NR == 1 { next }
+            { n[$1]++ }
+            END {
+              for (c in n) {
+                if (n[c] >= MIN) print c > "/work/output/'"${SAMPLE_ID}"'.passing_chroms.txt"
+                else printf "%s\t%d\tbelow_min_bins_%s\n", c, n[c], MIN > "/work/output/'"${SAMPLE_ID}"'.dropped_chroms.tsv"
+              }
+            }
+          ' /work/output/${SAMPLE_ID}.cnr
+          touch /work/output/${SAMPLE_ID}.passing_chroms.txt /work/output/${SAMPLE_ID}.dropped_chroms.tsv
+          echo "passing chroms ($(wc -l < /work/output/${SAMPLE_ID}.passing_chroms.txt)):"
+          cat /work/output/${SAMPLE_ID}.passing_chroms.txt
+          echo "dropped chroms ($(wc -l < /work/output/${SAMPLE_ID}.dropped_chroms.tsv)):"
+          cat /work/output/${SAMPLE_ID}.dropped_chroms.tsv
+
+          if [ -s "$KIT_DIR/antitargets.bed" ]; then
+            SMOOTH_FLAG="--smooth-cbs"
+            echo "panel mode: hybrid (smoothing enabled)"
+          else
+            SMOOTH_FLAG=""
+            echo "panel mode: amplicon (smoothing disabled)"
+          fi
+
+          cnvkit.py segment \
+            --method cbs \
+            $SMOOTH_FLAG \
+            --drop-low-coverage \
+            /work/output/${SAMPLE_ID}.cnr \
+            -o /work/output/${SAMPLE_ID}.cns
+
+          cnvkit.py call \
+            --drop-low-coverage \
+            /work/output/${SAMPLE_ID}.cns \
+            -v "$VCF" \
+            -i ${SAMPLE_ID} \
+            --ploidy 2 \
+            --method threshold \
+            -o /work/output/${SAMPLE_ID}.call.cns
+
+          for F in /work/output/${SAMPLE_ID}.cns /work/output/${SAMPLE_ID}.call.cns; do
+            awk 'NR==FNR { ok[$1]=1; next } FNR==1 || ok[$1]' \
+              /work/output/${SAMPLE_ID}.passing_chroms.txt "$F" > "$F.filt"
+            mv "$F.filt" "$F"
+          done
+
+          cnvkit.py scatter \
+            /work/output/${SAMPLE_ID}.cnr \
+            -s /work/output/${SAMPLE_ID}.call.cns \
+            -v "$VCF" \
+            -o /work/output/${SAMPLE_ID}-scatter.png
+
+          cnvkit.py export vcf \
+            /work/output/${SAMPLE_ID}.cns \
+            --cnr /work/output/${SAMPLE_ID}.cnr \
+            -i ${SAMPLE_ID} \
+            -o /work/output/${SAMPLE_ID}.cnv.vcf
+
+          cnvkit.py genemetrics \
+            --drop-low-coverage \
+            /work/output/${SAMPLE_ID}.cnr \
+            -t 0.3 \
+            -m 1 \
+            -o /work/output/${SAMPLE_ID}.genemetrics.tsv \
+            || echo "genemetrics failed (non-fatal)" >&2
+
+          echo "==== outputs ===="
+          ls -la /work/output
+          echo "==== cnv.vcf chroms ===="
+          grep -v '^#' /work/output/${SAMPLE_ID}.cnv.vcf | awk '{print $1}' | sort -u || true
+          echo "==== .call.cns chroms ===="
+          tail -n +2 /work/output/${SAMPLE_ID}.call.cns | awk '{print $1}' | sort -u
+          echo "==== dropped chroms ===="
+          cat /work/output/${SAMPLE_ID}.dropped_chroms.tsv
+        volumeMounts:
+          - name: kits
+            mountPath: /kits
+            readOnly: true
+          - name: coverage
+            mountPath: /coverage
+            readOnly: true
+          - name: vcf
+            mountPath: /vcf
+            readOnly: true
+          - name: work
+            mountPath: /work
+      volumes:
+        - name: kits
+          hostPath:
+            path: "{{workflow.parameters.kit-dir-host}}"
+            type: Directory
+        - name: coverage
+          hostPath:
+            path: "{{workflow.parameters.coverage-dir-host}}"
+            type: Directory
+        - name: vcf
+          hostPath:
+            path: "{{workflow.parameters.vcf-dir-host}}"
+            type: Directory
+        - name: work
+          hostPath:
+            path: "{{workflow.parameters.workdir-host}}"
+            type: DirectoryOrCreate

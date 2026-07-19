@@ -1,0 +1,528 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: somatic-rna-fastq-v2
+  namespace: argo
+spec:
+  templates:
+    # FFPE-tuned RNA-seq somatic fusion pipeline. Replaces the prior
+    # trim-galore + monolithic STAR-Fusion DAG with the validated UMI-aware
+    # mark-duplicates chain ported from somatic-fusion-fastq-gpu-v2:
+    # fastp+UMI → STAR → fgbio mark-duplicates → arriba/star-fusion-from-junction
+    # → fusion-report → artifact filter → FusionInspector → propagate-fi-dup-flags.
+    # The "gpu" suffix in the entry template name is a historical artefact;
+    # this is a CPU pipeline. The wrapper-batch templates may pin nodes via
+    # nodeSelector at the per-sample workflow level if GPU-scheduled.
+    #
+    # Entry contract (kept stable for orchestrator + per-sample-somatic-rna
+    # and per-sample-somatic-dna-rna): inputs.parameters and the single
+    # output `bam-output` are unchanged. UMI length and the FI breakpoint
+    # window are hard-coded inside the DAG to keep the caller signature
+    # identical to the prior trim-galore-based version.
+    - name: somatic-testing-rna-gpu-fastq-v2
+      inputs:
+        parameters:
+          - name: user-id
+          - name: run-id
+          - name: sample-id
+          - name: sample-uuid
+          - name: rna-input-files
+          - name: tumor-type
+          - name: ref-version
+          - name: ref-paths
+          - name: ref-base-dir
+          - name: sample-input-dir
+          - name: sample-output-dir
+          - name: sample-temp-dir
+          - name: sample-scratch-dir
+          - name: thread-count
+            default: "8"
+      outputs:
+        parameters:
+          - name: bam-output
+            valueFrom:
+              parameter: "{{tasks.samtools-sort-index-sf.outputs.parameters.output-bam}}"
+      dag:
+        tasks:
+          - name: validate-bed-file
+            templateRef:
+              name: bed-validator-template
+              template: validate-bed-file
+            arguments:
+              parameters:
+                - name: input-bed-file
+                  value: "{{=jsonpath(inputs.parameters['rna-input-files'], '$.regionsFile')}}"
+                - name: gtf-file
+                  value: "{{inputs.parameters.ref-base-dir}}/{{inputs.parameters.ref-version}}/gene_annots/gencode.v49.basic.annotation.MANE_Select.gtf.gz"
+                - name: chains-dir
+                  value: "{{inputs.parameters.ref-base-dir}}/{{inputs.parameters.ref-version}}/other/chains/"
+                - name: output-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}metrics/rna/bed_validation/"
+
+          - name: compose-read-group-str
+            templateRef:
+              name: compose-read-group-str
+              template: compose-read-group-str-from-fq
+            arguments:
+              parameters:
+                - name: fq-r1
+                  value: "{{=jsonpath(inputs.parameters['rna-input-files'], '$.fq1')}}"
+                - name: sample-name
+                  value: "{{inputs.parameters.sample-id}}"
+
+          - name: pre-fastqc
+            templateRef:
+              name: fastqc-template
+              template: fastqc
+            arguments:
+              parameters:
+                - name: fq-r1
+                  value: "{{=jsonpath(inputs.parameters['rna-input-files'], '$.fq1')}}"
+                - name: fq-r2
+                  value: "{{=jsonpath(inputs.parameters['rna-input-files'], '$.fq2')}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}metrics/rna/fastqc/pre-trim/"
+
+          # fastp with UMI extraction (umi-length=5: FFPE library convention).
+          # Replaces trim-galore. The UMI is moved from the read sequence to
+          # the QNAME suffix as :UMI_<R1>_<R2>; downstream fgbio CopyUmiFromReadName
+          # parses it into the RX:Z tag for UMI-aware grouping.
+          - name: fastp
+            templateRef:
+              name: fastp-template
+              template: fastp
+            arguments:
+              parameters:
+                - name: sample-name
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: fq-r1
+                  value: "{{=jsonpath(inputs.parameters['rna-input-files'], '$.fq1')}}"
+                - name: fq-r2
+                  value: "{{=jsonpath(inputs.parameters['rna-input-files'], '$.fq2')}}"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+                - name: umi-length
+                  value: "5"
+                - name: output-dir
+                  value: "{{inputs.parameters.sample-scratch-dir}}trimmed_reads/"
+                - name: metrics-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}metrics/rna/fastp/"
+
+          # Single STAR alignment shared by both callers. Emits BAM (with
+          # chimerics inline for arriba) AND Chimeric.out.junction (for
+          # star-fusion-from-junction kickstart calling). Replaces the prior
+          # monolithic star-fusion task that ran its own internal STAR.
+          - name: star-align
+            templateRef:
+              name: star-align-template
+              template: star-align-arriba
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: read-group-str
+                  value: "{{tasks.compose-read-group-str.outputs.parameters.read-group-str-no-rg-prefix}}"
+                - name: fq-r1
+                  value: "{{tasks.fastp.outputs.parameters.fq-r1}}"
+                - name: fq-r2
+                  value: "{{tasks.fastp.outputs.parameters.fq-r2}}"
+                - name: ctat-genome-lib-build-dir
+                  value: "{{=jsonpath(inputs.parameters['ref-paths'], '$.rna.ctat-genome-lib-build-dir')}}"
+                - name: output-bam
+                  value: "{{inputs.parameters.sample-scratch-dir}}bam/{{inputs.parameters.sample-id}}_unsorted_RNA.bam"
+                - name: output-chimeric-out-fusions
+                  value: "{{inputs.parameters.sample-scratch-dir}}bam/{{inputs.parameters.sample-id}}_Chimeric.out.junction"
+                - name: metrics-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}metrics/rna/star-align/"
+                - name: scratch-dir
+                  value: "{{inputs.parameters.sample-scratch-dir}}star-align/"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "fastp && compose-read-group-str"
+
+          # CPU samtools sort+index (renamed `-sf` historically; kept for output
+          # parameter compatibility with the entry template's `bam-output`).
+          - name: samtools-sort-index-sf
+            templateRef:
+              name: samtools-template
+              template: samtools-sort-index
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{tasks.star-align.outputs.parameters.output-bam}}"
+                - name: output-bam
+                  value: "{{inputs.parameters.sample-scratch-dir}}bam/{{inputs.parameters.sample-id}}_RNA.bam"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "star-align"
+
+          # UMI-aware mark-duplicates. fgbio GroupReadsByUmi --strategy=Adjacency
+          # --edits=1 --mark-duplicates: directed-graph UMI clustering with
+          # 1-edit-distance error correction (= umi_tools "directional"); sets
+          # 0x400 on PCR duplicates rather than removing them. All reads stay
+          # in the BAM so the FI consolidated.bam can show the full read pile
+          # for IGV inspection (with dups marked but not dropped).
+          - name: fgbio-mark-duplicates
+            templateRef:
+              name: fgbio-mark-duplicates-template
+              template: fgbio-mark-duplicates
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: input-bam
+                  value: "{{tasks.samtools-sort-index-sf.outputs.parameters.output-bam}}"
+                - name: output-bam
+                  value: "{{inputs.parameters.sample-temp-dir}}bam/{{inputs.parameters.sample-id}}_RNA.dedup.bam"
+                - name: output-metrics
+                  value: "{{inputs.parameters.sample-temp-dir}}metrics/rna/fgbio/{{inputs.parameters.sample-id}}_fgbio_family_size.txt"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "samtools-sort-index-sf"
+
+          # Propagate UMI-aware dedup verdict from the deduped BAM onto the
+          # raw STAR Chimeric.out.junction so STAR-Fusion-kickstart calls
+          # only on the surviving (UMI-unique) chimeric reads.
+          - name: filter-chimeric-junction-by-bam
+            templateRef:
+              name: filter-chimeric-junction-by-bam-template
+              template: filter-chimeric-junction-by-bam
+            arguments:
+              parameters:
+                - name: bam-file
+                  value: "{{tasks.fgbio-mark-duplicates.outputs.parameters.output-bam}}"
+                - name: chimeric-junction-file
+                  value: "{{tasks.star-align.outputs.parameters.output-chimeric-out-fusions}}"
+                - name: output-file
+                  value: "{{inputs.parameters.sample-temp-dir}}results/fusions/star-fusion/{{inputs.parameters.sample-id}}_Chimeric.out.deduped.junction"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "fgbio-mark-duplicates && star-align"
+
+          # STAR-Fusion in kickstart mode: consumes the dedup-filtered
+          # Chimeric.out.junction, runs only the calling logic. No internal
+          # STAR re-alignment. Produces UMI-aware support counts.
+          - name: star-fusion
+            templateRef:
+              name: star-fusion-from-junction-template
+              template: star-fusion-from-junction
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: chimeric-junction-file
+                  value: "{{tasks.filter-chimeric-junction-by-bam.outputs.parameters.output-file}}"
+                - name: ctat-genome-lib-build-dir
+                  value: "{{=jsonpath(inputs.parameters['ref-paths'], '$.rna.ctat-genome-lib-build-dir')}}"
+                - name: output-fusions-tsv
+                  value: "{{inputs.parameters.sample-temp-dir}}results/fusions/star-fusion/{{inputs.parameters.sample-id}}_starfusion.tsv"
+                - name: scratch-dir
+                  value: "{{inputs.parameters.sample-scratch-dir}}star-fusion/"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "filter-chimeric-junction-by-bam"
+
+          - name: picard-collect-rnaseq-metrics
+            templateRef:
+              name: picard-collect-rnaseq-metrics-template
+              template: picard-collect-rnaseq-metrics
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: input-bam
+                  value: "{{tasks.fgbio-mark-duplicates.outputs.parameters.output-bam}}"
+                # TODO(plan-followup): promote ref-flat and ribosomal-intervals
+                # to keys in the ref-paths JSON emitted by load_and_prepare-rna.
+                - name: ref-flat
+                  value: "{{inputs.parameters.ref-base-dir}}/{{inputs.parameters.ref-version}}/gene_annots/refFlat_mane.txt"
+                # TODO(plan-followup): ribosomal-intervals dropped — the
+                # CTAT lib's primary-assembly fasta and the full-analysis-set
+                # interval list have mismatched seq dicts and Picard refuses
+                # to merge them. Restore once we have an interval list built
+                # against the CTAT lib's exact reference. "." = skip sentinel.
+                - name: ribosomal-intervals
+                  value: "."
+                - name: output-metrics
+                  value: "{{inputs.parameters.sample-temp-dir}}metrics/rna/picard/{{inputs.parameters.sample-id}}_rnaseq_metrics.txt"
+            depends: "fgbio-mark-duplicates"
+
+          - name: rustqc
+            templateRef:
+              name: rustqc-template
+              template: rustqc
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: gene-annotation-gtf
+                  value: "{{inputs.parameters.ref-base-dir}}/{{inputs.parameters.ref-version}}/gene_annots/gencode.v49.basic.annotation.MANE_Select.gtf.gz"
+                - name: input-bam
+                  value: "{{tasks.fgbio-mark-duplicates.outputs.parameters.output-bam}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}metrics/rna/rustqc/"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "fgbio-mark-duplicates"
+
+          # Arriba consumes the UMI-marked BAM. The arriba template's `-u`
+          # flag honors the upstream 0x400 (PCR duplicate) markings from
+          # fgbio rather than re-deriving its own dedup view.
+          - name: arriba
+            templateRef:
+              name: arriba-fusion-detection-template
+              template: arriba-fusion-detection
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: input-bam
+                  value: "{{tasks.fgbio-mark-duplicates.outputs.parameters.output-bam}}"
+                - name: ref-genome-fa
+                  value: "{{=jsonpath(inputs.parameters['ref-paths'], '$.genome')}}"
+                - name: gene-annotation-gtf
+                  value: "{{inputs.parameters.ref-base-dir}}/{{inputs.parameters.ref-version}}/gene_annots/gencode.v49.basic.annotation.MANE_Select.gtf.gz"
+                - name: output-fusions-tsv
+                  value: "{{inputs.parameters.sample-temp-dir}}results/fusions/arriba/{{inputs.parameters.sample-id}}_fusions.tsv"
+                - name: output-fusions-discarded-tsv
+                  value: "{{inputs.parameters.sample-temp-dir}}results/fusions/arriba/{{inputs.parameters.sample-id}}_fusions.discarded.tsv"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "fgbio-mark-duplicates"
+
+          - name: fusion-report
+            templateRef:
+              name: fusion-report-template
+              template: fusion-report
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: arriba-fusions-tsv
+                  value: "{{tasks.arriba.outputs.parameters.output-fusions-tsv}}"
+                - name: starfusion-predictions-tsv
+                  value: "{{tasks.star-fusion.outputs.parameters.output-fusions-tsv}}"
+                - name: fusion-report-db-dir
+                  value: "{{inputs.parameters.ref-base-dir}}{{inputs.parameters.ref-version}}/other/fusion_report_db/"
+                - name: output-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}results/fusions/fusion-report/"
+                - name: metrics-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}metrics/rna/fusion-report/"
+            depends: "arriba && star-fusion"
+
+          # Drop well-known fusion-call artefacts (MT-, IG@, snoRNA,
+          # pseudogenes, antisense, unannotated clones, self-fusions) from
+          # both the consolidated TSV and fusions.json. Single source of
+          # truth for the artefact list — every downstream consumer
+          # (oncokb, duckdb, extract-fusion-reads → FI) sees the same
+          # filtered view, so the user-facing fusions.json no longer lists
+          # artefacts the pipeline never intended to call.
+          - name: filter-artifact-fusions
+            templateRef:
+              name: filter-artifact-fusions-template
+              template: filter-artifact-fusions
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: input-fusions-json
+                  value: "{{tasks.fusion-report.outputs.parameters.output-fusions-json}}"
+                - name: input-fusion-list-tsv
+                  value: "{{tasks.fusion-report.outputs.parameters.output-fusion-list-tsv}}"
+                - name: output-fusions-json
+                  value: "{{inputs.parameters.sample-temp-dir}}results/fusions/fusion-report/{{inputs.parameters.sample-id}}_fusions.filtered.json"
+                - name: output-fusion-list-tsv
+                  value: "{{inputs.parameters.sample-temp-dir}}results/fusions/fusion-report/{{inputs.parameters.sample-id}}_fusion_list.filtered.tsv"
+            depends: "fusion-report"
+
+          # Pre-filter the marked BAM down to the read set FI actually needs:
+          # split-reads (supplementary) + ±0 bp around each surviving fusion
+          # breakpoint (chimeric-only by default; bumps to a positive window
+          # only if a future caller wants spanning fragments visualised).
+          # Dup-flagged reads are excluded so FI's view matches the deduped
+          # caller view.
+          - name: extract-fusion-reads
+            templateRef:
+              name: extract-reads-for-fusion-inspector-template
+              template: extract-reads-for-fusion-inspector
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: input-bam
+                  value: "{{tasks.fgbio-mark-duplicates.outputs.parameters.output-bam}}"
+                - name: starfusion-tsv
+                  value: "{{tasks.star-fusion.outputs.parameters.output-fusions-tsv}}"
+                - name: arriba-tsv
+                  value: "{{tasks.arriba.outputs.parameters.output-fusions-tsv}}"
+                - name: fusion-list-tsv
+                  value: "{{tasks.filter-artifact-fusions.outputs.parameters.output-fusion-list-tsv}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.sample-scratch-dir}}extracted_reads/"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+                - name: breakpoint-window
+                  value: "0"
+            depends: "fgbio-mark-duplicates && filter-artifact-fusions"
+
+          - name: fusion-inspector
+            templateRef:
+              name: fusion-inspector-template
+              template: fusion-inspector
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: fq-r1
+                  value: "{{tasks.extract-fusion-reads.outputs.parameters.fq-r1}}"
+                - name: fq-r2
+                  value: "{{tasks.extract-fusion-reads.outputs.parameters.fq-r2}}"
+                - name: fusion-list-tsv
+                  value: "{{tasks.extract-fusion-reads.outputs.parameters.filtered-fusion-list-tsv}}"
+                - name: ctat-genome-lib-build-dir
+                  value: "{{=jsonpath(inputs.parameters['ref-paths'], '$.rna.ctat-genome-lib-build-dir')}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}results/fusions/fusion-inspector/"
+                - name: metrics-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}metrics/rna/fusion-inspector/"
+                - name: scratch-dir
+                  value: "{{inputs.parameters.sample-scratch-dir}}fusion-inspector/"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "extract-fusion-reads"
+
+          # Propagate the genome-coord 0x400 (PCR-duplicate) flags from the
+          # fgbio-marked upstream BAM onto FI's consolidated.bam by QNAME.
+          # FI re-aligns to fusion contigs, so genome-coord flags don't
+          # transfer through the FASTQ → STAR pipeline naturally; this task
+          # walks the upstream marked BAM, builds the dup-QNAME set, and
+          # OR-s 0x400 onto matching records in the FI consolidated BAM.
+          - name: propagate-fi-dup-flags
+            templateRef:
+              name: propagate-fi-dup-flags-template
+              template: propagate-fi-dup-flags
+            arguments:
+              parameters:
+                - name: upstream-bam
+                  value: "{{tasks.fgbio-mark-duplicates.outputs.parameters.output-bam}}"
+                - name: fi-bam
+                  value: "{{tasks.fusion-inspector.outputs.parameters.output-igv-bam}}"
+                - name: out-bam
+                  value: "{{tasks.fusion-inspector.outputs.parameters.output-igv-bam}}"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "fusion-inspector && fgbio-mark-duplicates"
+
+          - name: oncokb-fusion-annotation
+            templateRef:
+              name: oncokb-fusion-annotation-template
+              template: oncokb-fusion-annotation
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: input-fusions-json
+                  value: "{{tasks.filter-artifact-fusions.outputs.parameters.output-fusions-json}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}results/fusions/oncokb/"
+                - name: tumor-type
+                  value: "{{inputs.parameters.tumor-type}}"
+            depends: "filter-artifact-fusions"
+
+          - name: duckdb-fusions
+            templateRef:
+              name: duckdb-template
+              template: duckdb-fusions-v2
+            arguments:
+              parameters:
+                - name: fusions-json-f
+                  value: "{{tasks.oncokb-fusion-annotation.outputs.parameters.output-fusions-with-oncokb-json}}"
+                - name: output-duckdb
+                  value: "{{inputs.parameters.sample-temp-dir}}results/db/{{inputs.parameters.sample-id}}_fusions.duckdb"
+            depends: "oncokb-fusion-annotation"
+
+          - name: verifybamid
+            templateRef:
+              name: verifybamid-template
+              template: verifybamid-exome-wrapper
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{tasks.samtools-sort-index-sf.outputs.parameters.output-bam}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}metrics/rna/verifybamid/"
+                - name: ref-version
+                  value: "{{inputs.parameters.ref-version}}"
+                - name: verifybamid-ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}{{inputs.parameters.ref-version}}/other/verifybamid/"
+            depends: "samtools-sort-index-sf"
+
+          - name: mosdepth
+            templateRef:
+              name: mosdepth-template
+              template: mosdepth
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: input-bam
+                  value: "{{tasks.samtools-sort-index-sf.outputs.parameters.output-bam}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}metrics/rna/mosdepth/"
+                - name: regions-bed-f
+                  value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-file}}"
+            depends: "verifybamid && samtools-sort-index-sf && validate-bed-file"
+
+          - name: multiqc
+            templateRef:
+              name: multiqc-template
+              template: main
+            arguments:
+              parameters:
+                - name: input-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}metrics/rna/"
+                - name: output-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}metrics/rna/"
+            depends: "verifybamid && samtools-sort-index-sf && mosdepth && fgbio-mark-duplicates && picard-collect-rnaseq-metrics && star-fusion && arriba && rustqc && fusion-report && filter-artifact-fusions && extract-fusion-reads && (fusion-inspector.Succeeded || fusion-inspector.Skipped) && (propagate-fi-dup-flags.Succeeded || propagate-fi-dup-flags.Skipped)"
+
+          - name: collect-qc-data
+            templateRef:
+              name: collect-qc-data-v2-templates
+              template: collect-qc-data-v2
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: sample-fqs-fnames
+                  value: '["{{=sprig.osBase(jsonpath(inputs.parameters[''rna-input-files''], ''$.fq1''))}}", "{{=sprig.osBase(jsonpath(inputs.parameters[''rna-input-files''], ''$.fq2''))}}"]'
+                - name: metrics-dir
+                  value: "{{tasks.multiqc.outputs.parameters.output-dir}}"
+                - name: data-source-type
+                  value: "rna"
+            depends: "multiqc && mosdepth && verifybamid"
+
+          - name: copy-temp-to-output
+            templateRef:
+              name: copy-temp-to-output
+              template: copy-temp-to-output-no-out
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: output-rel-dir
+                  value: "{{inputs.parameters.sample-output-dir}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}"
+            depends: "collect-qc-data && duckdb-fusions && rustqc && fusion-inspector && propagate-fi-dup-flags"
+
+          - name: clean-scratch
+            templateRef:
+              name: dir-clean-up
+              template: dir-clean-up
+            arguments:
+              parameters:
+                - name: directory
+                  value: "{{inputs.parameters.sample-scratch-dir}}"
+            depends: "copy-temp-to-output"

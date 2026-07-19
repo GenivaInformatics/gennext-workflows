@@ -1,0 +1,753 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Somatic RNA Fusion Pipeline — Bioinformatics Overview</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161a22;
+    --panel-2: #1c2230;
+    --text: #d8dee9;
+    --muted: #8a93a6;
+    --accent: #88c0d0;
+    --accent-2: #a3be8c;
+    --warn: #ebcb8b;
+    --danger: #bf616a;
+    --good: #a3be8c;
+    --line: #2d3340;
+    --code-bg: #11141b;
+    --code-border: #232a38;
+  }
+  * { box-sizing: border-box; }
+  html, body { background: var(--bg); color: var(--text); margin: 0; }
+  body {
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter",
+          "Helvetica Neue", Arial, sans-serif;
+    max-width: 1210px;
+    margin: 0 auto;
+    padding: 32px 28px 80px;
+  }
+  h1, h2, h3, h4 { font-weight: 600; line-height: 1.25; margin-top: 2em; }
+  h1 { font-size: 28px; margin-top: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 22px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+  h3 { font-size: 17px; color: var(--accent); margin-top: 1.6em; }
+  h4 { font-size: 15px; color: var(--muted); text-transform: uppercase;
+       letter-spacing: 0.05em; }
+  p, li { color: var(--text); }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px dotted var(--accent); }
+  code, pre, kbd, samp {
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas,
+                 "Liberation Mono", monospace;
+    font-size: 0.92em;
+  }
+  code { background: var(--code-bg); border: 1px solid var(--code-border);
+         padding: 1px 6px; border-radius: 4px; color: #ebcb8b; }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    color: #d8dee9;
+  }
+  pre code { background: transparent; border: 0; padding: 0; color: inherit; }
+  .lead { color: var(--muted); font-size: 16px; margin-top: 0.4em; }
+  .meta { color: var(--muted); font-size: 13px; margin-top: -8px; margin-bottom: 24px; }
+  .panel { background: var(--panel); border: 1px solid var(--line);
+           border-radius: 8px; padding: 18px 22px; margin: 18px 0; }
+  .panel h3, .panel h4 { margin-top: 0; }
+  .grid {
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    gap: 18px 22px;
+    margin: 12px 0;
+  }
+  .grid > .k { color: var(--muted); }
+  .grid > .v { color: var(--text); }
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: var(--panel-2);
+    padding: 12px 16px;
+    margin: 14px 0;
+    border-radius: 0 6px 6px 0;
+  }
+  .callout.warn   { border-left-color: var(--warn); }
+  .callout.bad    { border-left-color: var(--danger); }
+  .callout.good   { border-left-color: var(--good); }
+  .callout strong { color: var(--accent); }
+  .callout.warn strong { color: var(--warn); }
+  .callout.bad  strong { color: var(--danger); }
+  .callout.good strong { color: var(--good); }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0 18px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; }
+  .small { font-size: 13px; color: var(--muted); }
+  .pill {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 12px;
+    font-size: 11px;
+    background: var(--panel-2);
+    color: var(--accent);
+    border: 1px solid var(--line);
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  .pill.qc       { color: #b48ead; }
+  .pill.dedup    { color: #88c0d0; }
+  .pill.fusion   { color: #a3be8c; }
+  .pill.viz      { color: #ebcb8b; }
+
+  /* Diagram styling */
+  .diagram {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 18px;
+    overflow-x: auto;
+  }
+  .diagram svg { display: block; margin: 0 auto; }
+  .diagram svg text { fill: var(--text); font-family: ui-monospace, monospace;
+                       font-size: 12px; }
+  .diagram svg .lbl-secondary { fill: var(--muted); font-size: 11px; }
+  .diagram svg rect.box { fill: var(--panel-2); stroke: var(--line); rx: 6; ry: 6; }
+  .diagram svg rect.dedup     { stroke: var(--accent);  stroke-width: 1.5; }
+  .diagram svg rect.fusion    { stroke: var(--accent-2); stroke-width: 1.5; }
+  .diagram svg rect.qc        { stroke: #b48ead; stroke-width: 1.5; }
+  .diagram svg rect.viz       { stroke: var(--warn); stroke-width: 1.5; }
+  .diagram svg path.arrow,
+  .diagram svg line.arrow { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+  .diagram svg .arrowhead { fill: var(--muted); }
+  .diagram svg text.tag { fill: var(--muted); font-size: 10px; }
+
+  /* TOC */
+  nav.toc {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin: 12px 0 28px;
+    columns: 2;
+    column-gap: 32px;
+  }
+  nav.toc a { display: block; line-height: 1.8; border-bottom: none; }
+  nav.toc .h3 { padding-left: 1.2em; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+
+<h1>Somatic RNA Fusion Pipeline</h1>
+<p class="lead">Bioinformatics overview of the FFPE RNA-seq fusion-detection workflow:
+   from raw paired-end reads to clinically annotated fusion calls and IGV-ready
+   visualisations.</p>
+<p class="meta">Pipeline: <code>somatic-fusion-fastq-gpu-v2</code> (Argo Workflows) ·
+   Reference: GRCh38 + CTAT genome lib · Inputs: paired-end RNA-seq with 5 bp UMIs.</p>
+
+<nav class="toc">
+  <a href="#overview">1. Overview</a>
+  <a href="#diagram">2. Pipeline diagram</a>
+  <a href="#preprocessing">3. UMI extraction &amp; trimming</a>
+  <a href="#alignment">4. Alignment</a>
+  <a href="#dedup">5. UMI-aware mark-duplicates</a>
+  <a href="#calling">6. Dual fusion calling</a>
+  <a href="#consolidation">7. Consolidation &amp; artefact filtering</a>
+  <a href="#viz">8. Visualisation (FusionInspector)</a>
+  <a href="#qc">9. QC &amp; reporting</a>
+  <a href="#legend">10. Tooling legend</a>
+</nav>
+
+<h2 id="overview">1. Overview</h2>
+
+<p>This pipeline calls gene-fusion events from paired-end RNA-seq libraries enriched
+   from formalin-fixed paraffin-embedded (FFPE) tumour samples. Each library carries
+   a <strong>5 bp unique molecular identifier (UMI)</strong> at the start of every read,
+   which lets the pipeline distinguish biologically distinct cDNA molecules from PCR
+   duplicates that share the same alignment coordinate.</p>
+
+<p>Two independent callers run in parallel:</p>
+<ul>
+  <li><strong>STAR-Fusion</strong> — sensitive in known-fusion mode; uses STAR's
+      chimeric junction output to score split-read evidence.</li>
+  <li><strong>Arriba</strong> — graph-based event detection; complementary call set
+      especially for atypical events (read-throughs, intra-locus rearrangements).</li>
+</ul>
+
+<p><code>fusion-report</code> consolidates the two call lists into a single
+   <code>fusions.json</code> that becomes the source of truth for downstream clinical
+   annotation, persistence, and the user-facing report. <strong>FusionInspector</strong>
+   runs in a visualisation-only role: it realigns reads against per-fusion contigs to
+   produce IGV-ready BAMs but does <em>not</em> contribute calls.</p>
+
+<div class="callout">
+<strong>Design principle.</strong> A single STAR alignment feeds both callers. UMI-aware
+<em>mark-duplicates</em> runs between alignment and calling: PCR duplicates get the
+<code>0x400</code> SAM flag set but are <strong>not removed</strong> from the BAM.
+Callers see a dedup'd view (Arriba honors <code>0x400</code> via <code>-u</code>;
+STAR-Fusion's chimeric-junction file is filtered by surviving non-dup read names);
+clinicians inspecting the IGV bundle still see every read with dup status, so the
+"hide duplicates" toggle in IGV gives them control.
+</div>
+
+<h2 id="diagram">2. Pipeline diagram</h2>
+
+<div class="diagram">
+<svg viewBox="0 0 1040 880" width="1040" height="880"
+     xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="Somatic RNA fusion pipeline data flow">
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8"
+          markerHeight="8" orient="auto-start-reverse">
+    <path class="arrowhead" d="M0,0 L10,5 L0,10 z" />
+  </marker>
+</defs>
+
+<!-- INPUT -->
+<rect x="430" y="10"  width="180" height="40" class="box" />
+<text x="520" y="35" text-anchor="middle">Raw FASTQ R1, R2</text>
+
+<!-- fastp -->
+<rect x="430" y="80" width="180" height="56" class="box dedup" />
+<text x="520" y="100" text-anchor="middle" font-weight="600">fastp</text>
+<text x="520" y="118" text-anchor="middle" class="lbl-secondary">UMI extract + adapter trim</text>
+<text x="520" y="131" text-anchor="middle" class="lbl-secondary">QNAME suffix: :UMI_&lt;R1&gt;_&lt;R2&gt;</text>
+
+<line x1="520" y1="50" x2="520" y2="78" class="arrow" marker-end="url(#arrow)" />
+
+<!-- STAR -->
+<rect x="430" y="170" width="180" height="56" class="box fusion" />
+<text x="520" y="190" text-anchor="middle" font-weight="600">STAR alignment</text>
+<text x="520" y="208" text-anchor="middle" class="lbl-secondary">--chimOutType WithinBAM</text>
+<text x="520" y="221" text-anchor="middle" class="lbl-secondary">HardClip Junctions</text>
+
+<line x1="520" y1="138" x2="520" y2="168" class="arrow" marker-end="url(#arrow)" />
+
+<!-- Two outputs of STAR -->
+<rect x="240" y="260" width="170" height="40" class="box" />
+<text x="325" y="285" text-anchor="middle">Aligned.out.bam</text>
+
+<rect x="630" y="260" width="170" height="40" class="box" />
+<text x="715" y="280" text-anchor="middle">Chimeric.out</text>
+<text x="715" y="295" text-anchor="middle">.junction</text>
+
+<path d="M510,228 C 470,250 410,255 410,260" class="arrow" marker-end="url(#arrow)" />
+<path d="M530,228 C 570,250 630,255 630,260" class="arrow" marker-end="url(#arrow)" />
+
+<!-- samtools sort+index -->
+<rect x="240" y="320" width="170" height="40" class="box dedup" />
+<text x="325" y="345" text-anchor="middle">samtools sort + index</text>
+
+<line x1="325" y1="300" x2="325" y2="318" class="arrow" marker-end="url(#arrow)" />
+
+<!-- fgbio mark-duplicates -->
+<rect x="240" y="380" width="170" height="68" class="box dedup" />
+<text x="325" y="397" text-anchor="middle" font-weight="600">fgbio mark-duplicates</text>
+<text x="325" y="413" text-anchor="middle" class="lbl-secondary">awk: drop UMI_ prefix</text>
+<text x="325" y="426" text-anchor="middle" class="lbl-secondary">CopyUmiFromReadName→RX</text>
+<text x="325" y="439" text-anchor="middle" class="lbl-secondary">GroupReadsByUmi: 0x400</text>
+
+<line x1="325" y1="360" x2="325" y2="378" class="arrow" marker-end="url(#arrow)" />
+
+<!-- filter-chimeric-junction-by-bam (joins both branches) -->
+<rect x="500" y="380" width="200" height="56" class="box dedup" />
+<text x="600" y="400" text-anchor="middle" font-weight="600">filter chimeric junction</text>
+<text x="600" y="418" text-anchor="middle" class="lbl-secondary">samtools view -F 1024</text>
+<text x="600" y="431" text-anchor="middle" class="lbl-secondary">drop dup-flagged junctions</text>
+
+<line x1="410" y1="408" x2="498" y2="408" class="arrow" marker-end="url(#arrow)" />
+<path d="M715,300 C 715,360 700,360 698,378" class="arrow" marker-end="url(#arrow)" />
+
+<!-- arriba -->
+<rect x="80" y="475" width="200" height="56" class="box fusion" />
+<text x="180" y="495" text-anchor="middle" font-weight="600">Arriba</text>
+<text x="180" y="513" text-anchor="middle" class="lbl-secondary">graph-based caller</text>
+<text x="180" y="526" text-anchor="middle" class="lbl-secondary">-u: drops 0x400 reads</text>
+
+<path d="M280,430 C 200,450 180,460 180,473" class="arrow" marker-end="url(#arrow)" />
+
+<!-- star-fusion-from-junction -->
+<rect x="320" y="475" width="200" height="56" class="box fusion" />
+<text x="420" y="495" text-anchor="middle" font-weight="600">STAR-Fusion (kickstart)</text>
+<text x="420" y="513" text-anchor="middle" class="lbl-secondary">no internal STAR realign</text>
+<text x="420" y="526" text-anchor="middle" class="lbl-secondary">consumes filtered junctions</text>
+
+<path d="M580,438 C 500,455 460,465 460,473" class="arrow" marker-end="url(#arrow)" />
+
+<!-- extract-fusion-reads -->
+<rect x="780" y="475" width="200" height="56" class="box viz" />
+<text x="880" y="495" text-anchor="middle" font-weight="600">extract reads for FI</text>
+<text x="880" y="513" text-anchor="middle" class="lbl-secondary">supplementary alignments</text>
+<text x="880" y="526" text-anchor="middle" class="lbl-secondary">filtered fusion list as input</text>
+
+<path d="M410,438 C 600,470 800,470 805,475" class="arrow" marker-end="url(#arrow)" />
+<text x="700" y="466" class="lbl-secondary" text-anchor="middle">deduped BAM</text>
+
+<!-- fusion-report -->
+<rect x="170" y="565" width="260" height="56" class="box fusion" />
+<text x="300" y="585" text-anchor="middle" font-weight="600">fusion-report</text>
+<text x="300" y="603" text-anchor="middle" class="lbl-secondary">consolidate Arriba + STAR-Fusion</text>
+<text x="300" y="616" text-anchor="middle" class="lbl-secondary">fusions.json (count source)</text>
+
+<path d="M180,531 C 180,545 270,555 280,565" class="arrow" marker-end="url(#arrow)" />
+<path d="M420,531 C 420,545 360,555 350,565" class="arrow" marker-end="url(#arrow)" />
+
+<!-- FusionInspector -->
+<rect x="780" y="565" width="200" height="56" class="box viz" />
+<text x="880" y="585" text-anchor="middle" font-weight="600">FusionInspector</text>
+<text x="880" y="603" text-anchor="middle" class="lbl-secondary">--no_remove_dups</text>
+<text x="880" y="616" text-anchor="middle" class="lbl-secondary">per-contig realign for IGV</text>
+
+<line x1="880" y1="531" x2="880" y2="563" class="arrow" marker-end="url(#arrow)" />
+
+<!-- filter-artifact-fusions -->
+<rect x="170" y="635" width="260" height="56" class="box fusion" />
+<text x="300" y="655" text-anchor="middle" font-weight="600">filter-artifact-fusions</text>
+<text x="300" y="673" text-anchor="middle" class="lbl-secondary">drop MT-/IG@/snoRNA/pseudogene</text>
+<text x="300" y="686" text-anchor="middle" class="lbl-secondary">pairs from JSON + TSV</text>
+
+<line x1="300" y1="621" x2="300" y2="633" class="arrow" marker-end="url(#arrow)" />
+
+<!-- propagate-fi-dup-flags -->
+<rect x="780" y="635" width="200" height="56" class="box viz" />
+<text x="880" y="655" text-anchor="middle" font-weight="600">propagate-fi-dup-flags</text>
+<text x="880" y="673" text-anchor="middle" class="lbl-secondary">QNAME-based 0x400 carry</text>
+<text x="880" y="686" text-anchor="middle" class="lbl-secondary">to FI consolidated.bam</text>
+
+<line x1="880" y1="621" x2="880" y2="633" class="arrow" marker-end="url(#arrow)" />
+<!-- dotted edge from fgbio mark-dup -> propagate-fi-dup-flags (data dep on upstream marked BAM) -->
+<path d="M410,420 C 700,440 980,500 980,635" stroke-dasharray="4 3"
+      class="arrow" fill="none" marker-end="url(#arrow)" />
+<text x="985" y="500" class="lbl-secondary">marked BAM (QNAME source)</text>
+
+<!-- OncoKB / DuckDB -->
+<rect x="170" y="730" width="120" height="50" class="box fusion" />
+<text x="230" y="750" text-anchor="middle">OncoKB annot.</text>
+<text x="230" y="767" text-anchor="middle" class="lbl-secondary">clinical level</text>
+
+<rect x="320" y="730" width="120" height="50" class="box fusion" />
+<text x="380" y="750" text-anchor="middle">DuckDB</text>
+<text x="380" y="767" text-anchor="middle" class="lbl-secondary">queryable .db</text>
+
+<path d="M260,691 C 260,710 235,720 230,728" class="arrow" marker-end="url(#arrow)" />
+<path d="M340,691 C 340,710 370,720 375,728" class="arrow" marker-end="url(#arrow)" />
+
+<!-- dotted edge: filter-artifact-fusions -> extract reads for FI (filtered list input) -->
+<path d="M430,663 C 600,663 700,540 780,510" stroke-dasharray="4 3"
+      class="arrow" fill="none" marker-end="url(#arrow)" />
+<text x="600" y="595" class="lbl-secondary" text-anchor="middle">filtered list</text>
+
+<!-- IGV bundle -->
+<rect x="780" y="800" width="200" height="50" class="box viz" />
+<text x="880" y="820" text-anchor="middle">IGV bundle</text>
+<text x="880" y="837" text-anchor="middle" class="lbl-secondary">consolidated.bam (0x400 marked)</text>
+
+<line x1="880" y1="691" x2="880" y2="798" class="arrow" marker-end="url(#arrow)" />
+
+<!-- Group labels -->
+<rect x="20" y="380" width="20" height="68" class="box dedup" opacity="0.6" />
+<text x="50" y="418" class="tag">UMI mark-dup</text>
+<rect x="20" y="475" width="20" height="56" class="box fusion" opacity="0.6" />
+<text x="50" y="507" class="tag">Fusion calling</text>
+<rect x="20" y="565" width="20" height="56" class="box fusion" opacity="0.6" />
+<text x="50" y="597" class="tag">Consolidation</text>
+<rect x="20" y="635" width="20" height="56" class="box fusion" opacity="0.6" />
+<text x="50" y="667" class="tag">Artefact filter</text>
+<rect x="20" y="730" width="20" height="50" class="box fusion" opacity="0.6" />
+<text x="50" y="760" class="tag">Annotation / persist</text>
+<rect x="20" y="800" width="20" height="50" class="box viz" opacity="0.6" />
+<text x="50" y="830" class="tag">IGV bundle</text>
+</svg>
+</div>
+
+<p class="small">Edges show data flow. Boxes coloured by phase: UMI-aware dedup
+(blue), fusion calling (green), visualisation (yellow), QC sidecar (purple, omitted
+from this diagram for clarity — see §9).</p>
+
+<h2 id="preprocessing">3. UMI extraction &amp; read trimming
+  <span class="pill dedup">fastp</span></h2>
+
+<p>Each read in the raw FASTQ begins with a 5 bp UMI introduced during library
+   preparation. <code>fastp</code> performs three jobs in a single pass:</p>
+
+<ol>
+  <li>Cut the leading 5 bp from each read and remove them from the read sequence.</li>
+  <li>Append the UMI to the read identifier (QNAME) as
+      <code>:UMI_&lt;R1bases&gt;_&lt;R2bases&gt;</code>. The 11-character composite
+      token (5 + 1 + 5) becomes the molecular fingerprint that travels through every
+      downstream tool.</li>
+  <li>Adapter detection / quality trimming on the post-UMI sequence; reads below the
+      length / quality threshold are discarded.</li>
+</ol>
+
+<div class="callout">
+<strong>Why UMIs matter for FFPE RNA-seq.</strong> FFPE input typically yields short
+fragments and high PCR-amplification cycles. Without UMIs, two PCR duplicates from
+the same molecule are indistinguishable from two biologically distinct molecules
+that happened to fragment at the same coordinate. Coordinate-only dedup over-collapses;
+UMIs let us tell the difference.
+</div>
+
+<h2 id="alignment">4. Alignment <span class="pill fusion">STAR</span></h2>
+
+<p>A single STAR run aligns the trimmed paired-end FASTQ to the GRCh38 CTAT
+   reference. The chimeric-output settings are tuned to recover fusion-supporting
+   reads in two complementary forms:</p>
+
+<table>
+  <tr><th>STAR flag</th><th>Effect</th></tr>
+  <tr><td><code>--chimOutType WithinBAM HardClip Junctions</code></td>
+      <td>Emits chimeric reads <em>both</em> inline in the BAM (for Arriba) and as a
+          separate <code>Chimeric.out.junction</code> file (for STAR-Fusion).</td></tr>
+  <tr><td><code>--chimSegmentMin 10</code></td>
+      <td>Allows shorter chimeric segments — Arriba-recommended; better short-fragment
+          recall on FFPE input.</td></tr>
+  <tr><td><code>--peOverlapNbasesMin 10</code></td>
+      <td>Enables PE-overlap merging when R1/R2 share base content. Recovers junction
+          reads in heavily fragmented inserts.</td></tr>
+  <tr><td><code>--alignSplicedMateMapLminOverLmate 0.5</code></td>
+      <td>Relaxes mate-map ratio for spliced alignments; preserves split mates that
+          straddle a fusion breakpoint.</td></tr>
+</table>
+
+<p>The QNAME (with its UMI suffix) survives alignment intact, so the UMI travels into
+   the BAM unmodified.</p>
+
+<h2 id="dedup">5. UMI-aware mark-duplicates
+  <span class="pill dedup">samtools sort</span>
+  <span class="pill dedup">awk QNAME prep</span>
+  <span class="pill dedup">fgbio CopyUmiFromReadName</span>
+  <span class="pill dedup">fgbio GroupReadsByUmi</span>
+  <span class="pill dedup">junction filter</span></h2>
+
+<p>The BAM is coord-sorted and indexed (<code>samtools sort -o ... && samtools
+   index</code>). Then a four-stage dedup pass runs in a single pod, all using
+   off-the-shelf tools:</p>
+
+<ol>
+  <li><strong>Strip the <code>UMI_</code> prefix from QNAME.</strong> A
+      <code>samtools view -h | awk | samtools view -b</code> pipeline rewrites
+      every read's QNAME from <code>…:UMI_&lt;R1&gt;_&lt;R2&gt;</code> to
+      <code>…:&lt;R1&gt;_&lt;R2&gt;</code>. The intermediate token cleanup matters
+      because the next step's parser keys off the trailing <code>:</code>-separated
+      field. samtools <code>-@ N</code> parallelises BAM (de)compression around
+      the awk transform.</li>
+
+  <li><strong>fgbio <code>CopyUmiFromReadName</code></strong> with
+      <code>--field-delimiter=: --umi-delimiter=_ --remove-umi=true</code>. Reads
+      the now-clean QNAME suffix, splits the paired UMIs on <code>_</code>, joins
+      them with a hyphen and writes them to the canonical <code>RX:Z</code> tag
+      (e.g. <code>RX:Z:GGCTG-ATGTC</code>). Strips the suffix from the QNAME so
+      downstream tools see clean Illumina-format read names.</li>
+
+  <li><strong>fgbio <code>GroupReadsByUmi</code></strong> with
+      <code>--strategy=Adjacency --edits=1 --raw-tag=RX --mark-duplicates=true
+      --threads=N</code>. <em>Adjacency</em> is directed-graph UMI clustering —
+      equivalent to <code>umi_tools dedup --method=directional</code>. UMIs within
+      Hamming distance 1 collapse into one cluster, so single-base UMI sequencing
+      errors don't artificially split molecules. The dedup signature is
+      <strong>(reference, alignment-start, strand, UMI)</strong>. Within each
+      cluster, one representative read pair keeps its <code>0x400</code> flag
+      unset; the rest get <code>0x400</code> set but stay in the BAM. Each read
+      also gets an <code>MI:Z</code> tag identifying its molecular group (audit
+      trail).</li>
+
+  <li><strong>samtools sort + index</strong> back to coordinate order (fgbio
+      writes template-coordinate sorted output; downstream consumers want
+      coord-sorted).</li>
+</ol>
+
+<div class="callout">
+<strong>Mark, don't remove.</strong> Earlier iterations used <code>umi_tools dedup</code>
+which removes duplicates outright. The current architecture <em>marks</em> duplicates
+instead so the FI consolidated BAM (the IGV bundle) keeps every read with PCR-dup
+status visible — clinicians can hide dups in IGV but still see full coverage. The
+calling chain (Arriba, STAR-Fusion-kickstart) consumes a filtered view of the same
+marked BAM, so call counts in <code>fusions.json</code> still reflect unique molecules.
+</div>
+
+<div class="callout warn">
+<strong>Why coord+UMI, not coord-only.</strong> Coordinate-only dedup (Picard
+MarkDuplicates) collapses every read pair sharing alignment endpoints into one
+record. On highly-expressed genes — which fusion partners typically are — this
+discards real biological signal. On AGI-S5, coord-only reported a 94.4 % "duplicate"
+rate; UMI-aware dedup of the same library typically lands at 50–80 % because most
+of the apparent coordinate collisions are distinct molecules with different UMIs.
+</div>
+
+<h3>The STAR-Fusion asymmetry</h3>
+
+<p>Arriba reads the BAM and honors <code>0x400</code> via its <code>-u</code> flag —
+   so marking duplicates upstream gives Arriba a UMI-aware view for free.
+   <strong>STAR-Fusion does not read the BAM</strong>; it reads only
+   <code>Chimeric.out.junction</code>, which carries no SAM flags and no UMI awareness.
+   Without intervention, STAR-Fusion would count every PCR-duplicate chimeric read as
+   a separate junction read, inflating per-fusion support.</p>
+
+<p>The <code>filter-chimeric-junction-by-bam</code> task closes this loop: it pulls
+   the non-duplicate read-name set from the marked BAM
+   (<code>samtools view -F 1024</code>) and uses that set to subset the junction
+   file (column 10 = read name). STAR-Fusion-kickstart then sees only UMI-deduped
+   chimeric evidence — its per-call counts in <code>star-fusion.fusion_predictions.tsv</code>
+   match the dedup view Arriba uses.</p>
+
+<h2 id="calling">6. Dual fusion calling
+  <span class="pill fusion">Arriba</span>
+  <span class="pill fusion">STAR-Fusion (kickstart)</span></h2>
+
+<p>Two callers consume the same UMI-deduped data and produce independent call lists.</p>
+
+<h3>Arriba</h3>
+<p><code>arriba</code> reads the deduped BAM directly. Its graph-based algorithm
+   identifies discordant read pairs and split-reads across all gene boundaries,
+   classifying events into split-read vs spanning-fragment evidence and assigning
+   each call a confidence tier (<code>high</code> / <code>medium</code> /
+   <code>low</code>) based on a fixed feature schedule. We pass <code>-u</code> as
+   defensive scaffolding (honour upstream BAM_FDUP if any); <code>umi_tools dedup</code>
+   removes duplicates outright so this is a no-op in this pipeline.</p>
+
+<h3>STAR-Fusion (kickstart mode)</h3>
+<p>Rather than rerun STAR (a duplicate ~5 min of compute), we feed STAR-Fusion's
+   calling pipeline the <em>filtered</em> <code>Chimeric.out.junction</code> via
+   <code>--chimeric_junction</code>. STAR-Fusion's bundled scoring logic processes
+   the chimeric records, scores each candidate against its known-fusion DB and the
+   CTAT BLAST/PFAM artefact filter, and emits a TSV of fusions with junction-read,
+   spanning-fragment, and FFPM (fragments per million) counts.</p>
+
+<div class="callout">
+<strong>Why two callers.</strong> Arriba and STAR-Fusion disagree on ~30–50 % of
+calls in published benchmarks, mostly because they use different scoring philosophies
+and chimeric-evidence definitions. Running both and consolidating gives broader
+coverage than either alone.
+</div>
+
+<h2 id="consolidation">7. Consolidation &amp; artefact filtering
+  <span class="pill fusion">fusion-report</span>
+  <span class="pill fusion">filter-artifact-fusions</span>
+  <span class="pill fusion">OncoKB</span>
+  <span class="pill fusion">DuckDB</span></h2>
+
+<p><code>fusion-report</code> merges the Arriba and STAR-Fusion TSVs into a single
+   <code>{sample}_fusions.json</code>. Each entry preserves both callers' native
+   support counts (so users see <code>arriba.split_reads1</code>,
+   <code>starfusion.junction_reads</code> etc. side-by-side) plus a unified label and
+   confidence aggregation.</p>
+
+<h3>Artefact filtering (single source of truth)</h3>
+
+<p>A dedicated <code>filter-artifact-fusions</code> step then drops well-known
+   non-biological fusion classes from <em>both</em> the consolidated TSV and
+   <code>fusions.json</code> in one place. Every downstream consumer (OncoKB
+   annotator, DuckDB persistence, FusionInspector via the read-extractor) sees the
+   same filtered list, so the user-facing <code>fusions.json</code> never lists
+   artefacts the pipeline never intended to call.</p>
+
+<table>
+  <tr><th>Class</th><th>Pattern (regex)</th><th>Rationale</th></tr>
+  <tr><td>Mitochondrial</td><td><code>^MT-</code></td>
+      <td>Nuclear-mt cross-talk artefacts.</td></tr>
+  <tr><td>Immunoglobulin / TCR loci</td>
+      <td><code>^IG[HKL][@JCV]</code>, <code>^TR[ABDG][JCV]</code></td>
+      <td>Recombination-driven background.</td></tr>
+  <tr><td>Small RNAs</td><td><code>^RNU\d</code>, <code>^SNORD\d</code>,
+      <code>^SNORA\d</code>, <code>^SCARNA\d</code>, <code>^MIR\d</code></td>
+      <td>Highly multimapped, noisy evidence.</td></tr>
+  <tr><td>Pseudogenes / antisense</td>
+      <td><code>\dP\d+$</code>, <code>-AS\d+$</code></td>
+      <td>Mostly mapping artefacts.</td></tr>
+  <tr><td>Unannotated clones</td>
+      <td><code>^(LINC|ENSG|AC|AL|AP|FP)\d</code></td>
+      <td>Lack curated functional annotation.</td></tr>
+  <tr><td>Self-fusions</td><td>geneA == geneB</td>
+      <td>Read-throughs with no biological event.</td></tr>
+</table>
+
+<p>The same regex set lives in
+   <code>images/extract-reads-for-fusion-inspector/extract_reads.py</code> as
+   defensive scaffolding (no-op when input is already filtered); both files note
+   they must stay in sync if the list changes.</p>
+
+<h3>Annotation &amp; persistence</h3>
+
+<p>The filtered set is then:</p>
+
+<ul>
+  <li>annotated with <strong>OncoKB</strong> clinical-significance levels per fusion
+      (oncogenic / level 1–4 therapy mappings);</li>
+  <li>persisted as a per-sample <strong>DuckDB</strong> file for the cohort-level
+      query / batch analytics path.</li>
+</ul>
+
+<p><code>{sample}_fusions.filtered.json</code> is the user-facing source of truth for
+   fusion counts and labels — it appears in the MultiQC report, the clinical
+   narrative, and any downstream variant-table consumer.</p>
+
+<h2 id="viz">8. Visualisation: FusionInspector
+  <span class="pill viz">extract-reads</span>
+  <span class="pill viz">FusionInspector</span>
+  <span class="pill viz">propagate-fi-dup-flags</span></h2>
+
+<p>FusionInspector (FI) takes the consolidated gene-pair list and rebuilds a small
+   per-fusion reference: each fusion is represented as a synthetic contig
+   (gene A 5'-region joined at the breakpoint to gene B 3'-region). Reads are
+   realigned to those contigs to produce IGV-ready BAMs that clinicians can inspect
+   directly.</p>
+
+<p>FI is <strong>visualisation-only</strong> in this pipeline. Its own counts in
+   <code>FusionInspector.fusions.tsv</code> are <em>not</em> the source of truth —
+   <code>fusions.json</code> is. FI's job is to render the supporting evidence in a
+   form a human can look at.</p>
+
+<h3>Pre-FI read extraction</h3>
+<p>FI's runtime scales superlinearly with input read count, so we don't feed it the
+   whole library. The <code>extract-reads-for-fusion-inspector</code> step pulls only:</p>
+
+<ul>
+  <li>Every read that has a <strong>supplementary alignment</strong>
+      (<code>flag &amp; 2048</code>) — these are the chimeric / split-read records
+      that constitute the actual fusion evidence.</li>
+  <li>Optionally, reads within ±N bp of a called breakpoint
+      (<em>spanning fragments</em>; disabled by default — see callout below).</li>
+</ul>
+
+<p>The fusion list fed to FI is already artefact-filtered upstream by
+   <code>filter-artifact-fusions</code> (see §7); the extractor consumes the
+   filtered TSV. The Python script keeps a defensive copy of the same regex set
+   as a no-op safety net, but the canonical filter is the upstream task.</p>
+
+<div class="callout">
+<strong>Chimeric-only mode.</strong> The default is <code>breakpoint-window=0</code>:
+we extract only supplementary-alignment reads and skip the spanning-fragment
+window. On AGI-S5 this drops the FI input from ~7.7 M reads to ~244 K — a 32×
+reduction that takes FI runtime from over an hour to under 10 min. We lose FI's own
+SpanningFragCount column, but the user-facing counts come from <code>fusions.json</code>
+(caller-native) so the loss is cosmetic. Set <code>breakpoint-window</code> to a
+positive integer to re-enable spanning-fragment collection if needed for a
+specific case.
+</div>
+
+<h3>FusionInspector flags</h3>
+
+<table>
+  <tr><th>Flag</th><th>Effect</th></tr>
+  <tr><td><code>--fusion_contigs_only</code></td>
+      <td>Skip whole-genome STAR realignment; only build per-fusion contigs.</td></tr>
+  <tr><td><code>--no_remove_dups</code></td>
+      <td>Keep every read in the IGV BAM. Dup status is set by the post-FI
+          propagate task (see below), not by FI itself.</td></tr>
+  <tr><td><code>--skip_EM</code></td>
+      <td>Skip fractional read-assignment EM; multi-mapper assignment uses the
+          uniformative-prior fast path.</td></tr>
+  <tr><td><code>--vis</code> + <code>--examine_coding_effect</code></td>
+      <td>Emit the IGV bundle (consolidated.bam + per-fusion .fa + .gtf + cytoBand)
+          and predict coding-effect classes.</td></tr>
+</table>
+
+<h3>Post-FI dup-flag propagation</h3>
+
+<p>FI re-aligns reads against per-fusion contigs, which means <strong>genome-coord
+   <code>0x400</code> flags don't translate</strong> through the FASTQ → STAR pipeline
+   naturally. A second post-FI step <code>propagate-fi-dup-flags</code> closes the
+   gap:</p>
+
+<ol>
+  <li>Walk the upstream marked BAM and build the set of QNAMEs whose
+      <code>0x400</code> flag is set.</li>
+  <li>Walk FI's <code>consolidated.bam</code> and OR <code>0x400</code> onto every
+      record whose QNAME is in that set.</li>
+  <li>Re-emit the BAM index.</li>
+</ol>
+
+<p>End result: the IGV BAM has every read present, with PCR duplicates flagged.
+   Clinicians can use IGV's "hide duplicates" toggle to view the dedup'd pile, or
+   leave it off to see total coverage at the fusion breakpoint. This was the missing
+   piece in earlier iterations where coordinate-based markdup on small fusion
+   contigs over-flagged 88 % of legitimate fusion-supporting reads as "duplicates"
+   (every fusion-supporting read aligns at the same breakpoint position by
+   construction); QNAME-based propagation transfers the genome-coord verdict
+   correctly into FI's contig coordinate space.</p>
+
+<h2 id="qc">9. QC &amp; reporting
+  <span class="pill qc">CollectRnaSeqMetrics</span>
+  <span class="pill qc">rustqc</span>
+  <span class="pill qc">mosdepth</span>
+  <span class="pill qc">verifybamid</span>
+  <span class="pill qc">MultiQC</span></h2>
+
+<p>QC sidecars run in parallel to the calling chain and feed a single consolidated
+   <strong>MultiQC</strong> report. The metrics that drive clinical sign-off are:</p>
+
+<table>
+  <tr><th>Tool</th><th>Metric</th><th>Pass threshold</th></tr>
+  <tr><td>Picard <code>CollectRnaSeqMetrics</code></td>
+      <td>PCT_CODING_BASES, PCT_INTRONIC_BASES, MEDIAN_5PRIME_BIAS</td>
+      <td>library-quality fingerprint</td></tr>
+  <tr><td><code>mosdepth</code></td>
+      <td>Coverage over the validated regions BED</td>
+      <td>per-target depth distribution</td></tr>
+  <tr><td><code>verifybamid</code></td>
+      <td>Sample-swap / contamination check</td>
+      <td>FREEMIX &lt; 0.05</td></tr>
+  <tr><td><code>rustqc</code></td>
+      <td>Strand specificity, junction-saturation</td>
+      <td>strand &gt; 0.95 for stranded protocols</td></tr>
+  <tr><td><code>fusion-report</code> custom-content</td>
+      <td>per-caller fusion counts + overlap</td>
+      <td>visual sanity check</td></tr>
+</table>
+
+<div class="callout warn">
+<strong>CollectRnaSeqMetrics chimeric-aware filter.</strong> Picard's
+CollectRnaSeqMetrics throws on chimeric read pairs (mates on different chromosomes).
+Since our BAM intentionally retains supplementary alignments for the fusion path,
+we pre-filter the input for this tool only:
+<code>samtools view -b -f 2 -F 3328</code> (proper pairs, drop secondary,
+supplementary, <em>and</em> PCR-duplicate-flagged). The dup exclusion ensures the
+metrics describe unique molecules. The filter is local to the QC step; the
+fusion-calling chain still sees the full BAM.
+</div>
+
+<h2 id="legend">10. Tooling legend</h2>
+
+<table>
+  <tr><th>Tool</th><th>Image</th><th>Role</th></tr>
+  <tr><td>fastp 1.3.3</td><td><code>quay.io/biocontainers/fastp:1.3.3</code></td>
+      <td>UMI extract + adapter trim</td></tr>
+  <tr><td>STAR 2.7.11b</td><td><code>quay.io/biocontainers/star:2.7.11b</code></td>
+      <td>Splice-aware alignment</td></tr>
+  <tr><td>samtools 1.18 / 1.21</td><td><code>quay.io/biocontainers/samtools:*</code></td>
+      <td>Sort / index / view; chimeric-junction filtering</td></tr>
+  <tr><td>fgbio 2.5.21 + samtools 1.21</td>
+      <td><code>bergun/fgbio-mark-duplicates:0.1.0</code></td>
+      <td>UMI-aware mark-duplicates (combined image; runs
+          awk-preproc → <code>fgbio CopyUmiFromReadName</code> →
+          <code>fgbio GroupReadsByUmi --mark-duplicates</code> →
+          samtools sort+index)</td></tr>
+  <tr><td>STAR-Fusion 1.15.1</td><td><code>quay.io/biocontainers/star-fusion:1.15.1</code></td>
+      <td>Fusion calling (kickstart from junctions)</td></tr>
+  <tr><td>Arriba 2.5.1</td><td><code>quay.io/biocontainers/arriba:2.5.1</code></td>
+      <td>Independent fusion calling</td></tr>
+  <tr><td>fusion-report 4.0.1</td><td><code>quay.io/biocontainers/fusion-report:4.0.1</code></td>
+      <td>Caller consolidation</td></tr>
+  <tr><td>FusionInspector 1.15.x</td><td><code>trinityctat/starfusion:latest</code></td>
+      <td>Per-fusion realignment for IGV</td></tr>
+  <tr><td>extract-fusion-reads</td><td><code>bergun/extract-fusion-reads:0.3.0</code></td>
+      <td>Pre-FI read filter (custom; also hosts the
+          <code>propagate-fi-dup-flags</code> pysam script)</td></tr>
+  <tr><td>OncoKB annotator</td><td>internal</td>
+      <td>Clinical level mapping</td></tr>
+  <tr><td>DuckDB</td><td>internal</td>
+      <td>Per-sample queryable persistence</td></tr>
+  <tr><td>Picard / GATK 4.6</td><td><code>broadinstitute/gatk:4.6.2.0</code></td>
+      <td>RNA-seq metrics</td></tr>
+  <tr><td>MultiQC</td><td>internal</td>
+      <td>Cross-tool report aggregation</td></tr>
+</table>
+
+<p class="small">Pipeline orchestration: Argo Workflows on Kubernetes
+   (<code>per-sample-somatic-fusion-gpu</code> →
+   <code>somatic-fusion-fastq-gpu-v2</code>). All hostPath mounts; storage on the
+   per-node <code>/runspace</code> filesystem.</p>
+
+</body>
+</html>

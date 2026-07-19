@@ -45,6 +45,9 @@ spec:
           - name: thread-count
             valueFrom:
               path: /tmp/THREAD_COUNT
+          - name: max-concurrent-samples
+            valueFrom:
+              path: /tmp/MAX_CONCURRENT_SAMPLES
       script:
         image: alpine/kubectl
         command: [sh]
@@ -69,6 +72,7 @@ spec:
           {"\nANNOTS_BASE_DIR="}{.metadata.annotations.gennext\.bio/annots-base-dir}
           {"\nMODULES_BASE_DIR="}{.metadata.annotations.gennext\.bio/modules-base-dir}
           {"\nTHREAD_COUNT="}{.metadata.annotations.gennext\.bio/thread-count}
+          {"\nMAX_CONCURRENT_SAMPLES="}{.metadata.annotations.gennext\.bio/max-concurrent-samples}
           ' > /tmp/keypaths_tmp0
           while IFS='=' read -r key val
           do
@@ -78,10 +82,14 @@ spec:
             elif [[ $key = "SCRATCH_REL_DIR" || $key = "TEMP_REL_DIR" ]]
             then
               echo "$(join_paths $val ${USER_ID}/${JOB_ID}_${RANDOM_SUFFIX})" > "/tmp/$key"
-            elif [[ $key = "THREAD_COUNT" ]]
+            elif [[ $key = "THREAD_COUNT" || $key = "MAX_CONCURRENT_SAMPLES" ]]
             then
               echo "$val" > "/tmp/$key"
             else
               echo "$(join_paths $val ${USER_ID}/${JOB_ID})" > "/tmp/$key"
             fi
           done < /tmp/keypaths_tmp0
+          # Default max-concurrent-samples to 1 if not set on node
+          if [ ! -s /tmp/MAX_CONCURRENT_SAMPLES ]; then
+            echo "1" > /tmp/MAX_CONCURRENT_SAMPLES
+          fi

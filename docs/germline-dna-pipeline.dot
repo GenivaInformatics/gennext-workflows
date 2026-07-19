@@ -1,0 +1,163 @@
+// germline DNA pipeline — bioinformatics tool & data-flow diagram
+// Audience: research poster. Nodes are labelled "Role — Tool"; edges carry the
+// data artefact that flows between stages. The MAIN flow drawn is the WGS
+// pipeline (germline-wgs-gpu); the dashed "Assay differences" box at the bottom
+// records how WES (germline-wes-gpu) and TPS (germline-tps-gpu) diverge from it.
+// Orchestration plumbing (Argo routing, scratch staging, ref-dir resolution,
+// BED handling, read-group composition, QC collectors, copy/clean) is omitted
+// to keep the focus on the analytical pipeline.
+//
+// Render:  dot -Tsvg germline-dna-pipeline.dot -o germline-pipeline.svg
+//          dot -Tpng -Gdpi=300 germline-dna-pipeline.dot -o germline-pipeline.png
+
+digraph germline_dna {
+    rankdir = TB;
+    compound = true;
+    splines = ortho;
+    nodesep = 0.45;     // a little extra room so ortho edge labels sit clear
+    ranksep = 0.7;
+    bgcolor = "white";
+
+    graph [fontname = "Helvetica", fontsize = 14, labelloc = "t"];
+    node  [fontname = "Helvetica", fontsize = 11, shape = box, style = "rounded,filled",
+           penwidth = 1.2, margin = "0.12,0.08"];
+    edge  [fontname = "Helvetica", fontsize = 9, color = "#555555", arrowsize = 0.8];
+
+    // ---- role colour key (by analytical category) ----------------------------
+    // align/preprocess  #DCE6F2   variant calling  #FCE4D6
+    // annotation        #E2EFDA   structural/CNV   #FFF2CC   QC #EAEAEA
+
+    label = "Gennext — Germline DNA Pipeline\nWGS shown as main flow; WES & TPS differences noted below · tools by role, edges = data artefact";
+
+    // =========================================================================
+    //  SAMPLE INPUT
+    // =========================================================================
+    sample [label = <<B>Patient germline sample</B><BR/><FONT POINT-SIZE="9">(blood / saliva)</FONT>>,
+            shape = folder, style = filled, fillcolor = "#FFFFFF", penwidth = 1.5];
+
+    // =========================================================================
+    //  PREPROCESSING & ALIGNMENT  (shared across all assays)
+    // =========================================================================
+    subgraph cluster_align {
+        label = "Preprocessing & alignment";
+        style = "rounded";
+        color = "#9DB7D6";
+        penwidth = 2;
+        fontsize = 13;
+        fontcolor = "#2F5496";
+
+        g_fq    [label = <<B>Raw reads</B><BR/>FASTQ <FONT POINT-SIZE="9">(R1/R2)</FONT>>, shape = note, fillcolor = "#FFFFFF"];
+        g_trim  [label = <<B>Adapter / quality trimming</B><BR/>Trim Galore>, fillcolor = "#DCE6F2"];
+        g_align [label = <<B>Alignment + mark-duplicates</B> <FONT POINT-SIZE="9">(GPU)</FONT><BR/>Parabricks fq2bam <FONT POINT-SIZE="9">(bwa-mem2)</FONT>>, fillcolor = "#DCE6F2"];
+        g_bqsr  [label = <<B>Base recalibration</B><BR/>Parabricks BQSR / ApplyBQSR>, fillcolor = "#DCE6F2"];
+    }
+
+    // =========================================================================
+    //  VARIANT CALLING  (three branches off the analysis-ready BAM — WGS)
+    // =========================================================================
+    subgraph cluster_call {
+        label = "Variant calling";
+        style = "rounded";
+        color = "#E0A98C";
+        penwidth = 2;
+        fontsize = 13;
+        fontcolor = "#9C4A1A";
+
+        g_dv    [label = <<B>SNV / indel calling</B> <FONT POINT-SIZE="9">(GPU)</FONT><BR/>DeepVariant <FONT POINT-SIZE="9">(WGS model)</FONT>>, fillcolor = "#FCE4D6"];
+        g_manta [label = <<B>SV calling</B><BR/>Manta>, fillcolor = "#FFF2CC"];
+        g_cnvp  [label = <<B>CNV calling</B><BR/>CNVpytor>, fillcolor = "#FFF2CC"];
+    }
+
+    // =========================================================================
+    //  ANNOTATION
+    // =========================================================================
+    subgraph cluster_anno {
+        label = "Annotation";
+        style = "rounded";
+        color = "#A9C18E";
+        penwidth = 2;
+        fontsize = 13;
+        fontcolor = "#4E6B2C";
+
+        g_asv   [label = <<B>SV annotation</B><BR/>AnnotSV>, fillcolor = "#E2EFDA"];
+        g_cravat[label = <<B>SNV / indel annotation</B><BR/>OpenCRAVAT<BR/><FONT POINT-SIZE="9">(ClinVar · InterVar · CADD · AlphaMissense ·<BR/>gnomAD4 · OMIM · ClinPred · Turkish Variome)</FONT>>, fillcolor = "#E2EFDA"];
+    }
+
+    // =========================================================================
+    //  QC  &  RESULTS
+    // =========================================================================
+    g_qc [label = <<B>QC</B><BR/><FONT POINT-SIZE="9">FastQC · VerifyBamID ·<BR/>mosdepth · MultiQC</FONT>>, fillcolor = "#EAEAEA"];
+
+    results [label = <<B>Annotated germline variants</B><BR/><FONT POINT-SIZE="9">VCF + gVCF · CRAVAT · AnnotSV TSV · CNV calls</FONT>>,
+             shape = cylinder, style = filled, fillcolor = "#D9D2E9", penwidth = 1.5];
+
+    // =========================================================================
+    //  EDGES  (data flow — WGS)
+    // =========================================================================
+    sample  -> g_fq    [label = "DNA library"];
+
+    g_fq    -> g_trim  [label = "FASTQ"];
+    g_trim  -> g_align [label = "trimmed FASTQ"];
+    g_align -> g_bqsr  [label = "aligned +\ndedup BAM"];
+
+    // analysis-ready BAM fans out to the three callers
+    g_bqsr  -> g_dv    [label = "analysis-ready\nBAM"];
+    g_bqsr  -> g_manta [label = "BAM"];
+    g_bqsr  -> g_cnvp  [label = "BAM"];
+
+    // SNV/indel → annotation (WGS annotates the DeepVariant VCF directly)
+    g_dv    -> g_cravat [label = "DeepVariant VCF"];
+    g_dv    -> g_cnvp   [label = "VCF (BAF)", style = dashed];   // CNVpytor uses DV hetSNP BAF
+
+    // SV → annotation
+    g_manta -> g_asv   [label = "SV VCF"];
+
+    // QC off the recalibrated BAM
+    g_bqsr  -> g_qc    [style = dashed];
+
+    // into results store
+    g_cravat -> results [label = "annotated\nSNV / indel"];
+    g_asv    -> results [label = "annotated SV"];
+    g_cnvp   -> results [label = "CNV calls"];
+
+    // =========================================================================
+    //  ASSAY DIFFERENCES  (WES & TPS vs the WGS flow above)
+    // =========================================================================
+    subgraph cluster_diff {
+        label = "Assay differences vs WGS";
+        style = "rounded,dashed";
+        color = "#999999";
+        penwidth = 1.5;
+        fontsize = 13;
+        fontcolor = "#444444";
+
+        wes_note [shape = note, fillcolor = "#FFF8E1", style = filled, fontsize = 10,
+                  label = "WES — whole exome\l\
+• DeepVariant: WES model, restricted to target BED\l\
+• + bcftools variant filtering before annotation\l\
+• SV/CNV: ExomeDepth → AnnotSV  (Manta not run)\l\
+• CNVpytor also run (standalone)\l\
+• Coverage: mosdepth in exome mode\l"];
+
+        tps_note [shape = note, fillcolor = "#FFF8E1", style = filled, fontsize = 10,
+                  label = "TPS — targeted panel\l\
+• DeepVariant: WES model, restricted to target BED\l\
+• + bcftools variant filtering before annotation\l\
+• SV: Manta → AnnotSV  (as WGS)\l\
+• CNV: CNVpytor  (ExomeDepth not run)\l\
+• Coverage: mosdepth in exome mode\l"];
+    }
+
+    // anchor the differences box beneath the results node without drawing a flow arrow
+    results -> wes_note [style = invis];
+    results -> tps_note [style = invis];
+
+    // =========================================================================
+    //  ALTERNATE ENTRY POINTS (note)
+    // =========================================================================
+    entry [shape = note, fillcolor = "#FFFDE7", style = filled, fontsize = 9,
+           label = "Alternate inputs (skip earlier stages):\l\
+• BAM   → Parabricks bam2fq → re-align       \l\
+• VCF   → OpenCRAVAT annotation only          \l"];
+    entry -> g_fq [style = dotted, arrowhead = none, color = "#BBBBBB"];
+}

@@ -1,0 +1,78 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: sample-worker-prototype
+  namespace: gennext-dev
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: sample-work
+  arguments:
+    parameters:
+      - name: sample-id
+      - name: sample-uuid
+  templates:
+    # -------------------------------------------------------------------------
+    # sample-work: simulates a per-sample processing pipeline.
+    # In production, this would be replaced by the real somatic workflow.
+    # -------------------------------------------------------------------------
+    - name: sample-work
+      inputs:
+        parameters:
+          - name: sample-id
+            default: "{{workflow.parameters.sample-id}}"
+          - name: sample-uuid
+            default: "{{workflow.parameters.sample-uuid}}"
+      dag:
+        tasks:
+          - name: step-1-preprocess
+            template: mock-step
+            arguments:
+              parameters:
+                - name: step-name
+                  value: "preprocess"
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: duration
+                  value: "5"
+          - name: step-2-align
+            template: mock-step
+            arguments:
+              parameters:
+                - name: step-name
+                  value: "align"
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: duration
+                  value: "10"
+            depends: "step-1-preprocess"
+          - name: step-3-call-variants
+            template: mock-step
+            arguments:
+              parameters:
+                - name: step-name
+                  value: "call-variants"
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: duration
+                  value: "8"
+            depends: "step-2-align"
+
+    # -------------------------------------------------------------------------
+    # mock-step: sleeps for a given duration, simulating work.
+    # Prints sample-id and step-name for observability.
+    # -------------------------------------------------------------------------
+    - name: mock-step
+      inputs:
+        parameters:
+          - name: step-name
+          - name: sample-id
+          - name: duration
+      script:
+        image: alpine:3.18
+        command: [sh]
+        source: |
+          echo "=== Sample: {{inputs.parameters.sample-id}} ==="
+          echo "Step: {{inputs.parameters.step-name}}"
+          echo "Sleeping {{inputs.parameters.duration}}s to simulate work..."
+          sleep {{inputs.parameters.duration}}
+          echo "Done."

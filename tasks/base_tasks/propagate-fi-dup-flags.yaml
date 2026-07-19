@@ -1,0 +1,67 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: propagate-fi-dup-flags-template
+spec:
+  templates:
+    # Propagate the BAM_FDUP (0x400) flag from a genome-coord MarkDuplicates
+    # BAM onto a FusionInspector consolidated BAM by QNAME.
+    #
+    # Background. Coordinate-based dedup on small (~30-80 kb) fusion contigs
+    # over-flags fusion-supporting reads because every supporter aligns at
+    # the breakpoint position by construction. Running picard/samtools
+    # markdup directly on FI's BAM collapses legitimate fusion evidence into
+    # "duplicates" (88% dup rate observed empirically on AGI-S5 — most
+    # fusions ended up showing 5-60x fewer non-dup reads than arriba had).
+    #
+    # The right view for IGV — and the dedup verdict that arriba and
+    # star-fusion actually consumed — is the genome-coord MarkDuplicates
+    # output. This task copies that verdict by QNAME onto FI's BAM, so a
+    # read that was non-dup in genome space is non-dup in FI space too.
+    #
+    # In-place rewrite: out-bam can be the same path as fi-bam (the script
+    # streams to a temp file then atomically replaces).
+    - name: propagate-fi-dup-flags
+      inputs:
+        parameters:
+          - name: upstream-bam
+          - name: fi-bam
+          - name: out-bam
+          - name: thread-count
+            default: "4"
+      outputs:
+        parameters:
+          - name: out-bam
+            value: "{{inputs.parameters.out-bam}}"
+      volumes:
+        - name: upstream-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['upstream-bam'])}}"
+            type: Directory
+        - name: fi-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['fi-bam'])}}"
+            type: Directory
+        - name: out-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['out-bam'])}}"
+            type: DirectoryOrCreate
+      container:
+        name: propagate-fi-dup-flags
+        image: bergun/extract-fusion-reads:0.3.2
+        command: ["propagate-fi-dup-flags"]
+        args:
+          - "--upstream-bam=/mnt/upstream/{{=sprig.osBase(inputs.parameters['upstream-bam'])}}"
+          - "--fi-bam=/mnt/fi/{{=sprig.osBase(inputs.parameters['fi-bam'])}}"
+          - "--out-bam=/mnt/out/{{=sprig.osBase(inputs.parameters['out-bam'])}}"
+        volumeMounts:
+          - name: upstream-bam
+            mountPath: "/mnt/upstream/"
+          - name: fi-bam
+            mountPath: "/mnt/fi/"
+          - name: out-bam
+            mountPath: "/mnt/out/"
+        resources:
+          requests:
+            memory: 8Gi
+            cpu: "4"

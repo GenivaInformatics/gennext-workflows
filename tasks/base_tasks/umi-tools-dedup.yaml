@@ -1,0 +1,115 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: umi-tools-dedup-template
+spec:
+  templates:
+    # UMI-aware deduplication for libraries that carry true UMIs (e.g. the
+    # FFPE RNA-seq libraries with leading 5 bp UMIs handled by fastp's
+    # --umi --umi_loc=per_read --umi_len=5 --umi_prefix=UMI). fastp leaves
+    # the UMI in the QNAME suffix as `:UMI_<R1bases>_<R2bases>`; this
+    # template extracts that via regex and runs umi_tools dedup with
+    # coord+UMI awareness (1-edit-distance directional clustering for
+    # robustness against UMI sequencing errors).
+    #
+    # Replaces Picard MarkDuplicates in the RNA fusion DAG. Coordinate-only
+    # MarkDuplicates over-collapses UMI-distinct molecules (94.4% dup rate
+    # observed on AGI-S5 vs typical 50-80% UMI-aware rate) — the very
+    # mismatch flagged in /tmp/fi_bam_results.md.
+    #
+    # Output BAM has duplicates REMOVED (umi_tools default; no mark-only
+    # mode). Downstream tools that previously honored 0x400 flags (arriba's
+    # -u, propagate-fi-dup-flags) now see a dup-free BAM and either no-op
+    # or are dropped from the DAG.
+    #
+    # Stats files (*_per_umi.tsv, *_per_umi_per_position.tsv,
+    # *_edit_distance.tsv) feed MultiQC's umi_tools module when placed
+    # under the metrics directory.
+    - name: umi-tools-dedup
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: input-bam
+          - name: output-bam
+          - name: output-stats-prefix
+          - name: thread-count
+            default: "8"
+      outputs:
+        parameters:
+          - name: output-bam
+            value: "{{inputs.parameters.output-bam}}"
+          - name: output-stats-prefix
+            value: "{{inputs.parameters.output-stats-prefix}}"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: output-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-bam'])}}"
+            type: DirectoryOrCreate
+        - name: output-stats
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-stats-prefix'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: umi-tools-dedup
+        # The biocontainer umi_tools image doesn't bundle samtools, so the
+        # inline `samtools index` after dedup would crash with `command not
+        # found`. Switched to a custom mambaorg-based image that installs
+        # both umi_tools=1.1.6 and samtools=1.21 from bioconda.
+        image: bergun/umi-tools-dedup:0.1.0
+        command: [bash]
+        source: |
+          set -euo pipefail
+
+          BAM_IN="/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}"
+          BAM_OUT="/mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}"
+          STATS_PREFIX="/mnt/output/stats/{{=sprig.osBase(inputs.parameters['output-stats-prefix'])}}"
+          LOG_PATH="${STATS_PREFIX}.log"
+          THREADS="{{inputs.parameters.thread-count}}"
+
+          echo "Running umi_tools dedup"
+          echo "  Input:        ${BAM_IN}"
+          echo "  Output:       ${BAM_OUT}"
+          echo "  Stats prefix: ${STATS_PREFIX}"
+
+          # umi_tools dedup supports --extract-umi-method=read_id|tag|umis
+          # (the regex method is only on the `extract` FASTQ subcommand).
+          # Our QNAMEs after fastp look like
+          #   <original>:UMI_<R1bases>_<R2bases>
+          # e.g. R213040...:UMI_GGCTG_ATGTC. We split on the multi-char
+          # separator ":UMI_" so the last field becomes the full 11-char
+          # composite UMI "GGCTG_ATGTC" (the underscore between R1 and R2
+          # UMIs is part of the captured UMI token, which is correct —
+          # umi_tools clusters UMIs as opaque strings of any length).
+          # --paired: paired-end RNA-seq input.
+          # --method=directional: graph-based UMI clustering with 1-edit-
+          # distance tolerance (handles UMI sequencing errors).
+          umi_tools dedup \
+            --stdin="${BAM_IN}" \
+            --stdout="${BAM_OUT}" \
+            --extract-umi-method=read_id \
+            --umi-separator=':UMI_' \
+            --paired \
+            --method=directional \
+            --output-stats="${STATS_PREFIX}" \
+            --log="${LOG_PATH}"
+
+          echo "Indexing deduped BAM"
+          samtools index -@ "${THREADS}" "${BAM_OUT}"
+
+          echo "umi_tools dedup completed"
+          ls -la "${BAM_OUT}" "${BAM_OUT}.bai" "${STATS_PREFIX}"* 2>&1 || true
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/mnt/input/bam/"
+          - name: output-bam
+            mountPath: "/mnt/output/bam/"
+          - name: output-stats
+            mountPath: "/mnt/output/stats/"
+        resources:
+          requests:
+            memory: 16Gi
+            cpu: "8"

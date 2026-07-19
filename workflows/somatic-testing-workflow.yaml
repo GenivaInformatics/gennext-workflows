@@ -186,24 +186,11 @@ spec:
                   value: "{{tasks.elprep.outputs.parameters.output-bam}}"
                 - name: input-vcf
                   value: "{{tasks.bcftools-filter.outputs.parameters.output-vcf-f}}"
-                - name: vlod-out-tsv
-                  value: "{{inputs.parameters.scratch-rel-dir}}results/snv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_vlod.tsv.gz"
+                - name: vlod-output-vcf
+                  value: "{{inputs.parameters.temp-rel-dir}}results/snv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_mutect2_vlod.vcf" # output returns .gz
                 - name: thread-count
                   value: "{{inputs.parameters.thread-count}}"
             depends: "bcftools-filter && elprep"
-          - name: vlod-merge-with-vcf
-            templateRef:
-              name: vlod-template
-              template: vlod-merge-with-vcf
-            arguments:
-              parameters:
-                - name: input-vcf
-                  value: "{{tasks.bcftools-filter.outputs.parameters.output-vcf-f}}"
-                - name: input-vlod-tsv
-                  value: "{{tasks.vlod.outputs.parameters.vlod-out-tsv}}"
-                - name: vlod-merged-output-vcf
-                  value: "{{inputs.parameters.temp-rel-dir}}results/snv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_mutect2_vlod.vcf" # output returns .gz
-            depends: "bcftools-filter && vlod"
           - name: annovar
             templateRef:
               name: annovar-template
@@ -213,14 +200,14 @@ spec:
                 - name: sample-id
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
                 - name: input-vcf-f
-                  value: "{{tasks.vlod-merge-with-vcf.outputs.parameters.vlod-merged-output-vcf}}"
+                  value: "{{tasks.vlod.outputs.parameters.vlod-output-vcf}}"
                 - name: ref-version
                   value: "hg38"
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}results/snv/"
                 - name: annovardb-dir
                   value: "{{tasks.get-abs-ref-dirs.outputs.parameters.annovar-dir}}"
-            depends: "vlod-merge-with-vcf && get-abs-ref-dirs"
+            depends: "vlod && get-abs-ref-dirs"
           - name: cancervar
             templateRef:
               name: cancervar-template
@@ -230,7 +217,7 @@ spec:
                 - name: sample-id
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
                 - name: input-vcf-f
-                  value: "{{tasks.vlod-merge-with-vcf.outputs.parameters.vlod-merged-output-vcf}}"
+                  value: "{{tasks.vlod.outputs.parameters.vlod-output-vcf}}"
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}results/snv/"
                 - name: annovardb-dir
@@ -706,24 +693,11 @@ spec:
                   value: "{{tasks.elprep.outputs.parameters.output-bam}}"
                 - name: input-vcf
                   value: "{{tasks.bcftools-filter.outputs.parameters.output-vcf-f}}"
-                - name: vlod-out-tsv
-                  value: "{{inputs.parameters.scratch-rel-dir}}results/snv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_vlod.tsv.gz"
+                - name: vlod-output-vcf
+                  value: "{{inputs.parameters.temp-rel-dir}}results/snv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_mutect2_vlod.vcf" # output returns .gz
                 - name: thread-count
                   value: "{{inputs.parameters.thread-count}}"
             depends: "bcftools-filter && elprep"
-          - name: vlod-merge-with-vcf
-            templateRef:
-              name: vlod-template
-              template: vlod-merge-with-vcf
-            arguments:
-              parameters:
-                - name: input-vcf
-                  value: "{{tasks.bcftools-filter.outputs.parameters.output-vcf-f}}"
-                - name: input-vlod-tsv
-                  value: "{{tasks.vlod.outputs.parameters.vlod-out-tsv}}"
-                - name: vlod-merged-output-vcf
-                  value: "{{inputs.parameters.temp-rel-dir}}results/snv/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_mutect2_vlod.vcf" # output returns .gz
-            depends: "bcftools-filter && vlod"
           - name: annovar
             templateRef:
               name: annovar-template
@@ -733,14 +707,14 @@ spec:
                 - name: sample-id
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
                 - name: input-vcf-f
-                  value: "{{tasks.vlod-merge-with-vcf.outputs.parameters.vlod-merged-output-vcf}}"
+                  value: "{{tasks.vlod.outputs.parameters.vlod-output-vcf}}"
                 - name: ref-version
                   value: "hg38"
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}results/snv/"
                 - name: annovardb-dir
                   value: "{{tasks.get-abs-ref-dirs.outputs.parameters.annovar-dir}}"
-            depends: "vlod-merge-with-vcf && get-abs-ref-dirs"
+            depends: "vlod && get-abs-ref-dirs"
           - name: cancervar
             templateRef:
               name: cancervar-template
@@ -750,7 +724,7 @@ spec:
                 - name: sample-id
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
                 - name: input-vcf-f
-                  value: "{{tasks.vlod-merge-with-vcf.outputs.parameters.vlod-merged-output-vcf}}"
+                  value: "{{tasks.vlod.outputs.parameters.vlod-output-vcf}}"
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}results/snv/"
                 - name: annovardb-dir
@@ -1078,6 +1052,17 @@ spec:
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}metrics/rna/fastqc/pre-trim/"
             depends: "copy-inputs-to-scratch"
+          - name: compose-read-group-str
+            templateRef:
+              name: compose-read-group-str
+              template: compose-read-group-str-from-fq
+            arguments:
+              parameters:
+                - name: fq-r1
+                  value: "{{tasks.copy-inputs-to-scratch.outputs.parameters.fq-r1}}"
+                - name: sample-name
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+            depends: "copy-inputs-to-scratch"
           - name: trim-galore
             templateRef:
               name: trim-galore-template
@@ -1103,6 +1088,8 @@ spec:
               parameters:
                 - name: sample-id
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
+                - name: read-group-str
+                  value: "{{tasks.compose-read-group-str.outputs.parameters.read-group-str-no-rg-prefix}}"
                 - name: fq-r1
                   value: "{{tasks.trim-galore.outputs.parameters.fq-r1}}"
                 - name: fq-r2
@@ -1115,11 +1102,13 @@ spec:
                   value: "{{inputs.parameters.temp-rel-dir}}results/fusions/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_fusions.tsv"
                 - name: output-chimeric-out-fusions
                   value: "{{inputs.parameters.temp-rel-dir}}results/fusions/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_Chimeric.out.junction"
+                - name: metrics-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}metrics/rna/star-fusion/"
                 - name: scratch-dir
                   value: "{{inputs.parameters.scratch-rel-dir}}star-fusion/"
                 - name: ctat-genome-lib-build-dir
                   value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ctat-genome-lib-build-dir}}"
-            depends: "trim-galore && get-abs-ref-dirs"
+            depends: "trim-galore && get-abs-ref-dirs && compose-read-group-str"
           - name: star-fusion-to-oncokb
             templateRef:
               name: star-fusion-to-oncokb-template

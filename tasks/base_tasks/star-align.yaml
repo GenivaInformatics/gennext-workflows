@@ -1,0 +1,188 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: star-align-template
+spec:
+  templates:
+    # STAR alignment for RNA fusion calling. Chimeric params follow the
+    # Arriba-recommended set (chimSegmentMin 10, chimJunctionOverhangMin
+    # 10, chimMultimapNmax 50, etc.) and emit BOTH:
+    #   - chimerics inline in the BAM (--chimOutType WithinBAM HardClip):
+    #     consumed by Arriba.
+    #   - a standalone Chimeric.out.junction file (--chimOutType Junctions):
+    #     consumed by star-fusion-from-junction kickstart calling after
+    #     UMI-aware dedup filtering. Lets one STAR run feed both callers.
+    #
+    # Slightly more sensitive than STAR-Fusion's bundled-STAR defaults
+    # (chimSegmentMin 12); recall is at least as good as the prior split
+    # workflow that ran STAR-Fusion's own STAR.
+    - name: star-align-arriba
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: read-group-str
+          - name: fq-r1
+          - name: fq-r2
+            value: ""
+          - name: ctat-genome-lib-build-dir
+          - name: output-bam
+          - name: output-chimeric-out-fusions
+          - name: metrics-dir
+          - name: scratch-dir
+          - name: thread-count
+      outputs:
+        parameters:
+          - name: output-bam
+            value: "{{inputs.parameters.output-bam}}"
+          - name: output-chimeric-out-fusions
+            value: "{{inputs.parameters.output-chimeric-out-fusions}}"
+          - name: star-log-final
+            value: "{{inputs.parameters.metrics-dir}}Log.final.out"
+      volumes:
+        - name: fq-r1
+          hostPath:
+            path: "{{inputs.parameters.fq-r1}}"
+            type: File
+        - name: fq-r2
+          hostPath:
+            path: "{{inputs.parameters.fq-r2}}"
+            type: File
+        - name: output-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-bam'])}}"
+            type: DirectoryOrCreate
+        - name: output-chimeric-out-fusions
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-chimeric-out-fusions'])}}"
+            type: DirectoryOrCreate
+        - name: metrics-dir
+          hostPath:
+            path: "{{inputs.parameters.metrics-dir}}"
+            type: DirectoryOrCreate
+        - name: scratch-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['scratch-dir'])}}"
+            type: DirectoryOrCreate
+        - name: ctat-genome-lib-build-dir
+          hostPath:
+            path: "{{inputs.parameters.ctat-genome-lib-build-dir}}"
+            type: Directory
+      script:
+        name: "star-align-arriba"
+        image: quay.io/biocontainers/star:2.7.11b--h43eeafb_3
+        command: [sh]
+        source: |
+          set -euo pipefail
+
+          fqR1="{{=sprig.osBase(inputs.parameters['fq-r1'])}}"
+          fqR2="{{=sprig.osBase(inputs.parameters['fq-r2'])}}"
+
+          BAM_OUT_DIR="/mnt/output/bam"
+          BAM_OUT_FILE="$BAM_OUT_DIR/{{=sprig.osBase(inputs.parameters['output-bam'])}}"
+          CHIMERIC_OUT_DIR="/mnt/output/chimeric"
+          CHIMERIC_OUT_FILE="$CHIMERIC_OUT_DIR/{{=sprig.osBase(inputs.parameters['output-chimeric-out-fusions'])}}"
+
+          # Clean stale checkpoints/output from any previous run
+          rm -rf /mnt/scratch/*
+
+          # Build optional R2 arg for paired-end
+          R2_PATH=""
+          if [ -n "$fqR2" ]; then
+            R2_PATH="/mnt/input/r2/$fqR2"
+          fi
+
+          echo "Running STAR (Arriba-tuned chimeric params; BAM + Chimeric.out.junction)"
+          # --outSAMmultNmax 1: emit only the primary alignment per read,
+          # even when --outFilterMultimapNmax allows up to 50 multi-mapping
+          # locations. The NH:i:N tag stays on the primary so consumers
+          # that need multi-mapping awareness (arriba's `multimappers`
+          # filter, RNA-seq QC) still have the info. ~40% reduction in
+          # BAM size on a typical RNA-seq library; all downstream tasks
+          # (samtools sort, fgbio mark-duplicates, arriba, FI extractor)
+          # process less data. Supplementary chimeric alignments (0x800)
+          # are unaffected — they're the fusion evidence and stay.
+          #
+          # TODO(sensitivity): for fusions in paralog-heavy regions
+          # (kinase families, IG/TR loci, NTRK/ROS1/ALK with pseudogenes,
+          # ribosomal-adjacent genes), losing the secondary supplementary
+          # alignments means losing real evidence. Arriba's recommended
+          # STAR config sets --chimMultimapNmax 50 specifically to capture
+          # these. To recover them, we'd need to:
+          #   - Drop --outSAMmultNmax 1 (or raise it for chimerics only)
+          #   - Handle secondary alignments through fgbio's pipeline
+          #     differently (currently they break SetMateInformation /
+          #     GroupReadsByUmi because MQ isn't set on secondaries)
+          #   - Possibly split the BAM: primaries through fgbio mark-dup,
+          #     secondaries kept separate and merged back for arriba.
+          # Tracking as a follow-up — single-best-alignment is acceptable
+          # for the calls we currently care about.
+          STAR \
+            --runMode alignReads \
+            --genomeDir /mnt/ref/ctat-lib/ref_genome.fa.star.idx \
+            --readFilesIn "/mnt/input/r1/$fqR1" $R2_PATH \
+            --readFilesCommand zcat \
+            --outFileNamePrefix /mnt/scratch/ \
+            --outSAMtype BAM Unsorted \
+            --outSAMunmapped None \
+            --outSAMattrRGline "$STAR_RG_LINE" \
+            --runThreadN {{inputs.parameters.thread-count}} \
+            --outFilterMultimapNmax 50 \
+            --outSAMmultNmax 1 \
+            --peOverlapNbasesMin 10 \
+            --alignSplicedMateMapLminOverLmate 0.5 \
+            --alignSJstitchMismatchNmax 5 -1 5 5 \
+            --chimOutType WithinBAM HardClip Junctions \
+            --chimOutJunctionFormat 1 \
+            --chimSegmentMin 10 \
+            --chimJunctionOverhangMin 10 \
+            --chimScoreMin 1 \
+            --chimScoreDropMax 30 \
+            --chimScoreJunctionNonGTAG 0 \
+            --chimScoreSeparation 1 \
+            --chimSegmentReadGapMax 3 \
+            --chimMultimapNmax 50
+
+          if [ -f "/mnt/scratch/Aligned.out.bam" ]; then
+            mv /mnt/scratch/Aligned.out.bam "$BAM_OUT_FILE"
+            echo "STAR BAM at $BAM_OUT_FILE"
+          else
+            echo "ERROR: STAR did not produce Aligned.out.bam"
+            ls -la /mnt/scratch/
+            exit 1
+          fi
+
+          # --chimOutJunctionFormat 1 produces the STAR-Fusion-compatible
+          # Chimeric.out.junction (header + 21-column body). Required by
+          # the star-fusion-from-junction kickstart template downstream.
+          if [ -f "/mnt/scratch/Chimeric.out.junction" ]; then
+            mv /mnt/scratch/Chimeric.out.junction "$CHIMERIC_OUT_FILE"
+            echo "Chimeric junctions at $CHIMERIC_OUT_FILE"
+          else
+            echo "WARN: STAR did not produce Chimeric.out.junction; emitting empty header-only file"
+            echo -e "chr_donorA\tbrkpt_donorA\tstrand_donorA\tchr_acceptorB\tbrkpt_acceptorB\tstrand_acceptorB\tjunction_type\trepeat_left_lenA\trepeat_right_lenB\tread_name\tstart_alnA\tcigar_alnA\tstart_alnB\tcigar_alnB\tnum_chim_aln\tmax_poss_aln_score\tnon_chim_aln_score\tthis_chim_aln_score\tbestall_chim_aln_score\tPEmerged_bool\treadgrp" > "$CHIMERIC_OUT_FILE"
+          fi
+
+          # Relay STAR alignment summary into metrics-dir for MultiQC.
+          for f in Log.final.out SJ.out.tab; do
+            if [ -f "/mnt/scratch/$f" ]; then
+              cp "/mnt/scratch/$f" "/mnt/metrics/$f"
+            fi
+          done
+        volumeMounts:
+          - name: fq-r1
+            mountPath: "/mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}"
+          - name: fq-r2
+            mountPath: "/mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}"
+          - name: output-bam
+            mountPath: "/mnt/output/bam/"
+          - name: output-chimeric-out-fusions
+            mountPath: "/mnt/output/chimeric/"
+          - name: metrics-dir
+            mountPath: "/mnt/metrics/"
+          - name: scratch-dir
+            mountPath: "/mnt/scratch/"
+          - name: ctat-genome-lib-build-dir
+            mountPath: "/mnt/ref/ctat-lib/"
+        env:
+          - name: STAR_RG_LINE
+            value: "{{inputs.parameters.read-group-str}}"

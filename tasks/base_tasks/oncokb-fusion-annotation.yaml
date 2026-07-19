@@ -1,0 +1,235 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: oncokb-fusion-annotation-template
+  namespace: argo
+spec:
+  templates:
+    - name: oncokb-fusion-annotation
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: input-fusions-json
+          - name: output-dir
+          - name: tumor-type
+      outputs:
+        parameters:
+          - name: output-fusions-with-oncokb-json
+            value: "{{inputs.parameters.output-dir}}fusions_with_oncokb.json"
+          - name: output-annotated-tsv
+            value: "{{inputs.parameters.output-dir}}fusions_annotated.tsv"
+      volumes:
+        - name: input-fusions-json
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-fusions-json'])}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: oncokb-fusion-annotation
+        image: bergun/oncokb-annotator:v0.1.2
+        command: [python3]
+        source: |
+          import json
+          import csv
+          import os
+          import sys
+          import shutil
+          import subprocess
+          import time
+
+          SAMPLE_ID = "{{inputs.parameters.sample-id}}"
+          TUMOR_TYPE = "{{inputs.parameters.tumor-type}}"
+          INPUT_JSON = "/mnt/input/{{=sprig.osBase(inputs.parameters['input-fusions-json'])}}"
+          OUTPUT_DIR = "/mnt/output"
+
+          print("=== OncoKB Fusion Annotation ===")
+          print(f"  Sample:     {SAMPLE_ID}")
+          print(f"  Tumor type: {TUMOR_TYPE}")
+          print(f"  Input:      {INPUT_JSON}")
+
+          if not os.path.isfile(INPUT_JSON):
+              print(f"Error: Input file {INPUT_JSON} not found")
+              sys.exit(1)
+
+          # -------------------------------------------------------
+          # Step 1: Convert fusion-report JSON to OncoKB TSV format
+          # -------------------------------------------------------
+          print("\n=== Step 1: Converting fusions.json to OncoKB TSV ===")
+
+          with open(INPUT_JSON, "r") as f:
+              fusions = json.load(f)
+
+          fusion_mapping = {}
+          with open("/tmp/fusions_input.tsv", "w") as f:
+              f.write("Tumor_Sample_Barcode\tFusion\n")
+              for fusion_data in fusions:
+                  fusion_name = fusion_data.get("Fusion", "")
+                  if fusion_name:
+                      oncokb_fusion = fusion_name.replace("--", "-")
+                      f.write(f"{SAMPLE_ID}\t{oncokb_fusion}\n")
+                      fusion_mapping[oncokb_fusion] = fusion_name
+
+          with open("/tmp/fusions_input_mapping.json", "w") as f:
+              json.dump(fusion_mapping, f, indent=2)
+
+          print(f"Converted {len(fusions)} fusions to /tmp/fusions_input.tsv")
+
+          with open("/tmp/fusions_input.tsv", "r") as f:
+              print("TSV contents:")
+              print(f.read())
+
+          # -------------------------------------------------------
+          # Step 2: Annotate via OncoKB FusionAnnotator
+          # -------------------------------------------------------
+          print("\n=== Step 2: Running OncoKB FusionAnnotator ===")
+
+          oncokb_token = os.environ["ONCOKB_API_TOKEN"]
+          max_attempts = 3
+
+          cmd = [
+              "python", "./FusionAnnotator.py",
+              "-i", "/tmp/fusions_input.tsv",
+              "-o", "/tmp/fusions_annotated.tsv",
+              "-b", oncokb_token,
+          ]
+          if TUMOR_TYPE:
+              cmd.extend(["-t", TUMOR_TYPE])
+
+          for attempt in range(1, max_attempts + 1):
+              print(f"--- Attempt {attempt} of {max_attempts} ---")
+
+              result = subprocess.run(cmd, capture_output=False)
+
+              if result.returncode == 0:
+                  time.sleep(5)
+                  if os.path.isfile("/tmp/fusions_annotated.tsv") and os.path.getsize("/tmp/fusions_annotated.tsv") > 0:
+                      print("Annotation completed and validated successfully")
+                      break
+                  else:
+                      print(f"Output validation failed on attempt {attempt}")
+              else:
+                  print(f"Annotation failed on attempt {attempt}")
+
+              if attempt >= max_attempts:
+                  print(f"All {max_attempts} attempts failed")
+                  sys.exit(1)
+
+              print("Retrying in 5 seconds...")
+              time.sleep(5)
+
+          with open("/tmp/fusions_annotated.tsv", "r") as f:
+              print("Annotated TSV contents:")
+              print(f.read())
+
+          # -------------------------------------------------------
+          # Step 3: Merge annotations back into enriched JSON
+          # -------------------------------------------------------
+          print("\n=== Step 3: Merging OncoKB annotations ===")
+
+          ONCOGENIC_MULTIPLIERS = {
+              "Oncogenic": 3.0,
+              "Likely Oncogenic": 2.0,
+              "Likely Neutral": 0.5,
+              "Inconclusive": 1.0,
+              "Unknown": 1.0,
+              "Resistance": 1.0,
+          }
+
+          LEVEL_MULTIPLIERS = {
+              "LEVEL_R1": 3.0,
+              "LEVEL_1": 2.8,
+              "LEVEL_2": 2.5,
+              "LEVEL_3A": 2.0,
+              "LEVEL_3B": 1.7,
+              "LEVEL_4": 1.4,
+              "LEVEL_R2": 1.2,
+              "": 1.0,
+          }
+
+          def get_clinical_tier(weight):
+              if weight >= 4.0:
+                  return "Tier 1"
+              elif weight >= 2.0:
+                  return "Tier 2"
+              elif weight >= 1.0:
+                  return "Tier 3"
+              return "Tier 4"
+
+          # Parse OncoKB annotations
+          annotations = {}
+          with open("/tmp/fusions_annotated.tsv", "r") as f:
+              reader = csv.DictReader(f, delimiter="\t")
+              for row in reader:
+                  oncokb_fusion = row.get("Fusion", "")
+                  if oncokb_fusion:
+                      original_fusion = fusion_mapping.get(oncokb_fusion, oncokb_fusion)
+                      oncokb_data = {k: v for k, v in row.items()
+                                     if k not in ["Tumor_Sample_Barcode", "Fusion"]}
+                      annotations[original_fusion] = oncokb_data
+
+          # Read original fusions and merge
+          with open(INPUT_JSON, "r") as f:
+              fusions = json.load(f)
+
+          annotated_count = 0
+          for fusion_data in fusions:
+              fusion_name = fusion_data.get("Fusion", "")
+              if fusion_name in annotations:
+                  fusion_data["OncoKB"] = annotations[fusion_name]
+                  annotated_count += 1
+              else:
+                  fusion_data["OncoKB"] = None
+
+              fii = fusion_data.get("Fusion Indication Index (FII)", 0.0)
+              oncokb = fusion_data.get("OncoKB")
+              if oncokb:
+                  oncogenic = oncokb.get("ONCOGENIC", "Unknown")
+                  highest_level = oncokb.get("HIGHEST_LEVEL", "")
+                  onco_mult = ONCOGENIC_MULTIPLIERS.get(oncogenic, 1.0)
+                  level_mult = LEVEL_MULTIPLIERS.get(highest_level, 1.0)
+                  order_weight = round(fii * onco_mult * level_mult, 3)
+              else:
+                  order_weight = round(fii, 3) if isinstance(fii, float) else fii
+
+              fusion_data["order_weight"] = order_weight
+              fusion_data["clinical_tier"] = get_clinical_tier(order_weight)
+
+          fusions.sort(key=lambda x: x.get("order_weight", 0), reverse=True)
+
+          # Write outputs
+          out_json = f"{OUTPUT_DIR}/fusions_with_oncokb.json"
+          with open(out_json, "w") as f:
+              json.dump(fusions, f, indent=2)
+
+          shutil.copy2("/tmp/fusions_annotated.tsv", f"{OUTPUT_DIR}/fusions_annotated.tsv")
+          shutil.copy2("/tmp/fusions_input.tsv", f"{OUTPUT_DIR}/fusions_input.tsv")
+          shutil.copy2("/tmp/fusions_input_mapping.json", f"{OUTPUT_DIR}/fusions_input_mapping.json")
+
+          print(f"Merged {annotated_count}/{len(fusions)} fusions with OncoKB annotations")
+          print(f"Added order_weight and clinical_tier, sorted by priority")
+          print(f"Output written to {OUTPUT_DIR}/")
+
+          print("\n=== OncoKB annotation complete ===")
+          for fname in ["fusions_with_oncokb.json", "fusions_annotated.tsv",
+                        "fusions_input.tsv", "fusions_input_mapping.json"]:
+              path = os.path.join(OUTPUT_DIR, fname)
+              size = os.path.getsize(path)
+              print(f"  {path} ({size} bytes)")
+        volumeMounts:
+          - name: input-fusions-json
+            mountPath: "/mnt/input/"
+          - name: output-dir
+            mountPath: "/mnt/output/"
+        env:
+          - name: ONCOKB_API_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: oncokb-secrets
+                key: oncokb_api_token
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: "1"

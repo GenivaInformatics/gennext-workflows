@@ -1,0 +1,130 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: debug-qc-recollect-
+  namespace: argo
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: main
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node-name}}"
+  arguments:
+    parameters:
+      - name: node-name
+        value: acurare-01
+      - name: sample-id
+        value: AU26-P-100333786
+      - name: run-id
+        value: f2e3bf6f-ebd3-46a3-880c-628c6e17a527
+
+      - name: input-bed-file
+        value: /runspace/gennext/data/input/b3eace1a-7deb-4339-8119-2fc09d8dc481/f2e3bf6f-ebd3-46a3-880c-628c6e17a527/b1c00de8-97ab-4b05-a48e-18298fb940d9/NanOnCT_Panel_v1.0_target_hg38.bed
+      - name: gtf-file
+        value: /runspace/gennext/data/ref/hg38/gene_annots/gencode.v49.basic.annotation.MANE_Select.gtf.gz
+      - name: chains-dir
+        value: /runspace/gennext/data/ref/hg38/other/chains/
+
+      # Sample output dir on acurare-01. The workflow writes in place,
+      # overwriting the stale bed_validation/, mosdepth/, multiqc_data/
+      # artifacts from the original buggy run.
+      - name: sample-output-dir
+        value: /runspace/gennext/data/output/b3eace1a-7deb-4339-8119-2fc09d8dc481/f2e3bf6f-ebd3-46a3-880c-628c6e17a527/b1c00de8-97ab-4b05-a48e-18298fb940d9
+      - name: input-bam
+        value: /runspace/gennext/data/output/b3eace1a-7deb-4339-8119-2fc09d8dc481/f2e3bf6f-ebd3-46a3-880c-628c6e17a527/b1c00de8-97ab-4b05-a48e-18298fb940d9/bam/AU26-P-100333786_recal.bam
+
+  templates:
+    # =====================================================================
+    # main DAG: clean-stale -> {validate-bed, mosdepth (after validate)} -> multiqc -> collect-qc-data
+    # =====================================================================
+    - name: main
+      dag:
+        tasks:
+          - name: clean-stale
+            template: clean-stale
+
+          - name: validate-bed
+            templateRef:
+              name: bed-validator-template
+              template: validate-bed-file
+            arguments:
+              parameters:
+                - name: input-bed-file
+                  value: "{{workflow.parameters.input-bed-file}}"
+                - name: gtf-file
+                  value: "{{workflow.parameters.gtf-file}}"
+                - name: chains-dir
+                  value: "{{workflow.parameters.chains-dir}}"
+                - name: output-dir
+                  value: "{{workflow.parameters.sample-output-dir}}/metrics/bed_validation"
+            depends: clean-stale
+
+          - name: mosdepth
+            templateRef:
+              name: mosdepth-template
+              template: mosdepth-exome
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{workflow.parameters.sample-id}}"
+                - name: thresholds
+                  value: "1,5,10,30,50,100,500"
+                - name: input-bam
+                  value: "{{workflow.parameters.input-bam}}"
+                - name: regions-bed-f
+                  value: "{{tasks.validate-bed.outputs.parameters.validated-bed-cds-only-file}}"
+                - name: output-dir
+                  value: "{{workflow.parameters.sample-output-dir}}/metrics/mosdepth"
+            depends: validate-bed
+
+          - name: multiqc
+            templateRef:
+              name: multiqc-template
+              template: main
+            arguments:
+              parameters:
+                - name: input-dir
+                  value: "{{workflow.parameters.sample-output-dir}}"
+                - name: output-dir
+                  value: "{{workflow.parameters.sample-output-dir}}/metrics"
+            depends: mosdepth
+
+          - name: collect-qc-data
+            templateRef:
+              name: collect-qc-data-v2-templates
+              template: collect-qc-data-v2
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{workflow.parameters.sample-id}}"
+                - name: run-id
+                  value: "{{workflow.parameters.run-id}}"
+                - name: sample-fqs-fnames
+                  value: '["AU26-P-100333786-746-26-V350396753_L04_51_1.fq.gz","AU26-P-100333786-746-26-V350396753_L04_51_2.fq.gz"]'
+                - name: metrics-dir
+                  value: "{{workflow.parameters.sample-output-dir}}/metrics"
+            depends: multiqc
+
+    # =====================================================================
+    # Remove stale outputs that this workflow will regenerate. Bounded to
+    # mosdepth/ and the multiqc bundle so we don't touch fastqc/, bqsr/,
+    # verifybamid/, msi/, tmb/, the picard .dupes file, etc. — multiqc
+    # needs those to populate the non-coverage columns.
+    # =====================================================================
+    - name: clean-stale
+      script:
+        image: alpine:3.20
+        command: [sh]
+        source: |
+          set -eu
+          cd /metrics
+          rm -rf mosdepth/ multiqc_data/ multiqc_report.html bed_validation/
+          echo "== remaining metrics tree =="
+          ls -la /metrics
+        volumeMounts:
+          - name: metrics
+            mountPath: /metrics
+      volumes:
+        - name: metrics
+          hostPath:
+            path: "{{workflow.parameters.sample-output-dir}}/metrics"
+            type: Directory

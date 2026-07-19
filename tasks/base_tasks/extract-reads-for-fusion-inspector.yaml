@@ -1,0 +1,207 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: extract-reads-for-fusion-inspector-template
+spec:
+  templates:
+    # Pre-filter the genome-aligned BAM down to only reads relevant to
+    # FusionInspector. FI's role here is realignment + visualization of
+    # already-called fusion candidates, so we keep:
+    #   1. Reads with supplementary alignments (flag 2048): split-reads
+    #      crossing a chimeric junction. -> JunctionReadCount.
+    #   2. Reads aligning within ±N kb of an upstream-called fusion
+    #      breakpoint (from STAR-Fusion's LeftBreakpoint/RightBreakpoint
+    #      and Arriba's breakpoint1/breakpoint2 columns). -> SpanningFragCount.
+    #
+    # Before building the breakpoint BED we drop fusion candidates that
+    # match well-known artifact classes (mitochondrial, IG@/IGH/IGL/IGK,
+    # sn(o)RNA, pseudogenes, antisense, unannotated clones, self-fusions),
+    # so the BED only carries breakpoints from candidates FI will actually
+    # need to visualize. The same filter is applied to the consolidated
+    # fusion list emitted as `filtered-fusion-list-tsv` for FI's --fusions.
+    #
+    # Dup-flagged reads are intentionally retained so the post-FI samtools
+    # markdup pass can re-flag them in FI's per-contig coordinate space.
+    #
+    # The input BAM should be the post-MarkDuplicates *full* sorted BAM
+    # (not proper-pair-filtered — supplementary records are needed). The
+    # script sorts + indexes once if not already.
+    #
+    # All filter / parse / build logic lives in
+    # images/extract-reads-for-fusion-inspector/extract_reads.py inside
+    # the bergun/extract-fusion-reads image.
+    - name: extract-reads-for-fusion-inspector
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: input-bam
+          - name: starfusion-tsv
+            default: "."
+          - name: arriba-tsv
+            default: "."
+          - name: fusion-list-tsv
+          - name: output-dir
+          - name: thread-count
+          # 0 = chimeric-only mode (supplementary alignments only). >0 also
+          # collects spanning fragments within ±N bp of each fusion breakpoint.
+          # FI runtime scales superlinearly with read count, so we default to
+          # chimeric-only for the production fusion DAG; counts shown to the
+          # user come from fusion-report's caller-native fusions.json anyway.
+          - name: breakpoint-window
+            default: "0"
+      outputs:
+        parameters:
+          - name: fq-r1
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_filtered_R1.fq.gz"
+          - name: fq-r2
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_filtered_R2.fq.gz"
+          - name: filtered-fusion-list-tsv
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_fusion_list.filtered.tsv"
+          - name: read-count
+            valueFrom:
+              path: /tmp/read_count.txt
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: starfusion-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['starfusion-tsv'])}}"
+            type: Directory
+        - name: arriba-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['arriba-tsv'])}}"
+            type: Directory
+        - name: fusion-list-tsv
+          hostPath:
+            path: "{{inputs.parameters.fusion-list-tsv}}"
+            type: File
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      container:
+        name: extract-reads-for-fusion-inspector
+        # 0.3.0: dropped ENTRYPOINT; image now hosts two tools
+        # (extract-reads-for-fusion-inspector + propagate-fi-dup-flags), so
+        # pods specify command explicitly. pysam added for the propagate tool.
+        image: bergun/extract-fusion-reads:0.3.0
+        command: ["extract-reads-for-fusion-inspector"]
+        args:
+          - "--in-bam=/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}"
+          - "--starfusion-tsv=/mnt/input/starfusion/{{=sprig.osBase(inputs.parameters['starfusion-tsv'])}}"
+          - "--arriba-tsv=/mnt/input/arriba/{{=sprig.osBase(inputs.parameters['arriba-tsv'])}}"
+          - "--fusion-list-tsv=/mnt/input/fusion-list/{{=sprig.osBase(inputs.parameters['fusion-list-tsv'])}}"
+          - "--out-r1=/mnt/output/{{inputs.parameters.sample-id}}_filtered_R1.fq.gz"
+          - "--out-r2=/mnt/output/{{inputs.parameters.sample-id}}_filtered_R2.fq.gz"
+          - "--out-filtered-list=/mnt/output/{{inputs.parameters.sample-id}}_fusion_list.filtered.tsv"
+          - "--read-count-out=/tmp/read_count.txt"
+          - "--breakpoint-window={{inputs.parameters.breakpoint-window}}"
+          - "--threads={{inputs.parameters.thread-count}}"
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/mnt/input/bam/"
+          - name: starfusion-tsv
+            mountPath: "/mnt/input/starfusion/"
+          - name: arriba-tsv
+            mountPath: "/mnt/input/arriba/"
+          - name: fusion-list-tsv
+            mountPath: "/mnt/input/fusion-list/{{=sprig.osBase(inputs.parameters['fusion-list-tsv'])}}"
+          - name: output-dir
+            mountPath: /mnt/output/
+        resources:
+          requests:
+            memory: 32Gi
+            cpu: "16"
+
+    # Node-pinned variant. Same body but adds a node-name input + nodeSelector
+    # so the pod lands on a specific host. Used by the prototype workflow
+    # for predictable timing comparisons against an existing on-disk run.
+    - name: extract-reads-for-fusion-inspector-on-node
+      nodeSelector:
+        kubernetes.io/hostname: "{{inputs.parameters.node-name}}"
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: input-bam
+          - name: starfusion-tsv
+            default: "."
+          - name: arriba-tsv
+            default: "."
+          - name: fusion-list-tsv
+          - name: output-dir
+          - name: thread-count
+          - name: node-name
+          # 0 = chimeric-only mode (supplementary alignments only). >0 also
+          # collects spanning fragments within ±N bp of each fusion breakpoint.
+          # FI runtime scales superlinearly with read count, so we default to
+          # chimeric-only for the production fusion DAG; counts shown to the
+          # user come from fusion-report's caller-native fusions.json anyway.
+          - name: breakpoint-window
+            default: "0"
+      outputs:
+        parameters:
+          - name: fq-r1
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_filtered_R1.fq.gz"
+          - name: fq-r2
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_filtered_R2.fq.gz"
+          - name: filtered-fusion-list-tsv
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_fusion_list.filtered.tsv"
+          - name: read-count
+            valueFrom:
+              path: /tmp/read_count.txt
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: starfusion-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['starfusion-tsv'])}}"
+            type: Directory
+        - name: arriba-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['arriba-tsv'])}}"
+            type: Directory
+        - name: fusion-list-tsv
+          hostPath:
+            path: "{{inputs.parameters.fusion-list-tsv}}"
+            type: File
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      container:
+        name: extract-reads-for-fusion-inspector
+        # 0.3.0: dropped ENTRYPOINT; image now hosts two tools
+        # (extract-reads-for-fusion-inspector + propagate-fi-dup-flags), so
+        # pods specify command explicitly. pysam added for the propagate tool.
+        image: bergun/extract-fusion-reads:0.3.0
+        command: ["extract-reads-for-fusion-inspector"]
+        args:
+          - "--in-bam=/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}"
+          - "--starfusion-tsv=/mnt/input/starfusion/{{=sprig.osBase(inputs.parameters['starfusion-tsv'])}}"
+          - "--arriba-tsv=/mnt/input/arriba/{{=sprig.osBase(inputs.parameters['arriba-tsv'])}}"
+          - "--fusion-list-tsv=/mnt/input/fusion-list/{{=sprig.osBase(inputs.parameters['fusion-list-tsv'])}}"
+          - "--out-r1=/mnt/output/{{inputs.parameters.sample-id}}_filtered_R1.fq.gz"
+          - "--out-r2=/mnt/output/{{inputs.parameters.sample-id}}_filtered_R2.fq.gz"
+          - "--out-filtered-list=/mnt/output/{{inputs.parameters.sample-id}}_fusion_list.filtered.tsv"
+          - "--read-count-out=/tmp/read_count.txt"
+          - "--breakpoint-window={{inputs.parameters.breakpoint-window}}"
+          - "--threads={{inputs.parameters.thread-count}}"
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/mnt/input/bam/"
+          - name: starfusion-tsv
+            mountPath: "/mnt/input/starfusion/"
+          - name: arri
+            mountPath: "/mnt/input/arriba/"
+          - name: fusion-list-tsv
+            mountPath: "/mnt/input/fusion-list/{{=sprig.osBase(inputs.parameters['fusion-list-tsv'])}}"
+          - name: output-dir
+            mountPath: /mnt/output/
+        resources:
+          requests:
+            memory: 32Gi
+            cpu: "16"

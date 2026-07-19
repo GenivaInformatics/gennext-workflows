@@ -1,0 +1,111 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: picard-collect-rnaseq-metrics-template
+spec:
+  templates:
+    # CollectRnaSeqMetrics on the dedup'd BAM. Outputs PCT_CODING_BASES,
+    # PCT_INTRONIC_BASES, PCT_RIBOSOMAL_BASES, MEDIAN_5PRIME_BIAS, etc. — all
+    # surfaced by MultiQC. STRAND for stranded-reverse RNA-seq is
+    # SECOND_READ_TRANSCRIPTION_STRAND.
+    - name: picard-collect-rnaseq-metrics
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: input-bam
+          - name: ref-flat
+          - name: ribosomal-intervals
+            default: "."
+          - name: output-metrics
+          - name: strand-specificity
+            default: SECOND_READ_TRANSCRIPTION_STRAND
+      outputs:
+        parameters:
+          - name: output-metrics
+            value: "{{inputs.parameters.output-metrics}}"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: ref-flat
+          hostPath:
+            path: "{{inputs.parameters.ref-flat}}"
+            type: File
+        - name: ribosomal-intervals
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['ribosomal-intervals'])}}"
+            type: Directory
+        - name: output-metrics
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-metrics'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: picard-collect-rnaseq-metrics
+        image: broadinstitute/gatk:4.6.2.0
+        command: [bash]
+        source: |
+          set -euo pipefail
+
+          BAM_IN="/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}"
+          REF_FLAT="/mnt/ref/refflat/{{=sprig.osBase(inputs.parameters['ref-flat'])}}"
+          METRICS_OUT="/mnt/output/metrics/{{=sprig.osBase(inputs.parameters['output-metrics'])}}"
+
+          # Ribosomal intervals are optional; PCT_RIBOSOMAL_BASES is absent
+          # without them. Sentinel "." means "skip" — same convention used
+          # by elprep's regions-file param.
+          RIBO_ARG=""
+          riboFile="{{=sprig.osBase(inputs.parameters['ribosomal-intervals'])}}"
+          if [ "." != "${riboFile}" ]; then
+            RIBO_ARG="--RIBOSOMAL_INTERVALS /mnt/ref/ribosomal/${riboFile}"
+          fi
+
+          # CollectRnaSeqMetrics calls SamPairUtil.getPairOrientation, which
+          # throws on read pairs with mates on different chromosomes (i.e.
+          # chimeric/fusion split reads emitted by STAR's --chimOutType
+          # WithinBAM). The v2 fusion DAG no longer applies a proper-pair
+          # filter at the sort step (the read-extractor needs supplementary
+          # + chimeric reads), so we strip those records here as a local
+          # filter purely for this QC tool. samtools is bundled in the GATK
+          # 4.6 image at /usr/local/bin/samtools.
+          # -f 2:    keep only reads in proper pairs.
+          # -F 3328: drop secondary (256) + supplementary (2048) +
+          #          PCR-duplicate-flagged (1024). Dup-flagging is set by
+          #          fgbio-mark-duplicates upstream; excluding those records
+          #          gives an RNA-seq metrics view that reflects unique
+          #          molecules only.
+          BAM_FILTERED="/tmp/proper_pair_only.bam"
+          echo "Pre-filtering BAM to proper pairs only (and dropping dups) for CollectRnaSeqMetrics"
+          samtools view -b -@ 2 -f 2 -F 3328 "${BAM_IN}" -o "${BAM_FILTERED}"
+          samtools index -@ 2 "${BAM_FILTERED}"
+
+          echo "Running CollectRnaSeqMetrics (via GATK4)"
+          echo "  Input:        ${BAM_FILTERED} (proper-pair-filtered from ${BAM_IN})"
+          echo "  RefFlat:      ${REF_FLAT}"
+          echo "  Ribosomal:    ${RIBO_ARG:-<not provided>}"
+          echo "  Strand:       {{inputs.parameters.strand-specificity}}"
+          echo "  Output:       ${METRICS_OUT}"
+
+          gatk --java-options "-Xmx8G" CollectRnaSeqMetrics \
+            -I "${BAM_FILTERED}" \
+            -O "${METRICS_OUT}" \
+            --REF_FLAT "${REF_FLAT}" \
+            ${RIBO_ARG} \
+            --STRAND_SPECIFICITY {{inputs.parameters.strand-specificity}} \
+            --VALIDATION_STRINGENCY LENIENT
+
+          rm -f "${BAM_FILTERED}" "${BAM_FILTERED}.bai"
+          echo "CollectRnaSeqMetrics completed"
+        volumeMounts:
+          - name: input-bam
+            mountPath: "/mnt/input/bam/"
+          - name: ref-flat
+            mountPath: "/mnt/ref/refflat/{{=sprig.osBase(inputs.parameters['ref-flat'])}}"
+          - name: ribosomal-intervals
+            mountPath: "/mnt/ref/ribosomal/"
+          - name: output-metrics
+            mountPath: "/mnt/output/metrics/"
+        resources:
+          requests:
+            memory: 10Gi
+            cpu: "2"

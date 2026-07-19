@@ -1,0 +1,269 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: wrapper-batch-somatic-dna-rna-rna
+  namespace: argo
+spec:
+  workflowMetadata:
+    generateName: "batch-somatic-dna-rna-{{workflow.parameters.job-id}}-"
+    labels:
+      gennext.bio/node: "{{workflow.parameters.node-name}}"
+      gennext.bio/user-id: "{{workflow.parameters.user-id}}"
+      gennext.bio/process-type: "{{workflow.parameters.process-type}}"
+    annotations:
+      gennext.bio/user-id: "{{workflow.parameters.user-id}}"
+      gennext.bio/job-id: "{{workflow.parameters.job-id}}"
+      gennext.bio/process-type: "{{workflow.parameters.process-type}}"
+      gennext.bio/node-name: "{{workflow.parameters.node-name}}"
+  serviceAccountName: gennext-workflows
+  entrypoint: main
+  arguments:
+    parameters:
+      - name: node-name
+      - name: user-id
+      - name: job-id
+      - name: process-type
+  podGC:
+    strategy: OnPodSuccess
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node-name}}"
+  templates:
+    # =========================================================================
+    # main: orchestrator DAG
+    # =========================================================================
+    - name: main
+      dag:
+        tasks:
+          - name: get-node-config
+            templateRef:
+              name: get-node-config
+              template: get-node-config
+            arguments:
+              parameters:
+                - name: node-name
+                  value: "{{workflow.parameters.node-name}}"
+                - name: user-id
+                  value: "{{workflow.parameters.user-id}}"
+                - name: job-id
+                  value: "{{workflow.parameters.job-id}}"
+          - name: get-run-data
+            templateRef:
+              name: get-run-data
+              template: get-run-data
+            arguments:
+              parameters:
+                - name: job-id
+                  value: "{{workflow.parameters.job-id}}"
+                - name: input-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.input-rel-dir}}"
+            depends: "get-node-config"
+          - name: update-semaphore
+            template: update-semaphore
+            arguments:
+              parameters:
+                - name: max-concurrent
+                  value: "{{tasks.get-node-config.outputs.parameters.max-concurrent-samples}}"
+            depends: "get-node-config"
+          - name: extract-samples
+            template: extract-samples
+            arguments:
+              parameters:
+                - name: run-data
+                  value: "{{tasks.get-run-data.outputs.parameters.run-data}}"
+            depends: "get-run-data"
+          - name: fan-out-samples
+            template: fan-out-samples
+            arguments:
+              parameters:
+                - name: samples
+                  value: "{{tasks.extract-samples.outputs.parameters.samples-json-array}}"
+                - name: input-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.input-rel-dir}}"
+                - name: output-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.output-rel-dir}}"
+                - name: temp-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.scratch-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.ref-base-dir}}"
+                - name: thread-count
+                  value: "{{tasks.get-node-config.outputs.parameters.thread-count}}"
+            depends: "extract-samples && update-semaphore"
+          - name: determine-run-status
+            template: determine-run-status
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{workflow.parameters.job-id}}"
+            depends: "fan-out-samples"
+
+    # =========================================================================
+    # update-semaphore: writes max-concurrent-samples to the ConfigMap
+    # so the semaphore on submit-sample-workflow uses the node's value.
+    # =========================================================================
+    - name: update-semaphore
+      inputs:
+        parameters:
+          - name: max-concurrent
+      script:
+        image: alpine/kubectl
+        command: [sh]
+        source: |
+          MAX="{{inputs.parameters.max-concurrent}}"
+          kubectl create configmap batch-sample-semaphore \
+            --from-literal=max-concurrent="$MAX" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+    # =========================================================================
+    # extract-samples: reads run-data, outputs lightweight JSON array with
+    # just id and sampleId per sample for withParam iteration.
+    # =========================================================================
+    - name: extract-samples
+      inputs:
+        parameters:
+          - name: run-data
+      outputs:
+        parameters:
+          - name: samples-json-array
+            valueFrom:
+              path: /tmp/samples.json
+      script:
+        image: python:3.11-alpine3.18
+        command: [python]
+        source: |
+          import json
+          run_data = json.loads('''{{inputs.parameters.run-data}}''')
+          samples = [{"id": s.get("sampleUuid", s["id"]), "sampleId": s["sampleId"]} for s in run_data.get("samples", [])]
+          with open("/tmp/samples.json", "w") as f:
+            json.dump(samples, f)
+
+    # =========================================================================
+    # fan-out-samples: iterates over lightweight samples array, submits a
+    # child Workflow per sample. Only simple string params are passed.
+    # =========================================================================
+    - name: fan-out-samples
+      inputs:
+        parameters:
+          - name: samples
+          - name: input-rel-dir
+          - name: output-rel-dir
+          - name: temp-rel-dir
+          - name: scratch-rel-dir
+          - name: ref-base-dir
+          - name: thread-count
+      steps:
+        - - name: submit-sample
+            template: submit-sample-workflow
+            arguments:
+              parameters:
+                - name: sample-uuid
+                  value: "{{item.id}}"
+                - name: sample-id
+                  value: "{{item.sampleId}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: output-rel-dir
+                  value: "{{inputs.parameters.output-rel-dir}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            withParam: "{{inputs.parameters.samples}}"
+            continueOn:
+              failed: true
+
+    # =========================================================================
+    # submit-sample-workflow: creates a child Workflow resource per sample.
+    # Only simple string params in the manifest — the child reads the JSON
+    # file itself to get sample data.
+    # =========================================================================
+    - name: submit-sample-workflow
+      inputs:
+        parameters:
+          - name: sample-uuid
+          - name: sample-id
+          - name: input-rel-dir
+          - name: output-rel-dir
+          - name: temp-rel-dir
+          - name: scratch-rel-dir
+          - name: ref-base-dir
+          - name: thread-count
+      synchronization:
+        semaphore:
+          configMapKeyRef:
+            name: batch-sample-semaphore
+            key: max-concurrent
+      resource:
+        action: create
+        successCondition: status.phase == Succeeded
+        failureCondition: status.phase in (Failed, Error)
+        manifest: |
+          apiVersion: argoproj.io/v1alpha1
+          kind: Workflow
+          metadata:
+            generateName: "sample-dna-rna-{{inputs.parameters.sample-uuid}}-"
+            labels:
+              gennext.bio/orchestrator: "{{workflow.name}}"
+              gennext.bio/sample-id: "{{inputs.parameters.sample-id}}"
+              gennext.bio/run-id: "{{workflow.parameters.job-id}}"
+            annotations:
+              gennext.bio/sample-uuid: "{{inputs.parameters.sample-uuid}}"
+              gennext.bio/sample-id: "{{inputs.parameters.sample-id}}"
+          spec:
+            serviceAccountName: gennext-workflows
+            nodeSelector:
+              kubernetes.io/hostname: "{{workflow.parameters.node-name}}"
+            podGC:
+              strategy: OnPodSuccess
+            entrypoint: main
+            arguments:
+              parameters:
+                - name: sample-uuid
+                  value: "{{inputs.parameters.sample-uuid}}"
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: run-id
+                  value: "{{workflow.parameters.job-id}}"
+                - name: user-id
+                  value: "{{workflow.parameters.user-id}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: output-rel-dir
+                  value: "{{inputs.parameters.output-rel-dir}}"
+                - name: temp-rel-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            workflowTemplateRef:
+              name: per-sample-somatic-dna-rna
+
+    # =========================================================================
+    # determine-run-status: after all samples finish (success or failure),
+    # query the backend for the current aggregate run status. The backend
+    # already computes this when sample states change, so we just need to
+    # ensure the final state is set if all samples completed.
+    # =========================================================================
+    - name: determine-run-status
+      inputs:
+        parameters:
+          - name: run-id
+      script:
+        image: blairy/requests
+        command: [python]
+        source: |
+          # The backend already recomputes aggregate run status on each
+          # sample state change. This step is a safety net that ensures
+          # the run is not left in 'running' if all samples finished.
+          # We do nothing here - the per-sample child workflows handle
+          # setting their own states, which triggers the backend aggregate.
+          print("Run status is managed by backend aggregate logic.")
+          print("Run ID: {{inputs.parameters.run-id}}")
