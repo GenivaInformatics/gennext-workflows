@@ -1,0 +1,133 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: per-sample-germline
+  namespace: argo
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: main
+  onExit: on-exit-handler
+  arguments:
+    parameters:
+      - name: sample-uuid
+      - name: sample-id
+      - name: run-id
+      - name: user-id
+      - name: process-type
+      - name: input-rel-dir
+      - name: output-rel-dir
+      - name: temp-rel-dir
+      - name: scratch-rel-dir
+      - name: ref-base-dir
+      - name: modules-base-dir
+      - name: annots-base-dir
+      - name: thread-count
+      - name: processing-group-id
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: set-sample-running
+            templateRef:
+              name: change-sample-state-template
+              template: change-sample-state
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{workflow.parameters.run-id}}"
+                - name: sample-uuid
+                  value: "{{workflow.parameters.sample-uuid}}"
+                - name: sample-state
+                  value: running
+
+          - name: project-sample-run-data
+            templateRef:
+              name: load-and-prepare
+              template: project-sample-run-data
+            arguments:
+              parameters:
+                - name: sample-uuid
+                  value: "{{workflow.parameters.sample-uuid}}"
+                - name: run-id
+                  value: "{{workflow.parameters.run-id}}"
+                - name: input-rel-dir
+                  value: "{{workflow.parameters.input-rel-dir}}"
+
+          - name: run-wgs
+            when: "'{{workflow.parameters.process-type}}' == 'wgs'"
+            templateRef:
+              name: germline-wgs-gpu-workflow
+              template: main
+            arguments:
+              parameters: &germline-parameters
+                - name: user-id
+                  value: "{{workflow.parameters.user-id}}"
+                - name: run-id
+                  value: "{{workflow.parameters.run-id}}"
+                - name: run-data
+                  value: "{{tasks.project-sample-run-data.outputs.parameters.sample-run-data}}"
+                - name: input-rel-dir
+                  value: "{{workflow.parameters.input-rel-dir}}"
+                - name: temp-rel-dir
+                  value: "{{workflow.parameters.temp-rel-dir}}{{workflow.parameters.sample-uuid}}/"
+                - name: scratch-rel-dir
+                  value: "{{workflow.parameters.scratch-rel-dir}}{{workflow.parameters.sample-uuid}}/"
+                - name: output-rel-dir
+                  value: "{{workflow.parameters.output-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{workflow.parameters.ref-base-dir}}"
+                - name: modules-base-dir
+                  value: "{{workflow.parameters.modules-base-dir}}"
+                - name: annots-base-dir
+                  value: "{{workflow.parameters.annots-base-dir}}"
+                - name: thread-count
+                  value: "{{workflow.parameters.thread-count}}"
+            depends: set-sample-running && project-sample-run-data
+
+          - name: run-wes
+            when: "'{{workflow.parameters.process-type}}' == 'wes'"
+            templateRef:
+              name: germline-wes-gpu-workflow
+              template: main
+            arguments:
+              parameters: *germline-parameters
+            depends: set-sample-running && project-sample-run-data
+
+          - name: run-tps
+            when: "'{{workflow.parameters.process-type}}' == 'tps'"
+            templateRef:
+              name: germline-tps-gpu-workflow
+              template: main
+            arguments:
+              parameters: *germline-parameters
+            depends: set-sample-running && project-sample-run-data
+
+          - name: set-sample-completed
+            templateRef:
+              name: change-sample-state-template
+              template: change-sample-state
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{workflow.parameters.run-id}}"
+                - name: sample-uuid
+                  value: "{{workflow.parameters.sample-uuid}}"
+                - name: sample-state
+                  value: completed
+            depends: (run-wgs.Succeeded || run-wgs.Skipped) && (run-wes.Succeeded || run-wes.Skipped) && (run-tps.Succeeded || run-tps.Skipped)
+
+    - name: on-exit-handler
+      steps:
+        - - name: set-sample-error
+            templateRef:
+              name: change-sample-state-template
+              template: change-sample-state
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{workflow.parameters.run-id}}"
+                - name: sample-uuid
+                  value: "{{workflow.parameters.sample-uuid}}"
+                - name: sample-state
+                  value: error
+            when: "{{workflow.status}} == Failed"

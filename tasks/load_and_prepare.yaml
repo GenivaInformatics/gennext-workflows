@@ -7,6 +7,34 @@ spec:
   serviceAccountName: gennext-workflows
   entrypoint: load-and-prepare
   templates:
+    - name: project-sample-run-data
+      inputs:
+        parameters:
+          - name: sample-uuid
+          - name: run-id
+          - name: input-rel-dir
+      outputs:
+        parameters:
+          - name: sample-run-data
+            valueFrom:
+              path: /tmp/sample_run_data.json
+      container:
+        image: bergun/gennext-load-and-prepare:0.5.2
+        args:
+          - "project"
+          - "--sample-uuid={{inputs.parameters.sample-uuid}}"
+          - "--run-id={{inputs.parameters.run-id}}"
+          - "--input-dir={{inputs.parameters.input-rel-dir}}"
+        volumeMounts:
+          - name: input-dir
+            mountPath: "{{inputs.parameters.input-rel-dir}}"
+            readOnly: true
+      volumes:
+        - name: input-dir
+          hostPath:
+            path: "{{inputs.parameters.input-rel-dir}}"
+            type: Directory
+
     - name: load-and-prepare
       inputs:
         parameters:
@@ -62,7 +90,7 @@ spec:
             valueFrom:
               path: /tmp/has_post_processing.txt
       container:
-        image: bergun/gennext-load-and-prepare:0.5.0
+        image: bergun/gennext-load-and-prepare:0.5.2
         args:
           - "sample"
           - "--sample-uuid={{inputs.parameters.sample-uuid}}"
@@ -171,7 +199,7 @@ spec:
               path: /tmp/run_hrd.txt
               default: "false"
       container:
-        image: bergun/gennext-load-and-prepare:0.5.1
+        image: bergun/gennext-load-and-prepare:0.5.2
         args:
           - "sample"
           - "--sample-uuid={{inputs.parameters.sample-uuid}}"
@@ -275,7 +303,7 @@ spec:
             valueFrom:
               path: /tmp/has_post_processing.txt
       container:
-        image: bergun/gennext-load-and-prepare:0.5.0
+        image: bergun/gennext-load-and-prepare:0.5.2
         args:
           - "sample"
           - "--sample-uuid={{inputs.parameters.sample-uuid}}"
@@ -369,7 +397,7 @@ spec:
             valueFrom:
               path: /tmp/run_hrd.txt
       container:
-        image: bergun/gennext-load-and-prepare:0.5.0
+        image: bergun/gennext-load-and-prepare:0.5.2
         args:
           - "batch"
           - "--run-id={{inputs.parameters.run-id}}"

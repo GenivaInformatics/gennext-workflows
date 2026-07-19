@@ -20,6 +20,8 @@ spec:
         # JSON array of sample UUID strings: ["uuid1", "uuid2", ...]
       - name: post-process-steps
         # JSON array of steps this workflow handles: ["cnv", "hrd"]
+      - name: post-process-job-id
+      - name: processing-group-id
   templates:
     # =====================================================================
     # Main DAG
@@ -145,6 +147,8 @@ spec:
                   value: "{{workflow.parameters.enrichment-kit}}"
                 - name: completed-steps
                   value: "{{workflow.parameters.post-process-steps}}"
+                - name: post-process-job-id
+                  value: "{{workflow.parameters.post-process-job-id}}"
             depends: per-sample-cnv
 
           # --- Clean up scratch directory ---
@@ -344,6 +348,7 @@ spec:
           - name: sample-uuids
           - name: enrichment-kit
           - name: completed-steps
+          - name: post-process-job-id
       script:
         image: blairy/requests
         command: [python]
@@ -354,11 +359,12 @@ spec:
 
           # Set affected samples back to completed
           uuids = json.loads('{{inputs.parameters.sample-uuids}}')
-          for uuid in uuids:
-              url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/samples/{uuid}/state"
-              res = requests.post(url, json={"state": "completed", "token": token})
-              if res.status_code != 200:
-                  print(f"Warning: failed to set completed for {uuid}: {res.text}")
+          if not "{{inputs.parameters.post-process-job-id}}":
+              for uuid in uuids:
+                  url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/samples/{uuid}/state"
+                  res = requests.post(url, json={"state": "completed", "token": token})
+                  if res.status_code != 200:
+                      print(f"Warning: failed to set completed for {uuid}: {res.text}")
 
           # Notify postprocess-complete with completed steps list
           completed_steps = json.loads('{{inputs.parameters.completed-steps}}')
@@ -366,7 +372,8 @@ spec:
           res = requests.post(url, json={
               "token": token,
               "kit": "{{inputs.parameters.enrichment-kit}}",
-              "completed-steps": completed_steps
+              "completed-steps": completed_steps,
+              "post-process-job-id": "{{inputs.parameters.post-process-job-id}}"
           })
           if res.status_code != 200:
               raise Exception(f"postprocess-complete failed: {res.text}")
@@ -394,6 +401,8 @@ spec:
                   value: "{{workflow.parameters.enrichment-kit}}"
                 - name: step
                   value: "cnv"
+                - name: post-process-job-id
+                  value: "{{workflow.parameters.post-process-job-id}}"
             when: "{{workflow.status}} == Failed"
 
     # =====================================================================
@@ -406,6 +415,7 @@ spec:
           - name: sample-uuids
           - name: enrichment-kit
           - name: step
+          - name: post-process-job-id
       script:
         image: blairy/requests
         command: [python]
@@ -416,17 +426,19 @@ spec:
 
           # Set affected samples back to completed (their data is still valid)
           uuids = json.loads('{{inputs.parameters.sample-uuids}}')
-          for uuid in uuids:
-              url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/samples/{uuid}/state"
-              res = requests.post(url, json={"state": "completed", "token": token})
-              print(f"Reset {uuid} to completed: {res.status_code}")
+          if not "{{inputs.parameters.post-process-job-id}}":
+              for uuid in uuids:
+                  url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/samples/{uuid}/state"
+                  res = requests.post(url, json={"state": "completed", "token": token})
+                  print(f"Reset {uuid} to completed: {res.status_code}")
 
           # Notify postprocess-error
           url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/postprocess-error"
           res = requests.post(url, json={
               "token": token,
               "kit": "{{inputs.parameters.enrichment-kit}}",
-              "step": "{{inputs.parameters.step}}"
+              "step": "{{inputs.parameters.step}}",
+              "post-process-job-id": "{{inputs.parameters.post-process-job-id}}"
           })
           print(f"postprocess-error: {res.status_code}")
         env:

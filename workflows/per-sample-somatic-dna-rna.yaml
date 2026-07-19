@@ -16,12 +16,16 @@ spec:
       - name: sample-id
       - name: run-id
       - name: user-id
+      - name: process-type
       - name: input-rel-dir
       - name: output-rel-dir
       - name: temp-rel-dir
       - name: scratch-rel-dir
       - name: ref-base-dir
+      - name: modules-base-dir
+      - name: annots-base-dir
       - name: thread-count
+      - name: processing-group-id
   templates:
     - name: main
       dag:
@@ -262,7 +266,7 @@ spec:
                   value: "{{workflow.parameters.thread-count}}"
             depends: "load-and-prepare-rna"
           - name: set-sample-completed
-            when: "'{{tasks.load-and-prepare-dna.outputs.parameters.has-post-processing}}' == 'false'"
+            when: "'{{workflow.parameters.processing-group-id}}' != '' || '{{tasks.load-and-prepare-dna.outputs.parameters.has-post-processing}}' == 'false'"
             templateRef:
               name: change-sample-state-template
               template: change-sample-state
@@ -276,7 +280,7 @@ spec:
                   value: "completed"
             depends: "(run-dna-fastq.Succeeded || run-dna-fastq.Skipped) && (run-dna-bam.Succeeded || run-dna-bam.Skipped) && (run-dna-vcf.Succeeded || run-dna-vcf.Skipped) && (run-rna-fastq.Succeeded || run-rna-fastq.Skipped) && (run-rna-bam.Succeeded || run-rna-bam.Skipped)"
           - name: set-sample-postprocessing
-            when: "'{{tasks.load-and-prepare-dna.outputs.parameters.has-post-processing}}' == 'true'"
+            when: "'{{workflow.parameters.processing-group-id}}' == '' && '{{tasks.load-and-prepare-dna.outputs.parameters.has-post-processing}}' == 'true'"
             templateRef:
               name: change-sample-state-template
               template: change-sample-state
