@@ -3,6 +3,16 @@ kind: WorkflowTemplate
 metadata:
   name: per-sample-germline
   namespace: argo
+  annotations:
+    gennext.bio/expected-pods-wgs-fastq: "25"
+    gennext.bio/expected-pods-wgs-bam: "23"
+    gennext.bio/expected-pods-wgs-vcf: "5"
+    gennext.bio/expected-pods-wes-fastq: "26"
+    gennext.bio/expected-pods-wes-bam: "25"
+    gennext.bio/expected-pods-wes-vcf: "5"
+    gennext.bio/expected-pods-tps-fastq: "26"
+    gennext.bio/expected-pods-tps-bam: "26"
+    gennext.bio/expected-pods-tps-vcf: "5"
 spec:
   serviceAccountName: gennext-workflows
   entrypoint: main
