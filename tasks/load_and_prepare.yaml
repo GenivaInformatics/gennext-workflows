@@ -19,7 +19,7 @@ spec:
             valueFrom:
               path: /tmp/sample_run_data.json
       container:
-        image: bergun/gennext-load-and-prepare:0.5.2
+        image: bergun/gennext-load-and-prepare:0.6.0
         args:
           - "project"
           - "--sample-uuid={{inputs.parameters.sample-uuid}}"
@@ -90,7 +90,7 @@ spec:
             valueFrom:
               path: /tmp/has_post_processing.txt
       container:
-        image: bergun/gennext-load-and-prepare:0.5.2
+        image: bergun/gennext-load-and-prepare:0.6.0
         args:
           - "sample"
           - "--sample-uuid={{inputs.parameters.sample-uuid}}"
@@ -199,7 +199,7 @@ spec:
               path: /tmp/run_hrd.txt
               default: "false"
       container:
-        image: bergun/gennext-load-and-prepare:0.5.2
+        image: bergun/gennext-load-and-prepare:0.6.0
         args:
           - "sample"
           - "--sample-uuid={{inputs.parameters.sample-uuid}}"
@@ -303,7 +303,7 @@ spec:
             valueFrom:
               path: /tmp/has_post_processing.txt
       container:
-        image: bergun/gennext-load-and-prepare:0.5.2
+        image: bergun/gennext-load-and-prepare:0.6.0
         args:
           - "sample"
           - "--sample-uuid={{inputs.parameters.sample-uuid}}"
@@ -397,7 +397,7 @@ spec:
             valueFrom:
               path: /tmp/run_hrd.txt
       container:
-        image: bergun/gennext-load-and-prepare:0.5.2
+        image: bergun/gennext-load-and-prepare:0.6.0
         args:
           - "batch"
           - "--run-id={{inputs.parameters.run-id}}"
