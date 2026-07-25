@@ -218,4 +218,19 @@ spec:
                   value: "{{workflow.parameters.sample-uuid}}"
                 - name: sample-state
                   value: "error"
-            when: "{{workflow.status}} == Failed"
+            # Report `error` only once the orchestrator has exhausted its retries.
+            # gennext-orchestrator retries failed attempts via `argo retry`, holding the
+            # sample as "retrying" (no backend error) while retry-count < DefaultMaxRetries,
+            # and patches `gennext.bio/retry-count` (initialised to "0" at submit) before each
+            # retry. Posting error on a non-final attempt would make the backend see a transient
+            # terminal state and can cause post-processing to skip the sample.
+            #
+            # MUST use classic `{{workflow.annotations...}}` substitution, NOT the expr
+            # `{{=...}}` form. Verified on-cluster (Argo 3.4.8): expr tags in an onExit `when`
+            # are only evaluated on the workflow-success path, NOT on failure — so the expr form
+            # errors with "Invalid token '{{='" exactly when a sample fails, the case we need.
+            # `argo lint` is unreliable here (rejects this working classic form, accepts the
+            # broken expr form); templates deploy via `kubectl apply`, not lint.
+            # Keep the `>= 3` threshold in sync with DefaultMaxRetries in gennext-orchestrator.
+            # See docs/post-processing-dna-batch-pooling.md §8.1.
+            when: "{{workflow.status}} == Failed && {{workflow.annotations.gennext.bio/retry-count}} >= 3"
