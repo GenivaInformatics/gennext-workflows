@@ -296,7 +296,7 @@ spec:
               oncokb_snv."HIGHEST_LEVEL",
               oncokb_snv."HIGHEST_SENSITIVE_LEVEL",
               oncokb_snv."HIGHEST_RESISTANCE_LEVEL",
-              oncokb_snv."TX_CITATIONS"
+              CAST(oncokb_snv."TX_CITATIONS" AS VARCHAR) AS TX_CITATIONS
           FROM
               (SELECT ROW_NUMBER() OVER () AS "row_id", * FROM cancervar_snv) AS cancervar_snv_with_row_ids
           INNER JOIN oncokb_snv ON cancervar_snv_with_row_ids."#Chr" = SUBSTRING(oncokb_snv."Chromosome" FROM 4)
@@ -484,7 +484,7 @@ spec:
             oncokb_snv."GENE_IN_ONCOKB",
             oncokb_snv."VARIANT_IN_ONCOKB",
             oncokb_snv."MUTATION_EFFECT",
-            oncokb_snv."MUTATION_EFFECT_CITATIONS",
+            CAST(oncokb_snv."MUTATION_EFFECT_CITATIONS" AS VARCHAR) AS MUTATION_EFFECT_CITATIONS,
             oncokb_snv."ONCOGENIC",
             oncokb_snv."LEVEL_1",
             oncokb_snv."LEVEL_2",
@@ -496,12 +496,12 @@ spec:
             oncokb_snv."HIGHEST_LEVEL",
             oncokb_snv."HIGHEST_SENSITIVE_LEVEL",
             oncokb_snv."HIGHEST_RESISTANCE_LEVEL",
-            oncokb_snv."TX_CITATIONS",
+            CAST(oncokb_snv."TX_CITATIONS" AS VARCHAR) AS TX_CITATIONS,
             oncokb_snv."LEVEL_Dx1",
             oncokb_snv."LEVEL_Dx2",
             oncokb_snv."LEVEL_Dx3",
             oncokb_snv."HIGHEST_DX_LEVEL",
-            oncokb_snv."PX_CITATIONS",
+            CAST(oncokb_snv."PX_CITATIONS" AS VARCHAR) AS PX_CITATIONS,
           FROM
             (SELECT ROW_NUMBER() OVER () AS "row_id", * FROM cancervar_snv) AS cancervar_snv_with_row_ids
           INNER JOIN oncokb_snv ON cancervar_snv_with_row_ids."#Chr" = SUBSTRING(oncokb_snv."Chromosome" FROM 4)
@@ -1505,7 +1505,7 @@ spec:
               oncokb_snv."HIGHEST_LEVEL",
               oncokb_snv."HIGHEST_SENSITIVE_LEVEL",
               oncokb_snv."HIGHEST_RESISTANCE_LEVEL",
-              oncokb_snv."TX_CITATIONS"
+              CAST(oncokb_snv."TX_CITATIONS" AS VARCHAR) AS TX_CITATIONS
           FROM
               (SELECT ROW_NUMBER() OVER () AS "row_id", * FROM cancervar_snv) AS cancervar_snv_with_row_ids
           INNER JOIN oncokb_snv ON cancervar_snv_with_row_ids."#Chr" = SUBSTRING(oncokb_snv."Chromosome" FROM 4)
@@ -1690,7 +1690,7 @@ spec:
             oncokb_snv."GENE_IN_ONCOKB",
             oncokb_snv."VARIANT_IN_ONCOKB",
             oncokb_snv."MUTATION_EFFECT",
-            oncokb_snv."MUTATION_EFFECT_CITATIONS",
+            CAST(oncokb_snv."MUTATION_EFFECT_CITATIONS" AS VARCHAR) AS MUTATION_EFFECT_CITATIONS,
             oncokb_snv."ONCOGENIC",
             oncokb_snv."LEVEL_1",
             oncokb_snv."LEVEL_2",
@@ -1702,12 +1702,12 @@ spec:
             oncokb_snv."HIGHEST_LEVEL",
             oncokb_snv."HIGHEST_SENSITIVE_LEVEL",
             oncokb_snv."HIGHEST_RESISTANCE_LEVEL",
-            oncokb_snv."TX_CITATIONS",
+            CAST(oncokb_snv."TX_CITATIONS" AS VARCHAR) AS TX_CITATIONS,
             oncokb_snv."LEVEL_Dx1",
             oncokb_snv."LEVEL_Dx2",
             oncokb_snv."LEVEL_Dx3",
             oncokb_snv."HIGHEST_DX_LEVEL",
-            oncokb_snv."PX_CITATIONS",
+            CAST(oncokb_snv."PX_CITATIONS" AS VARCHAR) AS PX_CITATIONS,
           FROM
             (SELECT ROW_NUMBER() OVER () AS "row_id", * FROM cancervar_snv) AS cancervar_snv_with_row_ids
           INNER JOIN oncokb_snv ON cancervar_snv_with_row_ids."#Chr" = SUBSTRING(oncokb_snv."Chromosome" FROM 4)
