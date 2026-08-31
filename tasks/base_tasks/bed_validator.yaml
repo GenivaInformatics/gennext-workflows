@@ -9,12 +9,16 @@ spec:
         parameters:
           - name: input-bed-file
           - name: gtf-file
+          - name: reference-fai-file
+            value: "/tmp/unused-reference.fai"
           - name: chains-dir
           - name: output-dir
           - name: canonical-only
             value: "true"
           - name: padding
             value: "100"
+          - name: generate-padded-artifacts
+            value: "false"
       outputs:
         parameters:
           - name: validated-bed-file
@@ -44,6 +48,10 @@ spec:
           hostPath:
             path: "{{=sprig.osDir(inputs.parameters['gtf-file'])}}"
             type: Directory
+        - name: reference-fai-file
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['reference-fai-file'])}}"
+            type: Directory
         - name: chains-dir
           hostPath:
             path: "{{inputs.parameters.chains-dir}}"
@@ -62,9 +70,11 @@ spec:
           inputBedFile="{{=sprig.osBase(inputs.parameters['input-bed-file'])}}"
           canonicalOnly="{{inputs.parameters.canonical-only}}"
           padding="{{inputs.parameters.padding}}"
+          generatePaddedArtifacts="{{inputs.parameters.generate-padded-artifacts}}"
           containerOutputDir="/mnt/output"
           hostOutputDir="{{inputs.parameters.output-dir}}"
           gtfFile="/mnt/gtf/{{=sprig.osBase(inputs.parameters['gtf-file'])}}"
+          referenceFaiFile="/mnt/reference/{{=sprig.osBase(inputs.parameters['reference-fai-file'])}}"
 
           # Derive output filenames from input: {stem}.valid.bed
           stem="${inputBedFile%.*}"
@@ -120,190 +130,176 @@ spec:
               echo "{\"error\": true, \"exit_code\": $exitCode, \"message\": \"Validation failed, using original file\"}" > "${containerOutputDir}/validation_report.json"
             }
 
-          # Generate analysis and IGV BEDs using Python
-          echo "Generating analysis and IGV BED artifacts with ${padding}bp padding..."
+          analysisBedOutput="."
+          igvBedOutput="."
 
-          python3 <<'PYTHON_EOF'
+          if [ "$generatePaddedArtifacts" = "true" ]; then
+            echo "Generating analysis and IGV BED artifacts with ${padding}bp padding..."
+            if ! python3 - \
+              "${containerOutputDir}/${validBedName}" \
+              "$referenceFaiFile" \
+              "${containerOutputDir}/${validAnalysisBedName}" \
+              "${containerOutputDir}/${validIgvBedName}" \
+              "$padding" <<'PYTHON_SCRIPT'
+          # BEGIN PADDED_BED_PYTHON
           import sys
-          import gzip
 
-          validated_bed = "${containerOutputDir}/${validBedName}"
-          analysis_bed = "${containerOutputDir}/${validAnalysisBedName}"
-          igv_bed = "${containerOutputDir}/${validIgvBedName}"
-          gtf_file = "$gtfFile"
-          padding = int("$padding")
 
-          # Extract chromosome sizes from GTF by finding max coordinate per chromosome
-          print(f"Extracting chromosome sizes from GTF: {gtf_file}", file=sys.stderr)
-          chrom_sizes = {}
-
-          try:
-              if gtf_file.endswith('.gz'):
-                  f = gzip.open(gtf_file, 'rt')
-              else:
-                  f = open(gtf_file, 'r')
-
-              for line in f:
-                  if line.startswith('#'):
-                      continue
-
-                  fields = line.strip().split('\t')
-                  if len(fields) < 5:
-                      continue
-
-                  chrom = fields[0]
-                  try:
-                      end = int(fields[4])
-                      chrom_sizes[chrom] = max(chrom_sizes.get(chrom, 0), end)
-                  except (ValueError, IndexError):
-                      continue
-
-              f.close()
-
+          def read_fai(fai_path):
+              chrom_sizes = {}
+              chrom_order = {}
+              with open(fai_path, "r") as fai:
+                  for line_number, line in enumerate(fai, 1):
+                      fields = line.rstrip("\n").split("\t")
+                      if len(fields) < 2:
+                          raise ValueError(
+                              f"Malformed FASTA index at {fai_path}:{line_number}"
+                          )
+                      chrom = fields[0]
+                      length = int(fields[1])
+                      if not chrom or length < 1:
+                          raise ValueError(
+                              f"Invalid FASTA index bounds at {fai_path}:{line_number}"
+                          )
+                      if chrom in chrom_sizes and chrom_sizes[chrom] != length:
+                          raise ValueError(f"Conflicting lengths for {chrom} in {fai_path}")
+                      if chrom not in chrom_order:
+                          chrom_order[chrom] = len(chrom_order)
+                      chrom_sizes[chrom] = length
               if not chrom_sizes:
-                  print("ERROR: No chromosome sizes could be extracted from GTF", file=sys.stderr)
-                  sys.exit(1)
+                  raise ValueError(f"No contig bounds found in FASTA index {fai_path}")
+              return chrom_sizes, chrom_order
 
-              print(f"Extracted {len(chrom_sizes)} chromosomes from GTF", file=sys.stderr)
 
-              # Read validated BED intervals (original targets)
-              target_intervals = []
-              with open(validated_bed, 'r') as bed_in:
-                  for line in bed_in:
-                      if line.startswith('#') or line.startswith('track') or line.strip() == '':
+          def read_bed3(path, chrom_sizes):
+              intervals = []
+              with open(path, "r") as bed:
+                  for line_number, line in enumerate(bed, 1):
+                      stripped = line.strip()
+                      if not stripped or stripped.startswith("#") or stripped.startswith("track"):
                           continue
-                      fields = line.strip().split('\t')
+                      fields = stripped.split("\t")
                       if len(fields) < 3:
-                          continue
-
+                          raise ValueError(f"Expected at least 3 BED columns at {path}:{line_number}")
                       chrom = fields[0]
                       try:
                           start = int(fields[1])
                           end = int(fields[2])
-                      except (ValueError, IndexError):
-                          continue
-
+                      except ValueError as error:
+                          raise ValueError(f"Non-integer BED coordinates at {path}:{line_number}") from error
                       if chrom not in chrom_sizes:
-                          print(f"WARNING: Chromosome {chrom} not found in GTF, skipping interval {chrom}:{start}-{end}", file=sys.stderr)
-                          continue
+                          raise ValueError(f"BED contig {chrom} has no FASTA index entry")
+                      if start < 0 or end <= start or end > chrom_sizes[chrom]:
+                          raise ValueError(
+                              f"Out-of-bounds BED interval at {path}:{line_number}: {chrom}:{start}-{end}"
+                          )
+                      intervals.append((chrom, start, end))
+              if not intervals:
+                  raise ValueError(f"No intervals found in {path}")
+              return intervals
 
-                      target_intervals.append((chrom, start, end))
 
-              if not target_intervals:
-                  print("ERROR: No valid intervals found in validated BED", file=sys.stderr)
-                  sys.exit(1)
-
-              # Generate padded intervals for analysis BED
-              padded_intervals = []
-              for chrom, start, end in target_intervals:
-                  # Apply padding with reference-bound clipping
-                  padded_start = max(0, start - padding)
-                  padded_end = min(chrom_sizes[chrom], end + padding)
-                  padded_intervals.append((chrom, padded_start, padded_end))
-
-              # Sort padded intervals explicitly
-              padded_intervals.sort(key=lambda x: (x[0], x[1], x[2]))
-
-              # Merge overlapping and book-ended (adjacent) intervals
-              merged_analysis = []
-              current_chrom, current_start, current_end = padded_intervals[0]
-
-              for chrom, start, end in padded_intervals[1:]:
-                  if chrom == current_chrom and start <= current_end:
-                      # Overlapping or book-ended - merge
-                      current_end = max(current_end, end)
+          def merge_intervals(intervals, chrom_order):
+              ordered = sorted(intervals, key=lambda item: (chrom_order[item[0]], item[1], item[2]))
+              merged = []
+              for chrom, start, end in ordered:
+                  if merged and chrom == merged[-1][0] and start <= merged[-1][2]:
+                      previous_chrom, previous_start, previous_end = merged[-1]
+                      merged[-1] = (previous_chrom, previous_start, max(previous_end, end))
                   else:
-                      # Non-overlapping - save current and start new
-                      merged_analysis.append((current_chrom, current_start, current_end))
-                      current_chrom, current_start, current_end = chrom, start, end
+                      merged.append((chrom, start, end))
+              return merged
 
-              # Don't forget the last interval
-              merged_analysis.append((current_chrom, current_start, current_end))
 
-              # Write analysis BED (strict BED3, sorted, merged)
-              with open(analysis_bed, 'w') as bed_out:
-                  for chrom, start, end in merged_analysis:
-                      bed_out.write(f"{chrom}\t{start}\t{end}\n")
+          def subtract_intervals(analysis_intervals, target_intervals, chrom_order):
+              targets_by_chrom = {}
+              for chrom, start, end in target_intervals:
+                  targets_by_chrom.setdefault(chrom, []).append((start, end))
 
-              print(f"Generated analysis BED with {len(merged_analysis)} intervals (from {len(padded_intervals)} padded intervals)", file=sys.stderr)
+              padding_only = []
+              for chrom, analysis_start, analysis_end in analysis_intervals:
+                  cursor = analysis_start
+                  for target_start, target_end in targets_by_chrom.get(chrom, []):
+                      if target_end <= cursor:
+                          continue
+                      if target_start >= analysis_end:
+                          break
+                      clipped_start = max(target_start, analysis_start)
+                      clipped_end = min(target_end, analysis_end)
+                      if cursor < clipped_start:
+                          padding_only.append((chrom, cursor, clipped_start))
+                      cursor = max(cursor, clipped_end)
+                      if cursor >= analysis_end:
+                          break
+                  if cursor < analysis_end:
+                      padding_only.append((chrom, cursor, analysis_end))
+              return sorted(
+                  padding_only,
+                  key=lambda item: (chrom_order[item[0]], item[1], item[2]),
+              )
 
-              # Generate IGV BED with targeted and padding-only features (BED9)
-              # Convert target and analysis intervals to sets for subtraction
-              def intervals_to_set(intervals):
-                  """Convert list of (chr, start, end) to set of (chr, pos)"""
-                  positions = set()
-                  for chrom, start, end in intervals:
-                      for pos in range(start, end):
-                          positions.add((chrom, pos))
-                  return positions
 
-              # For large BEDs, this approach is memory-intensive. Better approach:
-              # keep intervals as-is and compute padding-only by subtracting target regions
+          def main():
+              if len(sys.argv) != 6:
+                  raise ValueError(
+                      "Usage: padding.py VALIDATED_BED REFERENCE_FAI ANALYSIS_BED IGV_BED PADDING"
+                  )
+              validated_bed, reference_fai, analysis_bed, igv_bed, padding_value = sys.argv[1:]
+              padding = int(padding_value)
+              if padding < 0:
+                  raise ValueError("Padding must be non-negative")
 
-              # Sort target intervals
-              target_sorted = sorted(target_intervals, key=lambda x: (x[0], x[1], x[2]))
+              chrom_sizes, chrom_order = read_fai(reference_fai)
+              targets = read_bed3(validated_bed, chrom_sizes)
+              target_union = merge_intervals(targets, chrom_order)
+              padded = [
+                  (chrom, max(0, start - padding), min(chrom_sizes[chrom], end + padding))
+                  for chrom, start, end in target_union
+              ]
+              analysis_union = merge_intervals(padded, chrom_order)
+              padding_only = subtract_intervals(analysis_union, target_union, chrom_order)
 
-              # Build IGV features: targeted features from original targets, padding-only from subtraction
-              igv_features = []
+              with open(analysis_bed, "w") as output:
+                  for chrom, start, end in analysis_union:
+                      output.write(f"{chrom}\t{start}\t{end}\n")
 
-              # Add all targeted features (original intervals, gray 128,128,128)
-              for chrom, start, end in target_sorted:
-                  igv_features.append((chrom, start, end, 'targeted', '128,128,128'))
+              features = [
+                  (chrom, start, end, "targeted", "128,128,128")
+                  for chrom, start, end in target_union
+              ] + [
+                  (chrom, start, end, "padding", "211,211,211")
+                  for chrom, start, end in padding_only
+              ]
+              features.sort(
+                  key=lambda item: (chrom_order[item[0]], item[1], item[2], item[3])
+              )
+              with open(igv_bed, "w") as output:
+                  output.write('track name="Targeted and Padding Regions" itemRgb="On"\n')
+                  for chrom, start, end, feature_type, color in features:
+                      output.write(
+                          f"{chrom}\t{start}\t{end}\t{feature_type}\t0\t.\t"
+                          f"{start}\t{end}\t{color}\n"
+                      )
 
-              # Compute padding-only regions by subtracting targets from merged analysis
-              # For each analysis interval, subtract overlapping target intervals
-              for analysis_chr, analysis_start, analysis_end in merged_analysis:
-                  # Find all target intervals that overlap this analysis interval
-                  overlapping_targets = [
-                      (s, e) for chr, s, e in target_intervals
-                      if chr == analysis_chr and not (e <= analysis_start or s >= analysis_end)
-                  ]
+              print(
+                  f"Generated {len(analysis_union)} BED3 analysis intervals and "
+                  f"{len(features)} IGV features",
+                  file=sys.stderr,
+              )
 
-                  if not overlapping_targets:
-                      # No overlap - entire analysis interval is padding-only
-                      igv_features.append((analysis_chr, analysis_start, analysis_end, 'padding', '211,211,211'))
-                      continue
 
-                  # Sort overlapping targets by start position
-                  overlapping_targets.sort()
-
-                  # Walk through and find gaps (padding-only regions)
-                  current_pos = analysis_start
-                  for target_start, target_end in overlapping_targets:
-                      # Gap before this target?
-                      if current_pos < target_start:
-                          igv_features.append((analysis_chr, current_pos, target_start, 'padding', '211,211,211'))
-                      current_pos = max(current_pos, target_end)
-
-                  # Gap after last target?
-                  if current_pos < analysis_end:
-                      igv_features.append((analysis_chr, current_pos, analysis_end, 'padding', '211,211,211'))
-
-              # Sort IGV features
-              igv_features.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
-
-              # Write IGV BED (BED9: chr start end name score strand thickStart thickEnd itemRgb)
-              with open(igv_bed, 'w') as bed_out:
-                  # Write track header for IGV (safe for IGV, not used by analysis tools)
-                  bed_out.write('track name="Targeted and Padding Regions" itemRgb="On"\n')
-                  for chrom, start, end, feature_type, color in igv_features:
-                      # BED9: chr start end name score strand thickStart thickEnd itemRgb
-                      bed_out.write(f"{chrom}\t{start}\t{end}\t{feature_type}\t0\t.\t{start}\t{end}\t{color}\n")
-
-              print(f"Generated IGV BED with {len(igv_features)} features ({sum(1 for f in igv_features if f[3]=='targeted')} targeted, {sum(1 for f in igv_features if f[3]=='padding')} padding-only)", file=sys.stderr)
-
-              sys.exit(0)
-
-          except Exception as e:
-              print(f"ERROR: Failed to generate analysis/IGV BEDs: {e}", file=sys.stderr)
-              import traceback
-              traceback.print_exc()
-              sys.exit(1)
-          PYTHON_EOF
-
-          if [ $? -ne 0 ]; then
-            echo "ERROR: Analysis/IGV BED generation failed. This is a fatal error when a real target BED is supplied."
-            exit 1
+          if __name__ == "__main__":
+              main()
+          # END PADDED_BED_PYTHON
+          PYTHON_SCRIPT
+            then
+              echo "ERROR: Analysis/IGV BED generation failed. Refusing to use unpadded intervals."
+              exit 1
+            fi
+            analysisBedOutput="${hostOutputDir}/${validAnalysisBedName}"
+            igvBedOutput="${hostOutputDir}/${validIgvBedName}"
+          else
+            echo "Skipping padded BED artifacts for this validator invocation."
           fi
 
           # Write host output paths for Argo
@@ -311,13 +307,17 @@ spec:
           echo -n "${hostOutputDir}/${validBedName}.gz" > /tmp/validated_bed_gz_file
           echo -n "${hostOutputDir}/validation_report.json" > /tmp/validation_report
           echo -n "${hostOutputDir}/${validCdsBedName}" > /tmp/validated_bed_cds_only_file
-          echo -n "${hostOutputDir}/${validAnalysisBedName}" > /tmp/validated_bed_analysis_file
-          echo -n "${hostOutputDir}/${validIgvBedName}" > /tmp/validated_bed_igv_file
+          echo -n "$analysisBedOutput" > /tmp/validated_bed_analysis_file
+          echo -n "$igvBedOutput" > /tmp/validated_bed_igv_file
         volumeMounts:
           - name: input-bed-file
             mountPath: "/mnt/input/"
           - name: gtf-file
             mountPath: "/mnt/gtf/"
+            readOnly: true
+          - name: reference-fai-file
+            mountPath: "/mnt/reference/"
+            readOnly: true
           - name: chains-dir
             mountPath: "/mnt/chains/"
           - name: output-dir
