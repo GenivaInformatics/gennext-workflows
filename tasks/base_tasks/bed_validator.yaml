@@ -13,6 +13,10 @@ spec:
           - name: output-dir
           - name: canonical-only
             value: "true"
+          - name: genome-ref
+            value: ""
+          - name: padding
+            value: "100"
       outputs:
         parameters:
           - name: validated-bed-file
@@ -27,6 +31,9 @@ spec:
           - name: validated-bed-cds-only-file
             valueFrom:
               path: /tmp/validated_bed_cds_only_file
+          - name: validated-bed-padded-file
+            valueFrom:
+              path: /tmp/validated_bed_padded_file
       volumes:
         - name: input-bed-file
           hostPath:
@@ -44,6 +51,10 @@ spec:
           hostPath:
             path: "{{inputs.parameters.output-dir}}"
             type: DirectoryOrCreate
+        - name: genome-ref
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['genome-ref'])}}"
+            type: Directory
       script:
         name: bed-validator-script
         image: bergun/gennext-bed-validator:0.2.1
@@ -53,6 +64,8 @@ spec:
 
           inputBedFile="{{=sprig.osBase(inputs.parameters['input-bed-file'])}}"
           canonicalOnly="{{inputs.parameters.canonical-only}}"
+          genomeRef="{{=sprig.osBase(inputs.parameters['genome-ref'])}}"
+          padding="{{inputs.parameters.padding}}"
           containerOutputDir="/mnt/output"
           hostOutputDir="{{inputs.parameters.output-dir}}"
 
@@ -60,11 +73,12 @@ spec:
           stem="${inputBedFile%.*}"
           validBedName="${stem}.valid.bed"
           validCdsBedName="${stem}.valid.cds_only.bed"
+          validPaddedBedName="${stem}.valid.padded.bed"
 
           # Check if input file is a placeholder (empty or ".")
           if [ "$inputBedFile" = "." ] || [ -z "$inputBedFile" ]; then
             echo "No BED file provided (placeholder detected). Skipping validation."
-            touch "${containerOutputDir}/${validBedName}" "${containerOutputDir}/${validCdsBedName}"
+            touch "${containerOutputDir}/${validBedName}" "${containerOutputDir}/${validCdsBedName}" "${containerOutputDir}/${validPaddedBedName}"
             echo '{"skipped": true, "reason": "No input file provided"}' > "${containerOutputDir}/validation_report.json"
             # Write host output paths. Emit "." for validated-bed-file so
             # downstream copy-regions-file-to-scratch falls through to the
@@ -74,6 +88,7 @@ spec:
             echo -n "" > /tmp/validated_bed_gz_file
             echo -n "${hostOutputDir}/validation_report.json" > /tmp/validation_report
             echo -n "${hostOutputDir}/${validCdsBedName}" > /tmp/validated_bed_cds_only_file
+            echo -n "." > /tmp/validated_bed_padded_file
             exit 0
           fi
 
@@ -106,11 +121,52 @@ spec:
               echo "{\"error\": true, \"exit_code\": $exitCode, \"message\": \"Validation failed, using original file\"}" > "${containerOutputDir}/validation_report.json"
             }
 
+          # Generate padded BED from the validated (or fallback) file
+          if [ ! -z "$genomeRef" ] && [ "$genomeRef" != "." ]; then
+            echo "Generating padded BED with ${padding}bp padding..."
+            faiFile="/mnt/genome/${genomeRef}.fai"
+            if [ ! -f "$faiFile" ]; then
+              echo "WARNING: Reference index $faiFile not found. Falling back to unpadded BED."
+              cp "${containerOutputDir}/${validBedName}" "${containerOutputDir}/${validPaddedBedName}"
+            else
+              # Use bedtools slop to pad intervals, then merge overlapping/adjacent regions
+              bedtools slop -i "${containerOutputDir}/${validBedName}" -g "$faiFile" -b "$padding" | \
+                bedtools merge -i - > "${containerOutputDir}/${validPaddedBedName}" || {
+                  echo "WARNING: bedtools padding failed. Falling back to unpadded BED."
+                  cp "${containerOutputDir}/${validBedName}" "${containerOutputDir}/${validPaddedBedName}"
+                }
+            fi
+          else
+            echo "No genome reference provided. Padded BED will be identical to validated BED."
+            cp "${containerOutputDir}/${validBedName}" "${containerOutputDir}/${validPaddedBedName}"
+          fi
+
+          # Generate padded BED if genome reference is provided
+          if [ ! -z "$genomeRef" ] && [ "$genomeRef" != "." ]; then
+            echo "Generating padded BED with ${padding}bp padding..."
+            faiFile="/mnt/genome/${genomeRef}.fai"
+            if [ ! -f "$faiFile" ]; then
+              echo "WARNING: Reference index $faiFile not found. Falling back to unpadded BED."
+              cp "${containerOutputDir}/${validBedName}" "${containerOutputDir}/${validPaddedBedName}"
+            else
+              # Use bedtools slop to pad intervals, then merge overlapping/adjacent regions
+              bedtools slop -i "${containerOutputDir}/${validBedName}" -g "$faiFile" -b "$padding" | \
+                bedtools merge -i - > "${containerOutputDir}/${validPaddedBedName}" || {
+                  echo "WARNING: bedtools padding failed. Falling back to unpadded BED."
+                  cp "${containerOutputDir}/${validBedName}" "${containerOutputDir}/${validPaddedBedName}"
+                }
+            fi
+          else
+            echo "No genome reference provided. Padded BED will be identical to validated BED."
+            cp "${containerOutputDir}/${validBedName}" "${containerOutputDir}/${validPaddedBedName}"
+          fi
+
           # Write host output paths for Argo
           echo -n "${hostOutputDir}/${validBedName}" > /tmp/validated_bed_file
           echo -n "${hostOutputDir}/${validBedName}.gz" > /tmp/validated_bed_gz_file
           echo -n "${hostOutputDir}/validation_report.json" > /tmp/validation_report
           echo -n "${hostOutputDir}/${validCdsBedName}" > /tmp/validated_bed_cds_only_file
+          echo -n "${hostOutputDir}/${validPaddedBedName}" > /tmp/validated_bed_padded_file
         volumeMounts:
           - name: input-bed-file
             mountPath: "/mnt/input/"
@@ -120,3 +176,5 @@ spec:
             mountPath: "/mnt/chains/"
           - name: output-dir
             mountPath: "/mnt/output/"
+          - name: genome-ref
+            mountPath: "/mnt/genome/"
