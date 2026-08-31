@@ -1,0 +1,820 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: somatic-dna-padding-repair-v1
+  namespace: argo
+  annotations:
+    gennext.bio/description: >-
+      Refresh padding-affected SNV/IGV outputs for an existing sample from its
+      recalibrated BAM. Does NOT rerun alignment, CNV, SV, MSI, coverage/QC, or
+      HRD. mode=validate computes and validates without mutating live output;
+      mode=apply promotes with atomic directory exchange and publishes TMB.
+spec:
+  serviceAccountName: gennext-workflows
+  entrypoint: padding-repair
+  synchronization:
+    mutex:
+      name: "padding-repair-{{workflow.parameters.sample-uuid}}"
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node-name}}"
+  arguments:
+    parameters:
+      # ── Domain inputs ──────────────────────────────────────────────
+      - name: node-name
+      - name: user-id
+      - name: run-id
+      - name: sample-uuid
+      - name: mode
+        value: validate
+      # ── Infrastructure inputs (same values the orchestrator supplies
+      #    to per-sample-somatic-dna for this node) ───────────────────
+      - name: input-rel-dir
+      - name: output-rel-dir
+      - name: temp-rel-dir
+      - name: scratch-rel-dir
+      - name: ref-base-dir
+      - name: thread-count
+        value: "20"
+  templates:
+    # ═══════════════════════════════════════════════════════════════════
+    # DAG: padding-repair
+    # ═══════════════════════════════════════════════════════════════════
+    - name: padding-repair
+      dag:
+        tasks:
+          # ── 1. Resolve sample metadata ─────────────────────────────
+          - name: load-and-prepare-dna
+            templateRef:
+              name: load-and-prepare
+              template: load-and-prepare-dna
+            arguments:
+              parameters:
+                - name: sample-uuid
+                  value: "{{workflow.parameters.sample-uuid}}"
+                - name: run-id
+                  value: "{{workflow.parameters.run-id}}"
+                - name: input-rel-dir
+                  value: "{{workflow.parameters.input-rel-dir}}"
+                - name: output-rel-dir
+                  value: "{{workflow.parameters.output-rel-dir}}"
+                - name: temp-rel-dir
+                  value: "{{workflow.parameters.temp-rel-dir}}"
+                - name: scratch-rel-dir
+                  value: "{{workflow.parameters.scratch-rel-dir}}"
+                - name: ref-base-dir
+                  value: "{{workflow.parameters.ref-base-dir}}"
+
+          # ── 2. Validate prerequisites ──────────────────────────────
+          - name: validate-sample
+            template: validate-sample-for-repair
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}"
+                - name: sample-output-dir
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-output-dir}}"
+                - name: dna-file-type
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.dna-file-type}}"
+                - name: dna-input-files
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.dna-input-files}}"
+                - name: ref-paths
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.ref-paths}}"
+            depends: "load-and-prepare-dna"
+
+          # ── 3a. Regenerate padded BEDs from original target BED ────
+          - name: validate-bed-file
+            templateRef:
+              name: bed-validator-template
+              template: validate-bed-file
+            arguments:
+              parameters:
+                - name: input-bed-file
+                  value: "{{=jsonpath(tasks['load-and-prepare-dna'].outputs.parameters['dna-input-files'], '$.regionsFile')}}"
+                - name: gtf-file
+                  value: "{{workflow.parameters.ref-base-dir}}/{{tasks.load-and-prepare-dna.outputs.parameters.ref-version}}/gene_annots/gencode.v49.basic.annotation.MANE_Select.gtf.gz"
+                - name: reference-fai-file
+                  value: "{{=jsonpath(tasks['load-and-prepare-dna'].outputs.parameters['ref-paths'], '$.genome')}}.fai"
+                - name: chains-dir
+                  value: "{{workflow.parameters.ref-base-dir}}/{{tasks.load-and-prepare-dna.outputs.parameters.ref-version}}/other/chains/"
+                - name: output-dir
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-temp-dir}}metrics/bed_validation/"
+                - name: padding
+                  value: "100"
+                - name: generate-padded-artifacts
+                  value: "true"
+            depends: "validate-sample"
+
+          # ── 3b. Stage DuckDB copy (parallel with BED regeneration) ─
+          - name: stage-duckdb
+            template: stage-duckdb-copy
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}"
+                - name: sample-output-dir
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-output-dir}}"
+                - name: sample-temp-dir
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-temp-dir}}"
+            depends: "validate-sample"
+
+          # ── 4. Sharded Mutect2 (analysis BED, existing recal BAM) ──
+          - name: mutect2
+            templateRef:
+              name: mutect2-sharded-template
+              template: mutect2-tumor-only-sharded
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-output-dir}}bam/{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}_recal.bam"
+                - name: sample-id
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}"
+                - name: genome-ref
+                  value: "{{=jsonpath(tasks['load-and-prepare-dna'].outputs.parameters['ref-paths'], '$.genome')}}"
+                - name: regions-file
+                  value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-analysis-file}}"
+                - name: sample-scratch-dir
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-scratch-dir}}"
+                - name: output-vcf
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-temp-dir}}results/snv/vcf/{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}_mutect2_marked.vcf.gz"
+            depends: "validate-bed-file"
+
+          # ── 5. bcftools filter (analysis BED) ──────────────────────
+          - name: bcftools-filter
+            templateRef:
+              name: bcftools-template
+              template: bcftools-filter-and-bed
+            arguments:
+              parameters:
+                - name: do-filter
+                  value: ""
+                - name: input-vcf-f
+                  value: "{{tasks.mutect2.outputs.parameters.output-vcf}}"
+                - name: output-vcf-f
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-temp-dir}}results/snv/vcf/{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}_mutect2_filtered.vcf.gz"
+                - name: regions-file
+                  value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-analysis-file}}"
+            depends: "mutect2"
+
+          # ── 6. VLOD ────────────────────────────────────────────────
+          - name: vlod
+            templateRef:
+              name: vlod-template
+              template: vlod
+            arguments:
+              parameters:
+                - name: input-bam
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-output-dir}}bam/{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}_recal.bam"
+                - name: input-vcf
+                  value: "{{tasks.bcftools-filter.outputs.parameters.output-vcf-f}}"
+                - name: vlod-output-vcf
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-temp-dir}}results/snv/{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}_mutect2_vlod.vcf"
+                - name: thread-count
+                  value: "{{workflow.parameters.thread-count}}"
+            depends: "bcftools-filter"
+
+          # ── 7. Annovar ─────────────────────────────────────────────
+          - name: annovar
+            templateRef:
+              name: annovar-template
+              template: annovar
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}"
+                - name: input-vcf-f
+                  value: "{{tasks.vlod.outputs.parameters.vlod-output-vcf}}"
+                - name: ref-version
+                  value: "hg38"
+                - name: output-dir
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-temp-dir}}results/snv/"
+                - name: annovardb-dir
+                  value: "{{=jsonpath(tasks['load-and-prepare-dna'].outputs.parameters['ref-paths'], '$.other.annovar')}}"
+            depends: "vlod"
+
+          # ── 8. CancerVar (depends on annovar for annovardb access) ─
+          - name: cancervar
+            templateRef:
+              name: cancervar-template
+              template: cancervar
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}"
+                - name: input-vcf-f
+                  value: "{{tasks.vlod.outputs.parameters.vlod-output-vcf}}"
+                - name: output-dir
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-temp-dir}}results/snv/"
+                - name: annovardb-dir
+                  value: "{{=jsonpath(tasks['load-and-prepare-dna'].outputs.parameters['ref-paths'], '$.other.annovar')}}"
+            depends: "annovar"
+
+          # ── 9. Annovar → MAF ───────────────────────────────────────
+          - name: annovar-to-maf
+            templateRef:
+              name: annovar-to-maf-template
+              template: annovar-to-maf
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}"
+                - name: annovar-out-f
+                  value: "{{tasks.annovar.outputs.parameters.annovar-out-f}}"
+            depends: "annovar"
+
+          # ── 10. OncoKB SNV (no global MAF importer) ────────────────
+          - name: oncokb-snv
+            templateRef:
+              name: oncokb-templates
+              template: oncokb-snv
+            arguments:
+              parameters:
+                - name: annovar-maf-f
+                  value: "{{tasks.annovar-to-maf.outputs.parameters.annovar-maf-f}}"
+                - name: annovar-oncokb-maf-f
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-temp-dir}}results/snv/{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}_oncokb.maf"
+                - name: ref-version
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.ref-version}}"
+                - name: tumor-type
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.tumor-type}}"
+            depends: "annovar-to-maf"
+
+          # ── 11. Determine OtherInfo column names ───────────────────
+          - name: get-otherinfo-columns
+            templateRef:
+              name: duckdb-template
+              template: determine-otherinfo-column
+            arguments:
+              parameters:
+                - name: annovar-oncokb-maf
+                  value: "{{tasks.oncokb-snv.outputs.parameters.annovar-oncokb-maf-f}}"
+            depends: "oncokb-snv"
+
+          # ── 12. DuckDB SNV refresh (on staged copy) ────────────────
+          - name: duckdb-snv
+            templateRef:
+              name: duckdb-template
+              template: duckdb-snv
+            arguments:
+              parameters:
+                - name: annovar-oncokb-maf
+                  value: "{{tasks.oncokb-snv.outputs.parameters.annovar-oncokb-maf-f}}"
+                - name: cancervar-tsv
+                  value: "{{tasks.cancervar.outputs.parameters.cancervar-out-f}}"
+                - name: vlod-column-name
+                  value: "{{tasks.get-otherinfo-columns.outputs.parameters.vlod-column-name}}"
+                - name: filter-column-name
+                  value: "{{tasks.get-otherinfo-columns.outputs.parameters.filter-column-name}}"
+                - name: sample-column-name
+                  value: "{{tasks.get-otherinfo-columns.outputs.parameters.sample-column-name}}"
+                - name: output-duckdb
+                  value: "{{tasks.stage-duckdb.outputs.parameters.staged-duckdb}}"
+            depends: "get-otherinfo-columns && cancervar && stage-duckdb"
+
+          # ── 13. Validate candidate artifacts ───────────────────────
+          - name: validate-candidate
+            template: validate-candidate-artifacts
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}"
+                - name: sample-output-dir
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-output-dir}}"
+                - name: analysis-bed
+                  value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-analysis-file}}"
+                - name: igv-bed
+                  value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-igv-file}}"
+                - name: staged-duckdb
+                  value: "{{tasks.stage-duckdb.outputs.parameters.staged-duckdb}}"
+            depends: "duckdb-snv"
+
+          # ── 14. Pre-compute TMB (staged DuckDB, unpadded BED) ──────
+          - name: compute-tmb
+            template: compute-tmb-precheck
+            arguments:
+              parameters:
+                - name: staged-duckdb
+                  value: "{{tasks.stage-duckdb.outputs.parameters.staged-duckdb}}"
+                - name: target-bed-file
+                  value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-file}}"
+            depends: "validate-candidate"
+
+          # ── 15. Atomic promotion (mode=apply only) ─────────────────
+          - name: promote-and-backup
+            when: "'{{workflow.parameters.mode}}' == 'apply'"
+            template: promote-candidate
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}"
+                - name: sample-output-dir
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-output-dir}}"
+                - name: sample-temp-dir
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-temp-dir}}"
+            depends: "compute-tmb"
+
+          # ── 16. Publish TMB (mode=apply only, after promotion) ─────
+          - name: publish-tmb
+            when: "'{{workflow.parameters.mode}}' == 'apply'"
+            templateRef:
+              name: collect-tmb-data-template
+              template: collect-tmb-data
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{workflow.parameters.run-id}}"
+                - name: sample-id
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}"
+                - name: duckdb-file
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-output-dir}}results/db/{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}_results.duckdb"
+                - name: target-bed-file
+                  value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-file}}"
+                - name: af-lower-threshold
+                  value: "0.05"
+                - name: af-upper-threshold
+                  value: "0.95"
+                - name: output-dir
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-output-dir}}metrics/tmb/"
+                - name: cosmic-vcf
+                  value: "{{workflow.parameters.ref-base-dir}}/hg38/other/cosmic/Cosmic_CompleteTargetedScreensMutant_v103_GRCh38.vcf.gz"
+                - name: filter-common-variants
+                  value: "true"
+                - name: gnomad-vcf
+                  value: "{{workflow.parameters.ref-base-dir}}/hg38/other/common_variants/gnomad4/gnomad4_1pct.vcf.gz"
+                - name: turkish-variome-vcf
+                  value: "{{workflow.parameters.ref-base-dir}}/hg38/other/common_variants/turkish_variome/turkish_variome_1pct.vcf.gz"
+                - name: common-af-threshold
+                  value: "0.01"
+            depends: "promote-and-backup"
+
+          # ── 17. Write repair manifest ──────────────────────────────
+          - name: write-manifest
+            template: write-repair-manifest
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}"
+                - name: sample-output-dir
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-output-dir}}"
+                - name: sample-temp-dir
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-temp-dir}}"
+                - name: analysis-bed
+                  value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-analysis-file}}"
+                - name: staged-duckdb
+                  value: "{{tasks.stage-duckdb.outputs.parameters.staged-duckdb}}"
+                - name: backup-dir
+                  value: "{{tasks.promote-and-backup.outputs.parameters.backup-dir}}"
+            depends: "(promote-and-backup.Succeeded || promote-and-backup.Skipped) && (publish-tmb.Succeeded || publish-tmb.Skipped) && compute-tmb"
+
+          # ── 18. Clean up scratch ───────────────────────────────────
+          - name: cleanup
+            template: cleanup-repair
+            arguments:
+              parameters:
+                - name: sample-scratch-dir
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-scratch-dir}}"
+            depends: "write-manifest"
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Inline template: validate-sample-for-repair
+    # ═══════════════════════════════════════════════════════════════════
+    - name: validate-sample-for-repair
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: sample-output-dir
+          - name: dna-file-type
+          - name: dna-input-files
+          - name: ref-paths
+      volumes:
+        - name: sample-output
+          hostPath:
+            path: "{{inputs.parameters.sample-output-dir}}"
+            type: Directory
+      script:
+        image: python:3.11-alpine3.18
+        command: [python]
+        volumeMounts:
+          - name: sample-output
+            mountPath: /mnt/output/
+            readOnly: true
+        source: |
+          import json, os, sys
+
+          sample_id = "{{inputs.parameters.sample-id}}"
+          dna_type = "{{inputs.parameters.dna-file-type}}"
+          dna_files = json.loads('''{{inputs.parameters.dna-input-files}}''')
+          ref_paths = json.loads('''{{inputs.parameters.ref-paths}}''')
+
+          errors = []
+
+          if dna_type == "vcf":
+              errors.append("VCF-only samples cannot be repaired (no recalibrated BAM)")
+
+          recal_bam = os.path.join("/mnt/output/", "bam", f"{sample_id}_recal.bam")
+          if not os.path.isfile(recal_bam):
+              errors.append(f"Recalibrated BAM not found: bam/{sample_id}_recal.bam")
+          else:
+              if not (os.path.isfile(recal_bam + ".bai") or
+                      os.path.isfile(recal_bam.replace(".bam", ".bai"))):
+                  errors.append("BAM index not found")
+
+          duckdb_path = os.path.join("/mnt/output/", "results", "db",
+                                     f"{sample_id}_results.duckdb")
+          if not os.path.isfile(duckdb_path):
+              errors.append(f"Results DuckDB not found: results/db/{sample_id}_results.duckdb")
+
+          regions = dna_files.get("regionsFile", "")
+          if not regions or regions == ".":
+              errors.append("No target BED (WGS or legacy sample — cannot repair padding)")
+
+          genome = ref_paths.get("genome", "")
+          if not genome:
+              errors.append("Reference genome path not resolved")
+
+          if errors:
+              print("Sample validation failed:", file=sys.stderr)
+              for e in errors:
+                  print(f"  - {e}", file=sys.stderr)
+              sys.exit(1)
+
+          print(f"Sample {sample_id} validated for padding repair")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Inline template: stage-duckdb-copy
+    # ═══════════════════════════════════════════════════════════════════
+    - name: stage-duckdb-copy
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: sample-output-dir
+          - name: sample-temp-dir
+      outputs:
+        parameters:
+          - name: staged-duckdb
+            value: "{{inputs.parameters.sample-temp-dir}}results/db/{{inputs.parameters.sample-id}}_results.duckdb"
+      volumes:
+        - name: source-db-dir
+          hostPath:
+            path: "{{inputs.parameters.sample-output-dir}}results/db/"
+            type: Directory
+        - name: dest-db-dir
+          hostPath:
+            path: "{{inputs.parameters.sample-temp-dir}}results/db/"
+            type: DirectoryOrCreate
+      script:
+        image: alpine:3.18
+        command: [sh]
+        volumeMounts:
+          - name: source-db-dir
+            mountPath: /mnt/source/
+            readOnly: true
+          - name: dest-db-dir
+            mountPath: /mnt/dest/
+        source: |
+          set -e
+          DBFILE="{{inputs.parameters.sample-id}}_results.duckdb"
+          cp "/mnt/source/${DBFILE}" "/mnt/dest/${DBFILE}"
+          echo "Staged DuckDB copy: ${DBFILE}"
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Inline template: validate-candidate-artifacts
+    # ═══════════════════════════════════════════════════════════════════
+    - name: validate-candidate-artifacts
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: sample-output-dir
+          - name: analysis-bed
+          - name: igv-bed
+          - name: staged-duckdb
+      volumes:
+        - name: analysis-bed-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['analysis-bed'])}}"
+            type: Directory
+        - name: igv-bed-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['igv-bed'])}}"
+            type: Directory
+        - name: staged-duckdb-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['staged-duckdb'])}}"
+            type: Directory
+        - name: live-db-dir
+          hostPath:
+            path: "{{inputs.parameters.sample-output-dir}}results/db/"
+            type: Directory
+      script:
+        image: python:3.11-alpine3.18
+        command: [python]
+        volumeMounts:
+          - name: analysis-bed-dir
+            mountPath: /mnt/analysis/
+            readOnly: true
+          - name: igv-bed-dir
+            mountPath: /mnt/igv/
+            readOnly: true
+          - name: staged-duckdb-dir
+            mountPath: /mnt/staged/
+            readOnly: true
+          - name: live-db-dir
+            mountPath: /mnt/live/
+            readOnly: true
+        source: |
+          import os, sys
+
+          errors = []
+          analysis = "/mnt/analysis/{{=sprig.osBase(inputs.parameters['analysis-bed'])}}"
+          igv = "/mnt/igv/{{=sprig.osBase(inputs.parameters['igv-bed'])}}"
+          staged = "/mnt/staged/{{=sprig.osBase(inputs.parameters['staged-duckdb'])}}"
+          live = "/mnt/live/{{inputs.parameters.sample-id}}_results.duckdb"
+
+          # ── Analysis BED: strict BED3, no headers, merged ──
+          if not os.path.isfile(analysis):
+              errors.append("Analysis BED not found")
+          else:
+              prev_chrom, prev_end = "", 0
+              with open(analysis) as f:
+                  for i, line in enumerate(f, 1):
+                      line = line.rstrip("\n")
+                      if line.startswith("#") or line.startswith("track"):
+                          errors.append(f"Analysis BED has header at line {i}")
+                          break
+                      cols = line.split("\t")
+                      if len(cols) != 3:
+                          errors.append(f"Analysis BED is not strict BED3 (line {i})")
+                          break
+                      chrom, start, end = cols[0], int(cols[1]), int(cols[2])
+                      if chrom == prev_chrom and start <= prev_end:
+                          errors.append(
+                              f"Analysis BED has overlapping/book-ended intervals at {chrom}:{start}"
+                          )
+                          break
+                      prev_chrom, prev_end = chrom, end
+
+          # ── IGV BED: BED9, correct features and RGB ──
+          if not os.path.isfile(igv):
+              errors.append("IGV BED not found")
+          else:
+              expected_rgb = {"targeted": "128,128,128", "padding": "211,211,211"}
+              seen = {"targeted": False, "padding": False}
+              with open(igv) as f:
+                  header = f.readline().rstrip("\n")
+                  if 'itemRgb="On"' not in header:
+                      errors.append("IGV BED missing itemRgb header")
+                  for i, line in enumerate(f, 2):
+                      fields = line.rstrip("\n").split("\t")
+                      if len(fields) != 9:
+                          errors.append(f"IGV line {i} has {len(fields)} columns, expected 9")
+                          break
+                      feat = fields[3]
+                      if feat in expected_rgb:
+                          seen[feat] = True
+                          if fields[8] != expected_rgb[feat]:
+                              errors.append(f"IGV {feat} RGB is {fields[8]}, expected {expected_rgb[feat]}")
+              for feat, found in seen.items():
+                  if not found:
+                      errors.append(f"IGV BED has no {feat} features")
+
+          # ── Staged DuckDB: exists and non-empty ──
+          if not os.path.isfile(staged):
+              errors.append("Staged DuckDB not found")
+          elif os.path.getsize(staged) == 0:
+              errors.append("Staged DuckDB is empty")
+
+          # ── Live DuckDB size sanity (staged should be >= live) ──
+          if os.path.isfile(staged) and os.path.isfile(live):
+              if os.path.getsize(staged) < os.path.getsize(live) * 0.5:
+                  errors.append("Staged DuckDB is suspiciously smaller than live")
+
+          if errors:
+              print("Candidate validation FAILED:", file=sys.stderr)
+              for e in errors:
+                  print(f"  - {e}", file=sys.stderr)
+              sys.exit(1)
+          print("Candidate validation passed")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Inline template: compute-tmb-precheck
+    # Validates that TMB can be computed from the staged DuckDB and the
+    # original unpadded target BED. This runs BEFORE promotion.
+    # ═══════════════════════════════════════════════════════════════════
+    - name: compute-tmb-precheck
+      inputs:
+        parameters:
+          - name: staged-duckdb
+          - name: target-bed-file
+      volumes:
+        - name: staged-duckdb-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['staged-duckdb'])}}"
+            type: Directory
+        - name: target-bed-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['target-bed-file'])}}"
+            type: Directory
+      script:
+        image: bergun/gennext-tmb-calc:0.5.0
+        command: [python]
+        volumeMounts:
+          - name: staged-duckdb-dir
+            mountPath: /mnt/db/
+            readOnly: true
+          - name: target-bed-dir
+            mountPath: /mnt/bed/
+            readOnly: true
+        source: |
+          import duckdb, json, sys, os
+
+          db_file = "/mnt/db/{{=sprig.osBase(inputs.parameters['staged-duckdb'])}}"
+          bed_file = "/mnt/bed/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}"
+
+          db = duckdb.connect(db_file, read_only=True)
+
+          try:
+              tables = [r[0] for r in db.execute(
+                  "SELECT table_name FROM information_schema.tables"
+              ).fetchall()]
+          except Exception as e:
+              print(f"Cannot query DuckDB schema: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          required_snv = {"oncokb_snv", "cancervar_snv"}
+          missing = required_snv - set(tables)
+          if missing:
+              print(f"Missing SNV tables: {missing}", file=sys.stderr)
+              sys.exit(1)
+
+          try:
+              count = db.execute("SELECT COUNT(*) FROM combined_snv").fetchone()[0]
+          except Exception as e:
+              print(f"combined_snv view not queryable: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          bed_size = 0
+          with open(bed_file) as f:
+              for line in f:
+                  if line.startswith("#") or line.startswith("track"):
+                      continue
+                  parts = line.strip().split("\t")
+                  if len(parts) >= 3:
+                      bed_size += int(parts[2]) - int(parts[1])
+
+          if bed_size == 0:
+              print("Target BED has zero coverage", file=sys.stderr)
+              sys.exit(1)
+
+          tmb = count / (bed_size / 1_000_000)
+          db.close()
+          print(f"TMB pre-compute OK: {count} variants, {bed_size} bp target, TMB={tmb:.4f}/Mb")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Inline template: promote-candidate
+    # Constructs a complete candidate copy of the live output, overlays
+    # the repaired artifacts, then atomically swaps via rename.
+    # ═══════════════════════════════════════════════════════════════════
+    - name: promote-candidate
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: sample-output-dir
+          - name: sample-temp-dir
+      outputs:
+        parameters:
+          - name: backup-dir
+            valueFrom:
+              path: /tmp/backup_dir
+      volumes:
+        - name: output-parent
+          hostPath:
+            path: "{{=sprig.osDir(sprig.trimSuffix('/', inputs.parameters['sample-output-dir']))}}"
+            type: Directory
+        - name: sample-temp
+          hostPath:
+            path: "{{inputs.parameters.sample-temp-dir}}"
+            type: Directory
+      script:
+        image: alpine:3.18
+        command: [sh]
+        volumeMounts:
+          - name: output-parent
+            mountPath: /mnt/parent/
+          - name: sample-temp
+            mountPath: /mnt/temp/
+            readOnly: true
+        source: |
+          set -e
+
+          SAMPLE_DIR_NAME="$(basename "{{=sprig.trimSuffix('/', inputs.parameters['sample-output-dir'])}}")"
+          LIVE="/mnt/parent/${SAMPLE_DIR_NAME}"
+          CANDIDATE="/mnt/parent/${SAMPLE_DIR_NAME}.padding-repair-candidate"
+          TIMESTAMP=$(date +%Y%m%dT%H%M%S)
+          BACKUP="/mnt/parent/${SAMPLE_DIR_NAME}.pre-padding-repair-${TIMESTAMP}"
+
+          echo "Creating candidate copy..."
+          cp -a "$LIVE" "$CANDIDATE"
+
+          echo "Overlaying repair artifacts..."
+          # SNV results
+          if [ -d /mnt/temp/results/snv/ ]; then
+            mkdir -p "$CANDIDATE/results/snv/"
+            cp -a /mnt/temp/results/snv/. "$CANDIDATE/results/snv/"
+          fi
+
+          # DuckDB (staged copy with refreshed SNV tables)
+          if [ -d /mnt/temp/results/db/ ]; then
+            mkdir -p "$CANDIDATE/results/db/"
+            cp -a /mnt/temp/results/db/. "$CANDIDATE/results/db/"
+          fi
+
+          # BED validation artifacts (analysis + IGV BEDs)
+          if [ -d /mnt/temp/metrics/bed_validation/ ]; then
+            mkdir -p "$CANDIDATE/metrics/bed_validation/"
+            cp -a /mnt/temp/metrics/bed_validation/. "$CANDIDATE/metrics/bed_validation/"
+          fi
+
+          echo "Atomic promotion: live → backup, candidate → live"
+          mv "$LIVE" "$BACKUP"
+          mv "$CANDIDATE" "$LIVE"
+
+          # Record host-path backup location
+          PARENT_HOST="{{=sprig.osDir(sprig.trimSuffix('/', inputs.parameters['sample-output-dir']))}}"
+          echo -n "${PARENT_HOST}/$(basename "$BACKUP")" > /tmp/backup_dir
+          echo "Promotion complete. Backup: $(cat /tmp/backup_dir)"
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Inline template: write-repair-manifest
+    # ═══════════════════════════════════════════════════════════════════
+    - name: write-repair-manifest
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: sample-output-dir
+          - name: sample-temp-dir
+          - name: analysis-bed
+          - name: staged-duckdb
+          - name: backup-dir
+            default: ""
+      volumes:
+        - name: manifest-dir
+          hostPath:
+            path: "{{inputs.parameters.sample-temp-dir}}"
+            type: Directory
+      script:
+        image: python:3.11-alpine3.18
+        command: [python]
+        volumeMounts:
+          - name: manifest-dir
+            mountPath: /mnt/manifest/
+        source: |
+          import json, os
+
+          mode = "{{workflow.parameters.mode}}"
+          manifest = {
+              "workflow_uid": "{{workflow.uid}}",
+              "workflow_name": "{{workflow.name}}",
+              "template": "somatic-dna-padding-repair-v1",
+              "sample_uuid": "{{workflow.parameters.sample-uuid}}",
+              "sample_id": "{{inputs.parameters.sample-id}}",
+              "run_id": "{{workflow.parameters.run-id}}",
+              "user_id": "{{workflow.parameters.user-id}}",
+              "node_name": "{{workflow.parameters.node-name}}",
+              "mode": mode,
+              "padding_bp": 100,
+              "analysis_bed": "{{inputs.parameters.analysis-bed}}",
+              "staged_duckdb": "{{inputs.parameters.staged-duckdb}}",
+              "sample_output_dir": "{{inputs.parameters.sample-output-dir}}",
+              "promotion": {
+                  "promoted": mode == "apply",
+                  "backup_dir": "{{inputs.parameters.backup-dir}}" if mode == "apply" else None,
+              },
+              "tmb_publication": "published" if mode == "apply" else "not-published",
+          }
+
+          path = "/mnt/manifest/padding_repair_manifest.json"
+          with open(path, "w") as f:
+              json.dump(manifest, f, indent=2)
+          print(f"Manifest written to {path}")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Inline template: cleanup-repair
+    # ═══════════════════════════════════════════════════════════════════
+    - name: cleanup-repair
+      inputs:
+        parameters:
+          - name: sample-scratch-dir
+      volumes:
+        - name: scratch-dir
+          hostPath:
+            path: "{{inputs.parameters.sample-scratch-dir}}"
+            type: DirectoryOrCreate
+      script:
+        image: alpine:3.18
+        command: [sh]
+        volumeMounts:
+          - name: scratch-dir
+            mountPath: /mnt/scratch/
+        source: |
+          set -e
+          rm -rf /mnt/scratch/*
+          echo "Scratch cleaned"
