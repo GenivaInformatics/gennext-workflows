@@ -46,6 +46,7 @@ spec:
           -R /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['ref-genome-f'])}} \
           -V /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-unfiltered-vcf'])}} \
           -O /mnt/output/{{=sprig.osBase(inputs.parameters['output-marked-vcf'])}} \
+          --interval-padding 100 \
           $(if [ ! -z "$regionsFile" ]; then echo "-L /mnt/input/regions/$regionsFile"; fi)
         volumeMounts:
           - name: input-unfiltered-vcf
@@ -107,6 +108,7 @@ spec:
           --native-pair-hmm-threads {{inputs.parameters.thread-count}} \
           -R /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['ref-genome-f'])}} \
           -I /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \
+          --interval-padding 100 \
           $(if [ ! -z "$regionsFile" ]; then echo "-L /mnt/input/regions/$regionsFile"; fi) \
           --germline-resource /mnt/ref/gnomad/{{=sprig.osBase(inputs.parameters['gnomad-data-f'])}} \
           --panel-of-normals /mnt/ref/1000g/{{=sprig.osBase(inputs.parameters['1000g-pon-data-f'])}} \

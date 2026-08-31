@@ -40,10 +40,16 @@ spec:
                   value: "{{=jsonpath(inputs.parameters['dna-input-files'], '$.regionsFile')}}"
                 - name: gtf-file
                   value: "{{inputs.parameters.ref-base-dir}}/{{inputs.parameters.ref-version}}/gene_annots/gencode.v49.basic.annotation.MANE_Select.gtf.gz"
+                - name: reference-fai-file
+                  value: "{{=jsonpath(inputs.parameters['ref-paths'], '$.genome')}}.fai"
                 - name: chains-dir
                   value: "{{inputs.parameters.ref-base-dir}}/{{inputs.parameters.ref-version}}/other/chains/"
                 - name: output-dir
                   value: "{{inputs.parameters.sample-temp-dir}}/metrics/bed_validation/"
+                - name: padding
+                  value: "100"
+                - name: generate-padded-artifacts
+                  value: "true"
           - name: validate-msi-bed-file
             when: "{{= jsonpath(inputs.parameters['dna-input-files'], '$.msiBedFile') != '' }}"
             templateRef:
@@ -212,7 +218,7 @@ spec:
                 - name: genome-ref
                   value: "{{=jsonpath(inputs.parameters['ref-paths'], '$.genome')}}"
                 - name: regions-file
-                  value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-file}}"
+                  value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-analysis-file}}"
                 - name: sample-scratch-dir
                   value: "{{inputs.parameters.sample-scratch-dir}}"
                 - name: output-vcf
@@ -231,7 +237,7 @@ spec:
                 - name: output-vcf-f
                   value: "{{inputs.parameters.sample-temp-dir}}/results/snv/vcf/{{inputs.parameters.sample-id}}_mutect2_filtered.vcf.gz"
                 - name: regions-file
-                  value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-file}}"
+                  value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-analysis-file}}"
             depends: "mutect2 && validate-bed-file"
           - name: vlod
             templateRef:
@@ -665,4 +671,3 @@ spec:
                 - name: directory
                   value: "{{inputs.parameters.sample-scratch-dir}}"
             depends: "collect-qc-data && duckdb-sv && duckdb-snv && collect-msi-data && copy-temp-to-output"
-
