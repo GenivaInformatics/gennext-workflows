@@ -133,6 +133,11 @@ grep -q 'pre-padding-repair-{workflow_uid}' "$WORKFLOW" ||
   fail "Backup name is not workflow-UID scoped"
 grep -qE 'gennext.bio/source-revision: "[0-9a-f]{40}"' "$WORKFLOW" ||
   fail "Workflow source revision is not pinned to a substantive commit"
+if grep -q 'inventory-json' "$WORKFLOW"; then
+  fail "DuckDB inventory is still transported inline as an Argo parameter"
+fi
+grep -q 'name: inventory-file' "$WORKFLOW" ||
+  fail "DuckDB inventory file path is not wired between snapshot and verification"
 
 echo "=== Production-script behavior ==="
 
@@ -152,7 +157,7 @@ set -euo pipefail
 
 env_args=()
 for name in \
-  DB_PATH INVENTORY_PATH INVENTORY_JSON \
+  DB_PATH INVENTORY_PATH \
   MOUNT_PARENT CANDIDATE_BASE SAMPLE_ID ANALYSIS_BED_NAME IGV_BED_NAME \
   TARGET_BED_NAME INPUT_BAM_NAME WORKFLOW_UID WORKFLOW_NAME SOURCE_REVISION \
   SAMPLE_UUID RUN_ID USER_ID NODE_NAME REPAIR_MODE REFERENCE_FAI \
@@ -239,7 +244,6 @@ PY
 
 INVENTORY_PATH="$TEST_DIR/inventory.json" DB_PATH="$DB_PATH" \
   PATH="$TEST_DIR/bin:$PATH" sh "$TEST_DIR/snapshot.sh"
-INVENTORY_JSON=$(<"$TEST_DIR/inventory.json")
 
 PATH="$TEST_DIR/bin:$PATH" python3 - "$DB_PATH" <<'PY'
 import duckdb
@@ -249,7 +253,7 @@ db = duckdb.connect(sys.argv[1])
 db.execute("INSERT INTO oncokb_snv VALUES (1)")
 db.close()
 PY
-DB_PATH="$DB_PATH" INVENTORY_JSON="$INVENTORY_JSON" \
+DB_PATH="$DB_PATH" INVENTORY_PATH="$TEST_DIR/inventory.json" \
   PATH="$TEST_DIR/bin:$PATH" sh "$TEST_DIR/verify.sh"
 
 PATH="$TEST_DIR/bin:$PATH" python3 - "$DB_PATH" <<'PY'
@@ -260,7 +264,7 @@ db = duckdb.connect(sys.argv[1])
 db.execute("UPDATE cnv SET value = 'changed' WHERE id = 1")
 db.close()
 PY
-if DB_PATH="$DB_PATH" INVENTORY_JSON="$INVENTORY_JSON" \
+if DB_PATH="$DB_PATH" INVENTORY_PATH="$TEST_DIR/inventory.json" \
   PATH="$TEST_DIR/bin:$PATH" sh "$TEST_DIR/verify.sh" >/dev/null 2>&1; then
   fail "DuckDB verification accepted same-count non-SNV content drift"
 fi
@@ -274,7 +278,7 @@ db.execute("UPDATE cnv SET value = 'alpha' WHERE id = 1")
 db.execute("CREATE OR REPLACE VIEW cnv_view AS SELECT id, value FROM cnv WHERE id > 0")
 db.close()
 PY
-if DB_PATH="$DB_PATH" INVENTORY_JSON="$INVENTORY_JSON" \
+if DB_PATH="$DB_PATH" INVENTORY_PATH="$TEST_DIR/inventory.json" \
   PATH="$TEST_DIR/bin:$PATH" sh "$TEST_DIR/verify.sh" >/dev/null 2>&1; then
   fail "DuckDB verification accepted same-result non-SNV view definition drift"
 fi

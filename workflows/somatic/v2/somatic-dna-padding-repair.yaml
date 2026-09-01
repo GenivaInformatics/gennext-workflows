@@ -145,6 +145,8 @@ spec:
               parameters:
                 - name: staged-duckdb
                   value: "{{tasks.stage-duckdb.outputs.parameters.staged-duckdb}}"
+                - name: inventory-file
+                  value: "{{tasks.compute-repair-paths.outputs.parameters.tx-root}}duckdb_inventory.json"
             depends: "stage-duckdb"
 
           # ── 7. Sharded Mutect2 (analysis BED, existing recal BAM) ──
@@ -311,8 +313,8 @@ spec:
               parameters:
                 - name: staged-duckdb
                   value: "{{tasks.stage-duckdb.outputs.parameters.staged-duckdb}}"
-                - name: inventory-json
-                  value: "{{tasks.snapshot-duckdb-inventory.outputs.parameters.inventory-json}}"
+                - name: inventory-file
+                  value: "{{tasks.snapshot-duckdb-inventory.outputs.parameters.inventory-file}}"
             depends: "duckdb-snv"
 
           # ── 17. Assemble candidate (cp live + overlay repairs) ─────
@@ -642,15 +644,19 @@ spec:
       inputs:
         parameters:
           - name: staged-duckdb
+          - name: inventory-file
       outputs:
         parameters:
-          - name: inventory-json
-            valueFrom:
-              path: /tmp/inventory.json
+          - name: inventory-file
+            value: "{{inputs.parameters.inventory-file}}"
       volumes:
         - name: staged-duckdb-dir
           hostPath:
             path: "{{=sprig.osDir(inputs.parameters['staged-duckdb'])}}"
+            type: Directory
+        - name: inventory-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['inventory-file'])}}"
             type: Directory
       script:
         # This pinned image includes Python 3.11 and DuckDB 0.8.1, matching
@@ -661,11 +667,13 @@ spec:
           - name: DB_PATH
             value: "/mnt/db/{{=sprig.osBase(inputs.parameters['staged-duckdb'])}}"
           - name: INVENTORY_PATH
-            value: /tmp/inventory.json
+            value: "/mnt/inventory/{{=sprig.osBase(inputs.parameters['inventory-file'])}}"
         volumeMounts:
           - name: staged-duckdb-dir
             mountPath: /mnt/db/
             readOnly: true
+          - name: inventory-dir
+            mountPath: /mnt/inventory/
         source: |
           set -e
           # BEGIN SNAPSHOT_DUCKDB_PYTHON
@@ -770,11 +778,15 @@ spec:
       inputs:
         parameters:
           - name: staged-duckdb
-          - name: inventory-json
+          - name: inventory-file
       volumes:
         - name: staged-duckdb-dir
           hostPath:
             path: "{{=sprig.osDir(inputs.parameters['staged-duckdb'])}}"
+            type: Directory
+        - name: inventory-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['inventory-file'])}}"
             type: Directory
       script:
         # Keep inventory verification on the same pinned DuckDB runtime as
@@ -784,11 +796,14 @@ spec:
         env:
           - name: DB_PATH
             value: "/mnt/db/{{=sprig.osBase(inputs.parameters['staged-duckdb'])}}"
-          - name: INVENTORY_JSON
-            value: "{{inputs.parameters.inventory-json}}"
+          - name: INVENTORY_PATH
+            value: "/mnt/inventory/{{=sprig.osBase(inputs.parameters['inventory-file'])}}"
         volumeMounts:
           - name: staged-duckdb-dir
             mountPath: /mnt/db/
+            readOnly: true
+          - name: inventory-dir
+            mountPath: /mnt/inventory/
             readOnly: true
         source: |
           set -e
@@ -850,7 +865,8 @@ spec:
               }
 
           db = duckdb.connect(os.environ["DB_PATH"], read_only=True)
-          pre = json.loads(os.environ["INVENTORY_JSON"])
+          with open(os.environ["INVENTORY_PATH"]) as handle:
+              pre = json.load(handle)
           errors = []
 
           table_sql = dict(db.execute(
