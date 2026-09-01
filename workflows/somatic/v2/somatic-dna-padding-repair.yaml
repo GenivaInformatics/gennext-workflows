@@ -10,6 +10,9 @@ metadata:
       HRD. mode=validate computes and validates without mutating live output;
       mode=apply promotes with atomic directory exchange and publishes TMB.
 spec:
+  workflowMetadata:
+    annotations:
+      gennext.bio/source-revision: "DIRECT_FIX_COMMIT"
   serviceAccountName: gennext-workflows
   entrypoint: padding-repair
   synchronization:
@@ -325,11 +328,13 @@ spec:
 
           # ── 18. Compute TMB into candidate (unpadded BED) ──────────
           - name: compute-tmb
-            templateRef:
-              name: collect-tmb-data-template
-              template: compute-tmb-data
+            template: compute-tmb-data
             arguments:
               parameters:
+                - name: run-id
+                  value: "{{workflow.parameters.run-id}}"
+                - name: sample-id
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}"
                 - name: duckdb-file
                   value: "{{tasks.compute-repair-paths.outputs.parameters.candidate-dir}}results/db/{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}_results.duckdb"
                 - name: target-bed-file
@@ -365,6 +370,10 @@ spec:
                   value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-igv-file}}"
                 - name: staged-duckdb
                   value: "{{tasks.compute-repair-paths.outputs.parameters.candidate-dir}}results/db/{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}_results.duckdb"
+                - name: target-bed
+                  value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-file}}"
+                - name: input-bam
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-output-dir}}bam/{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}_recal.bam"
             depends: "compute-tmb"
 
           # ── 20. Validate assembled candidate ───────────────────────
@@ -382,6 +391,10 @@ spec:
                   value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-analysis-file}}"
                 - name: igv-bed
                   value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-igv-file}}"
+                - name: target-bed
+                  value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-file}}"
+                - name: reference-fai-file
+                  value: "{{=jsonpath(tasks['load-and-prepare-dna'].outputs.parameters['ref-paths'], '$.genome')}}.fai"
             depends: "write-manifest"
 
           # ── 21. Promote (mode=apply, atomic exchange) ──────────────
@@ -401,36 +414,16 @@ spec:
           # ── 22. Publish TMB (mode=apply, after promotion) ──────────
           - name: publish-tmb
             when: "'{{workflow.parameters.mode}}' == 'apply'"
-            templateRef:
-              name: collect-tmb-data-template
-              template: collect-tmb-data
+            template: publish-tmb-result
             arguments:
               parameters:
-                - name: run-id
-                  value: "{{workflow.parameters.run-id}}"
-                - name: sample-id
-                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}"
-                - name: duckdb-file
-                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-output-dir}}results/db/{{tasks.load-and-prepare-dna.outputs.parameters.sample-id}}_results.duckdb"
-                - name: target-bed-file
-                  value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-file}}"
-                - name: output-dir
-                  value: "{{tasks.compute-repair-paths.outputs.parameters.tx-root}}tmb-publish/"
-                - name: cosmic-vcf
-                  value: "{{tasks.get-node-config.outputs.parameters.ref-base-dir}}hg38/other/cosmic/Cosmic_CompleteTargetedScreensMutant_v103_GRCh38.vcf.gz"
-                - name: filter-common-variants
-                  value: "true"
-                - name: gnomad-vcf
-                  value: "{{tasks.get-node-config.outputs.parameters.ref-base-dir}}hg38/other/common_variants/gnomad4/gnomad4_1pct.vcf.gz"
-                - name: turkish-variome-vcf
-                  value: "{{tasks.get-node-config.outputs.parameters.ref-base-dir}}hg38/other/common_variants/turkish_variome/turkish_variome_1pct.vcf.gz"
-                - name: common-af-threshold
-                  value: "0.01"
+                - name: request-json
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-output-dir}}metrics/tmb/tmb_api_payload.json"
             depends: "promote.Succeeded"
 
-          # ── 23. Record projection outcome ──────────────────────────
-          - name: update-manifest-projection
-            template: update-manifest-projection
+          # ── 23. Finalize state and UID-scoped transaction paths ───
+          - name: finalize
+            template: finalize-repair
             arguments:
               parameters:
                 - name: sample-output-dir
@@ -439,24 +432,24 @@ spec:
                   value: "{{tasks.compute-repair-paths.outputs.parameters.candidate-dir}}"
                 - name: output-parent
                   value: "{{tasks.compute-repair-paths.outputs.parameters.output-parent}}"
+                - name: tx-root
+                  value: "{{tasks.compute-repair-paths.outputs.parameters.tx-root}}"
+                - name: validation-status
+                  value: "{{tasks.validate-candidate.status}}"
                 - name: promote-status
                   value: "{{tasks.promote.status}}"
                 - name: publish-status
                   value: "{{tasks.publish-tmb.status}}"
-            depends: "validate-candidate && (promote.Succeeded || promote.Skipped || promote.Failed) && (publish-tmb.Succeeded || publish-tmb.Failed || publish-tmb.Skipped)"
-
-          # ── 24. Cleanup transaction path ───────────────────────────
-          - name: cleanup
-            template: cleanup-repair
-            arguments:
-              parameters:
-                - name: tx-root
-                  value: "{{tasks.compute-repair-paths.outputs.parameters.tx-root}}"
-                - name: candidate-dir
-                  value: "{{tasks.compute-repair-paths.outputs.parameters.candidate-dir}}"
-                - name: output-parent
-                  value: "{{tasks.compute-repair-paths.outputs.parameters.output-parent}}"
-            depends: "update-manifest-projection"
+            depends: >-
+              compute-repair-paths.Succeeded &&
+              (validate-candidate.Succeeded || validate-candidate.Failed ||
+               validate-candidate.Errored || validate-candidate.Skipped ||
+               validate-candidate.Omitted) &&
+              (promote.Succeeded || promote.Failed || promote.Errored ||
+               promote.Skipped || promote.Omitted) &&
+              (publish-tmb.Succeeded || publish-tmb.Failed ||
+               publish-tmb.Errored || publish-tmb.Skipped ||
+               publish-tmb.Omitted)
 
     # ═══════════════════════════════════════════════════════════════════
     # Inline template: validate-sample-for-repair
@@ -656,42 +649,112 @@ spec:
             path: "{{=sprig.osDir(inputs.parameters['staged-duckdb'])}}"
             type: Directory
       script:
-        image: python:3.11-alpine3.18
+        # This pinned image includes Python 3.11 and DuckDB 0.8.1, matching
+        # the DuckDB writer used by the production workflows.
+        image: bergun/gennext-tmb-calc:0.5.0
         command: [sh]
+        env:
+          - name: DB_PATH
+            value: "/mnt/db/{{=sprig.osBase(inputs.parameters['staged-duckdb'])}}"
+          - name: INVENTORY_PATH
+            value: /tmp/inventory.json
         volumeMounts:
           - name: staged-duckdb-dir
             mountPath: /mnt/db/
             readOnly: true
         source: |
           set -e
-          pip install -q duckdb 2>/dev/null
           # BEGIN SNAPSHOT_DUCKDB_PYTHON
-          python3 - /mnt/db/{{=sprig.osBase(inputs.parameters['staged-duckdb'])}} <<'PYEOF'
-          import duckdb, json, sys
+          python3 - <<'PYEOF'
+          import base64
+          import datetime
+          import decimal
+          import hashlib
+          import json
+          import os
 
-          db = duckdb.connect(sys.argv[1], read_only=True)
+          import duckdb
+
+          SNV_OBJECTS = {
+              "oncokb_snv", "cancervar_snv", "combined_snv", "advanced_combined_snv"
+          }
+
+          def quote(name):
+              return '"' + name.replace('"', '""') + '"'
+
+          def normalize(value):
+              if value is None or isinstance(value, (bool, int, float, str)):
+                  return value
+              if isinstance(value, bytes):
+                  return {"bytes": base64.b64encode(value).decode("ascii")}
+              if isinstance(value, decimal.Decimal):
+                  return {"decimal": str(value)}
+              if isinstance(value, (datetime.date, datetime.time, datetime.datetime)):
+                  return {"datetime": value.isoformat()}
+              if isinstance(value, (list, tuple)):
+                  return [normalize(item) for item in value]
+              if isinstance(value, dict):
+                  return {str(key): normalize(value[key]) for key in sorted(value, key=str)}
+              return {"repr": repr(value)}
+
+          def row_fingerprint(db, name):
+              cursor = db.execute(f"SELECT * FROM {quote(name)}")
+              count = 0
+              xor_digest = 0
+              sum_digest = 0
+              modulus = 1 << 256
+              while True:
+                  batch = cursor.fetchmany(1000)
+                  if not batch:
+                      break
+                  for row in batch:
+                      payload = json.dumps(
+                          normalize(row), sort_keys=True, separators=(",", ":")
+                      ).encode("utf-8")
+                      digest = int.from_bytes(hashlib.sha256(payload).digest(), "big")
+                      xor_digest ^= digest
+                      sum_digest = (sum_digest + digest) % modulus
+                      count += 1
+              return {
+                  "rows": count,
+                  "content_xor": f"{xor_digest:064x}",
+                  "content_sum": f"{sum_digest:064x}",
+              }
+
+          db = duckdb.connect(os.environ["DB_PATH"], read_only=True)
           inventory = {"tables": {}, "views": {}}
 
-          for row in db.execute(
-              "SELECT table_name, table_type FROM information_schema.tables"
-          ).fetchall():
-              name, ttype = row
-              if ttype == "VIEW":
-                  sql = db.execute(
-                      f"SELECT sql FROM duckdb_views() WHERE view_name = '{name}'"
-                  ).fetchone()
-                  inventory["views"][name] = {
-                      "sql": sql[0] if sql else "",
-                      "rows": db.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0],
-                  }
-              else:
-                  inventory["tables"][name] = {
-                      "rows": db.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0],
-                  }
+          table_sql = dict(db.execute(
+              "SELECT table_name, sql FROM duckdb_tables() "
+              "WHERE schema_name = 'main' AND NOT internal AND NOT temporary"
+          ).fetchall())
+          view_sql = dict(db.execute(
+              "SELECT view_name, sql FROM duckdb_views() "
+              "WHERE schema_name = 'main' AND NOT internal AND NOT temporary"
+          ).fetchall())
+
+          for name, sql in table_sql.items():
+              if name in SNV_OBJECTS:
+                  continue
+              fingerprint = row_fingerprint(db, name)
+              fingerprint["sql"] = sql or ""
+              fingerprint["columns"] = [
+                  list(row) for row in db.execute(
+                      f"PRAGMA table_info({quote(name)})"
+                  ).fetchall()
+              ]
+              inventory["tables"][name] = fingerprint
+
+          for name, sql in view_sql.items():
+              if name in SNV_OBJECTS:
+                  continue
+              fingerprint = row_fingerprint(db, name)
+              fingerprint["sql"] = sql or ""
+              inventory["views"][name] = fingerprint
 
           db.close()
-          with open("/tmp/inventory.json", "w") as f:
-              json.dump(inventory, f)
+          with open(os.environ["INVENTORY_PATH"], "w") as f:
+              json.dump(inventory, f, sort_keys=True, separators=(",", ":"))
           print(f"Snapshot: {len(inventory['tables'])} tables, {len(inventory['views'])} views")
           PYEOF
           # END SNAPSHOT_DUCKDB_PYTHON
@@ -710,57 +773,126 @@ spec:
             path: "{{=sprig.osDir(inputs.parameters['staged-duckdb'])}}"
             type: Directory
       script:
-        image: python:3.11-alpine3.18
+        # Keep inventory verification on the same pinned DuckDB runtime as
+        # the snapshot and the existing results database writer.
+        image: bergun/gennext-tmb-calc:0.5.0
         command: [sh]
+        env:
+          - name: DB_PATH
+            value: "/mnt/db/{{=sprig.osBase(inputs.parameters['staged-duckdb'])}}"
+          - name: INVENTORY_JSON
+            value: "{{inputs.parameters.inventory-json}}"
         volumeMounts:
           - name: staged-duckdb-dir
             mountPath: /mnt/db/
             readOnly: true
         source: |
           set -e
-          pip install -q duckdb 2>/dev/null
           # BEGIN VERIFY_DUCKDB_PYTHON
-          python3 - /mnt/db/{{=sprig.osBase(inputs.parameters['staged-duckdb'])}} <<'PYEOF'
-          import duckdb, json, sys
+          python3 - <<'PYEOF'
+          import base64
+          import datetime
+          import decimal
+          import hashlib
+          import json
+          import os
+          import sys
 
-          db = duckdb.connect(sys.argv[1], read_only=True)
-          pre = json.loads('''{{inputs.parameters.inventory-json}}''')
-          snv_objects = {"oncokb_snv", "cancervar_snv", "combined_snv", "advanced_combined_snv"}
+          import duckdb
+
+          SNV_TABLES = {"oncokb_snv", "cancervar_snv"}
+          SNV_VIEWS = {"combined_snv", "advanced_combined_snv"}
+
+          def quote(name):
+              return '"' + name.replace('"', '""') + '"'
+
+          def normalize(value):
+              if value is None or isinstance(value, (bool, int, float, str)):
+                  return value
+              if isinstance(value, bytes):
+                  return {"bytes": base64.b64encode(value).decode("ascii")}
+              if isinstance(value, decimal.Decimal):
+                  return {"decimal": str(value)}
+              if isinstance(value, (datetime.date, datetime.time, datetime.datetime)):
+                  return {"datetime": value.isoformat()}
+              if isinstance(value, (list, tuple)):
+                  return [normalize(item) for item in value]
+              if isinstance(value, dict):
+                  return {str(key): normalize(value[key]) for key in sorted(value, key=str)}
+              return {"repr": repr(value)}
+
+          def row_fingerprint(db, name):
+              cursor = db.execute(f"SELECT * FROM {quote(name)}")
+              count = 0
+              xor_digest = 0
+              sum_digest = 0
+              modulus = 1 << 256
+              while True:
+                  batch = cursor.fetchmany(1000)
+                  if not batch:
+                      break
+                  for row in batch:
+                      payload = json.dumps(
+                          normalize(row), sort_keys=True, separators=(",", ":")
+                      ).encode("utf-8")
+                      digest = int.from_bytes(hashlib.sha256(payload).digest(), "big")
+                      xor_digest ^= digest
+                      sum_digest = (sum_digest + digest) % modulus
+                      count += 1
+              return {
+                  "rows": count,
+                  "content_xor": f"{xor_digest:064x}",
+                  "content_sum": f"{sum_digest:064x}",
+              }
+
+          db = duckdb.connect(os.environ["DB_PATH"], read_only=True)
+          pre = json.loads(os.environ["INVENTORY_JSON"])
           errors = []
 
+          table_sql = dict(db.execute(
+              "SELECT table_name, sql FROM duckdb_tables() "
+              "WHERE schema_name = 'main' AND NOT internal AND NOT temporary"
+          ).fetchall())
+          view_sql = dict(db.execute(
+              "SELECT view_name, sql FROM duckdb_views() "
+              "WHERE schema_name = 'main' AND NOT internal AND NOT temporary"
+          ).fetchall())
+
           for name, info in pre["tables"].items():
-              if name in snv_objects:
+              if name not in table_sql:
+                  errors.append(f"Non-SNV table '{name}' was removed")
                   continue
-              try:
-                  count = db.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
-              except Exception as e:
-                  errors.append(f"Non-SNV table '{name}' lost after refresh: {e}")
-                  continue
-              if count != info["rows"]:
-                  errors.append(
-                      f"Non-SNV table '{name}' row count changed: "
-                      f"{info['rows']} → {count}"
-                  )
+              current = row_fingerprint(db, name)
+              current["sql"] = table_sql[name] or ""
+              current["columns"] = [
+                  list(row) for row in db.execute(
+                      f"PRAGMA table_info({quote(name)})"
+                  ).fetchall()
+              ]
+              if current != info:
+                  errors.append(f"Non-SNV table '{name}' content or schema changed")
 
           for name, info in pre["views"].items():
-              if name in snv_objects:
+              if name not in view_sql:
+                  errors.append(f"Non-SNV view '{name}' was removed")
                   continue
-              try:
-                  count = db.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
-              except Exception as e:
-                  errors.append(f"Non-SNV view '{name}' lost after refresh: {e}")
-                  continue
-              if count != info["rows"]:
-                  errors.append(
-                      f"Non-SNV view '{name}' row count changed: "
-                      f"{info['rows']} → {count}"
-                  )
+              current = row_fingerprint(db, name)
+              current["sql"] = view_sql[name] or ""
+              if current != info:
+                  errors.append(f"Non-SNV view '{name}' content or definition changed")
 
-          for tbl in snv_objects & set(pre["tables"]) | snv_objects & set(pre["views"]):
+          for table in sorted(SNV_TABLES):
+              if table not in table_sql:
+                  errors.append(f"Required refreshed SNV table '{table}' is missing")
+          for view in sorted(SNV_VIEWS):
+              if view not in view_sql:
+                  errors.append(f"Required refreshed SNV view '{view}' is missing")
+
+          for name in sorted(SNV_TABLES | SNV_VIEWS):
               try:
-                  db.execute(f'SELECT 1 FROM "{tbl}" LIMIT 1')
+                  db.execute(f"SELECT 1 FROM {quote(name)} LIMIT 1")
               except Exception as e:
-                  errors.append(f"Refreshed SNV object '{tbl}' not queryable: {e}")
+                  errors.append(f"Refreshed SNV object '{name}' is not queryable: {e}")
 
           db.close()
           if errors:
@@ -790,19 +922,31 @@ spec:
       script:
         image: alpine:3.18
         command: [sh]
+        env:
+          - name: LIVE_BASE
+            value: "{{=sprig.osBase(sprig.trimSuffix('/', inputs.parameters['sample-output-dir']))}}"
+          - name: TX_BASE
+            value: "{{=sprig.osBase(sprig.trimSuffix('/', inputs.parameters['tx-root']))}}"
+          - name: CANDIDATE_BASE
+            value: "{{=sprig.osBase(sprig.trimSuffix('/', inputs.parameters['candidate-dir']))}}"
         volumeMounts:
           - name: output-parent
             mountPath: /mnt/parent/
         source: |
           set -e
           # BEGIN ASSEMBLE_CANDIDATE_SH
-          LIVE_BASE="$(basename "{{=sprig.trimSuffix('/', inputs.parameters['sample-output-dir'])}}")"
-          TX_BASE="$(basename "{{=sprig.trimSuffix('/', inputs.parameters['tx-root'])}}")"
-          CD_BASE="$(basename "{{=sprig.trimSuffix('/', inputs.parameters['candidate-dir'])}}")"
+          MOUNT_PARENT="${MOUNT_PARENT:-/mnt/parent}"
+          LIVE="${MOUNT_PARENT}/${LIVE_BASE}"
+          TX="${MOUNT_PARENT}/${TX_BASE}"
+          CANDIDATE="${MOUNT_PARENT}/${CANDIDATE_BASE}"
 
-          LIVE="/mnt/parent/${LIVE_BASE}"
-          TX="/mnt/parent/${TX_BASE}"
-          CANDIDATE="/mnt/parent/${CD_BASE}"
+          [ -d "$LIVE" ] || { echo "Live sample directory is missing: $LIVE" >&2; exit 1; }
+          for required in results/snv results/db metrics/bed_validation; do
+            [ -d "${TX}/${required}" ] || {
+              echo "Required repair output is missing: ${TX}/${required}" >&2
+              exit 1
+            }
+          done
 
           if [ -d "$CANDIDATE" ]; then
             echo "Stale candidate from prior attempt exists, removing" >&2
@@ -812,15 +956,191 @@ spec:
           echo "Copying live tree to candidate..."
           cp -a "$LIVE" "$CANDIDATE"
 
-          echo "Overlaying repair artifacts..."
-          for subdir in results/snv results/db metrics/bed_validation; do
-            if [ -d "${TX}/${subdir}" ]; then
-              mkdir -p "${CANDIDATE}/${subdir}"
-              cp -a "${TX}/${subdir}/." "${CANDIDATE}/${subdir}/"
-            fi
+          echo "Replacing affected outputs authoritatively..."
+          rm -rf \
+            "${CANDIDATE}/results/snv" \
+            "${CANDIDATE}/metrics/bed_validation" \
+            "${CANDIDATE}/metrics/tmb"
+
+          for subdir in results/snv metrics/bed_validation; do
+            mkdir -p "${CANDIDATE}/${subdir}"
+            cp -a "${TX}/${subdir}/." "${CANDIDATE}/${subdir}/"
           done
+
+          mkdir -p "${CANDIDATE}/results/db"
+          cp -a "${TX}/results/db/." "${CANDIDATE}/results/db/"
           echo "Candidate assembled"
           # END ASSEMBLE_CANDIDATE_SH
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Inline template: compute-tmb-data
+    # Computes once into the candidate and stages the exact API payload.
+    # The test:// API mode writes the payload without making a network call.
+    # ═══════════════════════════════════════════════════════════════════
+    - name: compute-tmb-data
+      inputs:
+        parameters:
+          - name: run-id
+          - name: sample-id
+          - name: duckdb-file
+          - name: target-bed-file
+          - name: output-dir
+          - name: cosmic-vcf
+          - name: gnomad-vcf
+          - name: turkish-variome-vcf
+          - name: filter-common-variants
+            value: "true"
+          - name: common-af-threshold
+            value: "0.01"
+      volumes:
+        - name: duckdb-file
+          hostPath:
+            path: "{{inputs.parameters.duckdb-file}}"
+            type: File
+        - name: target-bed-file
+          hostPath:
+            path: "{{inputs.parameters.target-bed-file}}"
+            type: File
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+        - name: cosmic-vcf-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['cosmic-vcf'])}}"
+            type: Directory
+        - name: gnomad-vcf-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['gnomad-vcf'])}}"
+            type: Directory
+        - name: turkish-variome-vcf-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['turkish-variome-vcf'])}}"
+            type: Directory
+      script:
+        name: tmb-compute-only
+        image: bergun/gennext-tmb-calc:0.5.0
+        command: [/bin/bash]
+        workingDir: /mnt/input
+        volumeMounts:
+          - name: duckdb-file
+            mountPath: "/mnt/input/{{=sprig.osBase(inputs.parameters['duckdb-file'])}}"
+            readOnly: true
+          - name: target-bed-file
+            mountPath: "/mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}"
+            readOnly: true
+          - name: output-dir
+            mountPath: /mnt/output
+          - name: cosmic-vcf-dir
+            mountPath: /mnt/cosmic
+            readOnly: true
+          - name: gnomad-vcf-dir
+            mountPath: /mnt/gnomad
+            readOnly: true
+          - name: turkish-variome-vcf-dir
+            mountPath: /mnt/turkish
+            readOnly: true
+        source: |
+          set -euo pipefail
+          cmd=(
+            python /app/calculate_tmb.py
+            --duckdb "/mnt/input/{{=sprig.osBase(inputs.parameters['duckdb-file'])}}"
+            --target-bed "/mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}"
+            --cds-bed /app/data/gencode_v48_canonical_cds.bed
+            --af-lower-threshold 0.05
+            --af-upper-threshold 0.95
+            --output-dir /mnt/output/
+            --api-endpoint test:///mnt/output/tmb_api_payload.json
+            --api-token STAGED
+            --run-id "{{inputs.parameters.run-id}}"
+            --sample-id "{{inputs.parameters.sample-id}}"
+            --filter-dets
+            --dets-threshold 2.5
+            --blacklist-genes PHOX2B,CHEK2
+            --filter-cosmic
+            --cosmic-vcf "/mnt/cosmic/{{=sprig.osBase(inputs.parameters['cosmic-vcf'])}}"
+          )
+
+          if [ "{{inputs.parameters.filter-common-variants}}" = "true" ]; then
+            cmd+=(
+              --filter-common-variants
+              --common-vcf "/mnt/gnomad/{{=sprig.osBase(inputs.parameters['gnomad-vcf'])}}:AF"
+              --common-vcf "/mnt/turkish/{{=sprig.osBase(inputs.parameters['turkish-variome-vcf'])}}:TR_AF"
+              --common-af-threshold "{{inputs.parameters.common-af-threshold}}"
+            )
+          fi
+
+          cmd+=(--verbose)
+          printf 'Running staged TMB calculation:'
+          printf ' %q' "${cmd[@]}"
+          printf '\n'
+          "${cmd[@]}"
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: 500m
+          limits:
+            memory: 2Gi
+            cpu: 1000m
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Inline template: publish-tmb-result
+    # Posts the exact staged payload. It never recalculates TMB.
+    # ═══════════════════════════════════════════════════════════════════
+    - name: publish-tmb-result
+      inputs:
+        parameters:
+          - name: request-json
+      volumes:
+        - name: request-json
+          hostPath:
+            path: "{{inputs.parameters.request-json}}"
+            type: File
+      script:
+        image: bergun/gennext-tmb-calc:0.5.0
+        command: [python]
+        env:
+          - name: REQUEST_JSON
+            value: "/mnt/input/{{=sprig.osBase(inputs.parameters['request-json'])}}"
+          - name: API_ENDPOINT
+            value: "http://gennext-backend.gennext-dev.svc.cluster.local:3030/api/v0/runs/{{workflow.parameters.run-id}}/somatic"
+          - name: GENNEXT_CLUSTER_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: gennext-cluster-secrets
+                key: gennext_cluster_token
+        volumeMounts:
+          - name: request-json
+            mountPath: "/mnt/input/{{=sprig.osBase(inputs.parameters['request-json'])}}"
+            readOnly: true
+        source: |
+          # BEGIN PUBLISH_TMB_PYTHON
+          import json
+          import os
+          import sys
+
+          import requests
+
+          with open(os.environ["REQUEST_JSON"]) as handle:
+              payload = json.load(handle)
+
+          required = {"runId", "sampleId", "somaticData", "token"}
+          missing = sorted(required - payload.keys())
+          if missing:
+              raise ValueError(f"Staged TMB payload is missing keys: {missing}")
+
+          payload["token"] = os.environ["GENNEXT_CLUSTER_TOKEN"]
+          response = requests.post(
+              os.environ["API_ENDPOINT"], json=payload, timeout=30
+          )
+          if response.status_code != 200:
+              print(
+                  f"TMB publication failed: {response.status_code} {response.text}",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+          print("Published staged TMB result")
+          # END PUBLISH_TMB_PYTHON
 
     # ═══════════════════════════════════════════════════════════════════
     # Inline template: write-repair-manifest
@@ -834,6 +1154,8 @@ spec:
           - name: analysis-bed
           - name: igv-bed
           - name: staged-duckdb
+          - name: target-bed
+          - name: input-bam
       volumes:
         - name: output-parent
           hostPath:
@@ -842,6 +1164,35 @@ spec:
       script:
         image: python:3.11-alpine3.18
         command: [python]
+        env:
+          - name: CANDIDATE_BASE
+            value: "{{=sprig.osBase(sprig.trimSuffix('/', inputs.parameters['candidate-dir']))}}"
+          - name: SAMPLE_ID
+            value: "{{inputs.parameters.sample-id}}"
+          - name: ANALYSIS_BED_NAME
+            value: "{{=sprig.osBase(inputs.parameters['analysis-bed'])}}"
+          - name: IGV_BED_NAME
+            value: "{{=sprig.osBase(inputs.parameters['igv-bed'])}}"
+          - name: TARGET_BED_NAME
+            value: "{{=sprig.osBase(inputs.parameters['target-bed'])}}"
+          - name: INPUT_BAM_NAME
+            value: "{{=sprig.osBase(inputs.parameters['input-bam'])}}"
+          - name: WORKFLOW_UID
+            value: "{{workflow.uid}}"
+          - name: WORKFLOW_NAME
+            value: "{{workflow.name}}"
+          - name: SOURCE_REVISION
+            value: "{{=workflow.annotations['gennext.bio/source-revision']}}"
+          - name: SAMPLE_UUID
+            value: "{{workflow.parameters.sample-uuid}}"
+          - name: RUN_ID
+            value: "{{workflow.parameters.run-id}}"
+          - name: USER_ID
+            value: "{{workflow.parameters.user-id}}"
+          - name: NODE_NAME
+            value: "{{workflow.parameters.node-name}}"
+          - name: REPAIR_MODE
+            value: "{{workflow.parameters.mode}}"
         volumeMounts:
           - name: output-parent
             mountPath: /mnt/parent/
@@ -849,8 +1200,8 @@ spec:
           # BEGIN WRITE_MANIFEST_PYTHON
           import hashlib, json, os
 
-          cd_base = os.path.basename("{{=sprig.trimSuffix('/', inputs.parameters['candidate-dir'])}}")
-          candidate = os.path.join("/mnt/parent", cd_base)
+          mount_parent = os.environ.get("MOUNT_PARENT", "/mnt/parent")
+          candidate = os.path.join(mount_parent, os.environ["CANDIDATE_BASE"])
 
           def sha256_file(path):
               h = hashlib.sha256()
@@ -862,32 +1213,66 @@ spec:
               except FileNotFoundError:
                   return "MISSING"
 
-          sample_id = "{{inputs.parameters.sample-id}}"
+          def sha256_tree(path):
+              if not os.path.isdir(path):
+                  return "MISSING"
+              digest = hashlib.sha256()
+              files = []
+              for root, _, names in os.walk(path):
+                  for name in names:
+                      files.append(os.path.join(root, name))
+              if not files:
+                  return "EMPTY"
+              for file_path in sorted(files):
+                  relative = os.path.relpath(file_path, path)
+                  digest.update(relative.encode("utf-8"))
+                  digest.update(b"\0")
+                  digest.update(sha256_file(file_path).encode("ascii"))
+                  digest.update(b"\0")
+              return digest.hexdigest()
+
+          sample_id = os.environ["SAMPLE_ID"]
           db_path = os.path.join(candidate, "results", "db", f"{sample_id}_results.duckdb")
+          bed_dir = os.path.join(candidate, "metrics", "bed_validation")
+          bam_path = os.path.join(candidate, "bam", os.environ["INPUT_BAM_NAME"])
+          bam_index_candidates = [
+              bam_path + ".bai",
+              os.path.splitext(bam_path)[0] + ".bai",
+          ]
+          bam_index_path = next(
+              (path for path in bam_index_candidates if os.path.isfile(path)),
+              bam_index_candidates[0],
+          )
 
           manifest = {
-              "workflow_uid": "{{workflow.uid}}",
-              "workflow_name": "{{workflow.name}}",
+              "workflow_uid": os.environ["WORKFLOW_UID"],
+              "workflow_name": os.environ["WORKFLOW_NAME"],
               "template": "somatic-dna-padding-repair-v1",
-              "git_commit": "{{workflow.annotations.workflows.argoproj.io/revision}}",
-              "sample_uuid": "{{workflow.parameters.sample-uuid}}",
+              "source_revision": os.environ["SOURCE_REVISION"],
+              "sample_uuid": os.environ["SAMPLE_UUID"],
               "sample_id": sample_id,
-              "run_id": "{{workflow.parameters.run-id}}",
-              "user_id": "{{workflow.parameters.user-id}}",
-              "node_name": "{{workflow.parameters.node-name}}",
-              "mode": "{{workflow.parameters.mode}}",
+              "run_id": os.environ["RUN_ID"],
+              "user_id": os.environ["USER_ID"],
+              "node_name": os.environ["NODE_NAME"],
+              "mode": os.environ["REPAIR_MODE"],
               "padding_bp": 100,
               "checksums": {
+                  "input_bam": sha256_file(bam_path),
+                  "input_bai": sha256_file(bam_index_path),
+                  "target_bed": sha256_file(os.path.join(
+                      bed_dir, os.environ["TARGET_BED_NAME"]
+                  )),
                   "analysis_bed": sha256_file(os.path.join(
-                      candidate, "metrics", "bed_validation",
-                      os.path.basename("{{inputs.parameters.analysis-bed}}")
+                      bed_dir, os.environ["ANALYSIS_BED_NAME"]
                   )),
                   "igv_bed": sha256_file(os.path.join(
-                      candidate, "metrics", "bed_validation",
-                      os.path.basename("{{inputs.parameters.igv-bed}}")
+                      bed_dir, os.environ["IGV_BED_NAME"]
                   )),
+                  "snv_tree": sha256_tree(os.path.join(candidate, "results", "snv")),
                   "duckdb": sha256_file(db_path),
+                  "tmb_tree": sha256_tree(os.path.join(candidate, "metrics", "tmb")),
               },
+              "validation": {"state": "pending"},
               "promotion": {
                   "state": "pending",
                   "backup_dir": None,
@@ -914,45 +1299,122 @@ spec:
           - name: output-parent
           - name: analysis-bed
           - name: igv-bed
+          - name: target-bed
+          - name: reference-fai-file
       volumes:
         - name: output-parent
           hostPath:
             path: "{{inputs.parameters.output-parent}}"
             type: Directory
+        - name: reference-fai-file
+          hostPath:
+            path: "{{inputs.parameters.reference-fai-file}}"
+            type: File
       script:
         image: python:3.11-alpine3.18
         command: [python]
+        env:
+          - name: CANDIDATE_BASE
+            value: "{{=sprig.osBase(sprig.trimSuffix('/', inputs.parameters['candidate-dir']))}}"
+          - name: SAMPLE_ID
+            value: "{{inputs.parameters.sample-id}}"
+          - name: ANALYSIS_BED_NAME
+            value: "{{=sprig.osBase(inputs.parameters['analysis-bed'])}}"
+          - name: IGV_BED_NAME
+            value: "{{=sprig.osBase(inputs.parameters['igv-bed'])}}"
+          - name: TARGET_BED_NAME
+            value: "{{=sprig.osBase(inputs.parameters['target-bed'])}}"
+          - name: WORKFLOW_UID
+            value: "{{workflow.uid}}"
+          - name: SOURCE_REVISION
+            value: "{{=workflow.annotations['gennext.bio/source-revision']}}"
         volumeMounts:
           - name: output-parent
             mountPath: /mnt/parent/
             readOnly: true
+          - name: reference-fai-file
+            mountPath: /mnt/reference.fai
+            readOnly: true
         source: |
           # BEGIN VALIDATE_CANDIDATE_PYTHON
-          import json, os, sys
+          import hashlib
+          import json
+          import os
+          import sys
 
-          cd_base = os.path.basename("{{=sprig.trimSuffix('/', inputs.parameters['candidate-dir'])}}")
-          candidate = os.path.join("/mnt/parent", cd_base)
-          sample_id = "{{inputs.parameters.sample-id}}"
+          mount_parent = os.environ.get("MOUNT_PARENT", "/mnt/parent")
+          reference_fai = os.environ.get("REFERENCE_FAI", "/mnt/reference.fai")
+          candidate = os.path.join(mount_parent, os.environ["CANDIDATE_BASE"])
+          sample_id = os.environ["SAMPLE_ID"]
           errors = []
 
-          analysis_name = os.path.basename("{{inputs.parameters.analysis-bed}}")
+          analysis_name = os.environ["ANALYSIS_BED_NAME"]
           analysis = os.path.join(candidate, "metrics", "bed_validation", analysis_name)
-          igv_name = os.path.basename("{{inputs.parameters.igv-bed}}")
+          igv_name = os.environ["IGV_BED_NAME"]
           igv = os.path.join(candidate, "metrics", "bed_validation", igv_name)
+          target = os.path.join(
+              candidate, "metrics", "bed_validation", os.environ["TARGET_BED_NAME"]
+          )
           db = os.path.join(candidate, "results", "db", f"{sample_id}_results.duckdb")
           manifest = os.path.join(candidate, "padding_repair_manifest.json")
           tmb_dir = os.path.join(candidate, "metrics", "tmb")
 
-          if not os.path.isfile(manifest):
-              errors.append("Repair manifest not found in candidate")
-          if not os.path.isdir(tmb_dir) or not os.listdir(tmb_dir):
-              errors.append("TMB output not found in candidate")
+          def sha256_file(path):
+              digest = hashlib.sha256()
+              try:
+                  with open(path, "rb") as handle:
+                      for chunk in iter(lambda: handle.read(8192), b""):
+                          digest.update(chunk)
+              except FileNotFoundError:
+                  return "MISSING"
+              return digest.hexdigest()
+
+          def sha256_tree(path):
+              if not os.path.isdir(path):
+                  return "MISSING"
+              digest = hashlib.sha256()
+              files = []
+              for root, _, names in os.walk(path):
+                  for name in names:
+                      files.append(os.path.join(root, name))
+              if not files:
+                  return "EMPTY"
+              for file_path in sorted(files):
+                  relative = os.path.relpath(file_path, path)
+                  digest.update(relative.encode("utf-8"))
+                  digest.update(b"\0")
+                  digest.update(sha256_file(file_path).encode("ascii"))
+                  digest.update(b"\0")
+              return digest.hexdigest()
+
+          contig_order = {}
+          contig_sizes = {}
+          with open(reference_fai) as handle:
+              for line_number, line in enumerate(handle, 1):
+                  fields = line.rstrip("\n").split("\t")
+                  if len(fields) < 2:
+                      errors.append(f"Malformed FASTA index at line {line_number}")
+                      continue
+                  chrom = fields[0]
+                  try:
+                      length = int(fields[1])
+                  except ValueError:
+                      errors.append(f"Non-integer FASTA length at line {line_number}")
+                      continue
+                  if chrom in contig_sizes or length < 1:
+                      errors.append(f"Invalid or duplicate FASTA contig at line {line_number}")
+                      continue
+                  contig_order[chrom] = len(contig_order)
+                  contig_sizes[chrom] = length
+
+          if not contig_order:
+              errors.append("Reference FASTA index has no valid contigs")
 
           # ── Analysis BED: strict BED3, reference-ordered, no overlaps ──
           if not os.path.isfile(analysis):
               errors.append("Analysis BED not found in candidate")
           else:
-              prev_chrom, prev_end = "", 0
+              prev_rank, prev_chrom, prev_end = -1, "", -1
               line_count = 0
               with open(analysis) as f:
                   for i, line in enumerate(f, 1):
@@ -964,9 +1426,21 @@ spec:
                       if len(cols) != 3:
                           errors.append(f"Analysis BED is not strict BED3 (line {i}: {len(cols)} cols)")
                           break
-                      chrom, start, end = cols[0], int(cols[1]), int(cols[2])
-                      if start >= end:
+                      chrom = cols[0]
+                      try:
+                          start, end = int(cols[1]), int(cols[2])
+                      except ValueError:
+                          errors.append(f"Analysis BED has non-integer coordinates at line {i}")
+                          break
+                      if chrom not in contig_order:
+                          errors.append(f"Analysis BED contig {chrom!r} is absent from FASTA index")
+                          break
+                      if start < 0 or start >= end or end > contig_sizes[chrom]:
                           errors.append(f"Analysis BED invalid interval at line {i}")
+                          break
+                      rank = contig_order[chrom]
+                      if rank < prev_rank:
+                          errors.append(f"Analysis BED is not in FASTA contig order at line {i}")
                           break
                       if chrom == prev_chrom and start <= prev_end:
                           errors.append(
@@ -974,7 +1448,7 @@ spec:
                               f"(prev end {prev_end})"
                           )
                           break
-                      prev_chrom, prev_end = chrom, end
+                      prev_rank, prev_chrom, prev_end = rank, chrom, end
                       line_count += 1
               if line_count == 0 and not errors:
                   errors.append("Analysis BED is empty")
@@ -984,7 +1458,8 @@ spec:
               errors.append("IGV BED not found in candidate")
           else:
               expected_rgb = {"targeted": "128,128,128", "padding": "211,211,211"}
-              features = {"targeted": [], "padding": []}
+              feature_counts = {"targeted": 0, "padding": 0}
+              prev_rank, prev_chrom, prev_start, prev_end = -1, "", -1, -1
               with open(igv) as f:
                   header = f.readline().rstrip("\n")
                   if 'itemRgb="On"' not in header:
@@ -995,42 +1470,122 @@ spec:
                           errors.append(f"IGV line {i} has {len(fields)} columns, expected 9")
                           break
                       chrom, start_s, end_s, feat = fields[:4]
-                      start, end = int(start_s), int(end_s)
+                      try:
+                          start, end = int(start_s), int(end_s)
+                      except ValueError:
+                          errors.append(f"IGV line {i} has non-integer coordinates")
+                          break
                       if feat not in expected_rgb:
                           errors.append(f"IGV unknown feature type: {feat!r}")
                           continue
                       if fields[8] != expected_rgb[feat]:
                           errors.append(f"IGV {feat} RGB is {fields[8]}, expected {expected_rgb[feat]}")
-                      if start >= end:
+                      if chrom not in contig_order:
+                          errors.append(f"IGV contig {chrom!r} is absent from FASTA index")
+                          continue
+                      if start < 0 or start >= end or end > contig_sizes[chrom]:
                           errors.append(f"IGV invalid interval at line {i}")
-                      features[feat].append((chrom, start, end))
-
-              for feat, intervals in features.items():
-                  if not intervals:
-                      errors.append(f"IGV BED has no {feat} features")
-                  for j in range(len(intervals)):
-                      for k in range(j + 1, len(intervals)):
-                          c1, s1, e1 = intervals[j]
-                          c2, s2, e2 = intervals[k]
-                          if c1 == c2 and s1 < e2 and s2 < e1:
-                              errors.append(
-                                  f"IGV {feat} features overlap: "
-                                  f"{c1}:{s1}-{e1} and {c2}:{s2}-{e2}"
-                              )
-
-              for tc, ts, te in features["targeted"]:
-                  for pc, ps, pe in features["padding"]:
-                      if tc == pc and ts < pe and ps < te:
+                      rank = contig_order[chrom]
+                      if rank < prev_rank or (
+                          rank == prev_rank and start < prev_start
+                      ):
+                          errors.append(f"IGV BED is not in FASTA coordinate order at line {i}")
+                      if chrom == prev_chrom and start < prev_end:
                           errors.append(
-                              f"IGV targeted/padding overlap: "
-                              f"{tc}:{ts}-{te} and {pc}:{ps}-{pe}"
+                              f"IGV features overlap at {chrom}:{start}-{end} "
+                              f"(previous end {prev_end})"
                           )
+                      prev_rank, prev_chrom = rank, chrom
+                      prev_start, prev_end = start, end
+                      feature_counts[feat] += 1
 
-          # ── DuckDB: exists, queryable SNV objects ──
-          if not os.path.isfile(db):
-              errors.append("DuckDB not found in candidate")
-          elif os.path.getsize(db) == 0:
-              errors.append("DuckDB is empty in candidate")
+              for feat, count in feature_counts.items():
+                  if count == 0:
+                      errors.append(f"IGV BED has no {feat} features")
+
+          # ── Required affected outputs ───────────────────────────────
+          required_files = [
+              target,
+              db,
+              os.path.join(candidate, "results", "snv", "vcf", f"{sample_id}_mutect2_marked.vcf.gz"),
+              os.path.join(candidate, "results", "snv", "vcf", f"{sample_id}_mutect2_filtered.vcf.gz"),
+              os.path.join(candidate, "results", "snv", f"{sample_id}_mutect2_vlod.vcf.gz"),
+              os.path.join(candidate, "results", "snv", f"{sample_id}.hg38_multianno.txt"),
+              os.path.join(candidate, "results", "snv", f"{sample_id}.hg38_multianno.txt.cancervar"),
+              os.path.join(candidate, "results", "snv", f"{sample_id}.maf"),
+              os.path.join(candidate, "results", "snv", f"{sample_id}_oncokb.maf"),
+              os.path.join(tmb_dir, f"tmb_report_{sample_id}.json"),
+              os.path.join(tmb_dir, f"tmb_report_{sample_id}.txt"),
+              os.path.join(tmb_dir, "tmb_api_payload.json"),
+          ]
+          for path in required_files:
+              if not os.path.isfile(path) or os.path.getsize(path) == 0:
+                  errors.append(f"Required candidate artifact is missing or empty: {path}")
+
+          # ── TMB report and staged API payload must agree ────────────
+          report_path = os.path.join(tmb_dir, f"tmb_report_{sample_id}.json")
+          payload_path = os.path.join(tmb_dir, "tmb_api_payload.json")
+          if os.path.isfile(report_path) and os.path.isfile(payload_path):
+              try:
+                  with open(report_path) as handle:
+                      report = json.load(handle)["results"]
+                  with open(payload_path) as handle:
+                      payload = json.load(handle)
+                  somatic = payload["somaticData"]
+                  expected = {
+                      "tmbValue": f"{report['tmb_per_mb']:.2f}",
+                      "tmbVariantCount": int(report["tmb_variants"]),
+                      "tmbTargetRegionSize": int(report["total_target_bases"]),
+                      "cdsTmbValue": f"{report['cds_tmb_per_mb']:.2f}",
+                      "cdsTmbVariantCount": int(report["cds_tmb_variants"]),
+                      "cdsTmbTargetRegionSize": int(report["targeted_cds_bases"]),
+                  }
+                  for key, value in expected.items():
+                      if somatic.get(key) != value:
+                          errors.append(f"Staged TMB payload disagrees with report for {key}")
+                  if payload.get("runId") == "" or payload.get("sampleId") != sample_id:
+                      errors.append("Staged TMB payload identity is invalid")
+                  if payload.get("token") != "STAGED":
+                      errors.append("Staged TMB payload must contain only the STAGED token")
+              except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+                  errors.append(f"Invalid TMB report or staged payload: {error}")
+
+          # ── Manifest identity and checksums ─────────────────────────
+          if not os.path.isfile(manifest):
+              errors.append("Repair manifest not found in candidate")
+          else:
+              try:
+                  with open(manifest) as handle:
+                      manifest_data = json.load(handle)
+                  if manifest_data.get("workflow_uid") != os.environ["WORKFLOW_UID"]:
+                      errors.append("Repair manifest workflow UID does not match")
+                  if manifest_data.get("source_revision") != os.environ["SOURCE_REVISION"]:
+                      errors.append("Repair manifest source revision does not match")
+                  if not manifest_data.get("source_revision") or manifest_data.get("source_revision") == "DIRECT_FIX_COMMIT":
+                      errors.append("Repair manifest source revision is not release-pinned")
+                  expected_checksums = {
+                      "input_bam": sha256_file(os.path.join(candidate, "bam", f"{sample_id}_recal.bam")),
+                      "input_bai": sha256_file(next(
+                          (
+                              path for path in [
+                                  os.path.join(candidate, "bam", f"{sample_id}_recal.bam.bai"),
+                                  os.path.join(candidate, "bam", f"{sample_id}_recal.bai"),
+                              ]
+                              if os.path.isfile(path)
+                          ),
+                          os.path.join(candidate, "bam", f"{sample_id}_recal.bam.bai"),
+                      )),
+                      "target_bed": sha256_file(target),
+                      "analysis_bed": sha256_file(analysis),
+                      "igv_bed": sha256_file(igv),
+                      "snv_tree": sha256_tree(os.path.join(candidate, "results", "snv")),
+                      "duckdb": sha256_file(db),
+                      "tmb_tree": sha256_tree(tmb_dir),
+                  }
+                  if manifest_data.get("checksums") != expected_checksums:
+                      errors.append("Repair manifest checksums do not match candidate artifacts")
+              except (OSError, ValueError, json.JSONDecodeError) as error:
+                  errors.append(f"Invalid repair manifest: {error}")
 
           if errors:
               print("Candidate validation FAILED:", file=sys.stderr)
@@ -1064,19 +1619,76 @@ spec:
       script:
         image: python:3.11-alpine3.18
         command: [python]
+        env:
+          - name: LIVE_BASE
+            value: "{{=sprig.osBase(sprig.trimSuffix('/', inputs.parameters['sample-output-dir']))}}"
+          - name: CANDIDATE_BASE
+            value: "{{=sprig.osBase(sprig.trimSuffix('/', inputs.parameters['candidate-dir']))}}"
+          - name: OUTPUT_PARENT_HOST
+            value: "{{inputs.parameters.output-parent}}"
+          - name: WORKFLOW_UID
+            value: "{{workflow.uid}}"
         volumeMounts:
           - name: output-parent
             mountPath: /mnt/parent/
         source: |
           # BEGIN PROMOTE_CANDIDATE_PYTHON
-          import ctypes, json, os, sys, time
+          import ctypes
+          import json
+          import os
+          import platform
+          import sys
 
-          live_base = os.path.basename("{{=sprig.trimSuffix('/', inputs.parameters['sample-output-dir'])}}")
-          cd_base = os.path.basename("{{=sprig.trimSuffix('/', inputs.parameters['candidate-dir'])}}")
-          parent_host = "{{inputs.parameters.output-parent}}"
+          live_base = os.environ["LIVE_BASE"]
+          cd_base = os.environ["CANDIDATE_BASE"]
+          parent_host = os.environ["OUTPUT_PARENT_HOST"]
+          workflow_uid = os.environ["WORKFLOW_UID"]
 
-          live = os.path.join("/mnt/parent", live_base)
-          candidate = os.path.join("/mnt/parent", cd_base)
+          mount_parent = os.environ.get("MOUNT_PARENT", "/mnt/parent")
+          live = os.path.join(mount_parent, live_base)
+          candidate = os.path.join(mount_parent, cd_base)
+          backup_name = f"{live_base}.pre-padding-repair-{workflow_uid}"
+          backup = os.path.join(mount_parent, backup_name)
+          backup_host = os.path.join(parent_host, backup_name)
+          backup_output_path = os.environ.get("BACKUP_OUTPUT_PATH", "/tmp/backup_dir")
+
+          def manifest_uid(directory):
+              path = os.path.join(directory, "padding_repair_manifest.json")
+              try:
+                  with open(path) as handle:
+                      return json.load(handle).get("workflow_uid")
+              except (FileNotFoundError, json.JSONDecodeError, OSError):
+                  return None
+
+          def update_live_manifest():
+              path = os.path.join(live, "padding_repair_manifest.json")
+              with open(path) as handle:
+                  manifest = json.load(handle)
+              manifest["promotion"]["state"] = "completed"
+              manifest["promotion"]["backup_dir"] = backup_host
+              temporary = path + ".tmp"
+              with open(temporary, "w") as handle:
+                  json.dump(manifest, handle, indent=2)
+                  handle.flush()
+                  os.fsync(handle.fileno())
+              os.replace(temporary, path)
+
+          # Idempotent recovery if an earlier attempt exchanged directories
+          # but failed before recording the backup/output parameter.
+          if os.path.isdir(live) and manifest_uid(live) == workflow_uid:
+              if os.path.isdir(candidate):
+                  if os.path.exists(backup):
+                      raise RuntimeError(
+                          "Both swapped candidate and UID backup exist; refusing data loss"
+                      )
+                  os.rename(candidate, backup)
+              if not os.path.isdir(backup):
+                  raise RuntimeError("Promoted live exists but UID backup is missing")
+              update_live_manifest()
+              with open(backup_output_path, "w") as handle:
+                  handle.write(backup_host)
+              print(f"Recovered completed promotion. Backup: {backup_host}")
+              raise SystemExit(0)
 
           if not os.path.isdir(live):
               print(f"Live directory not found: {live}", file=sys.stderr)
@@ -1084,21 +1696,33 @@ spec:
           if not os.path.isdir(candidate):
               print(f"Candidate directory not found: {candidate}", file=sys.stderr)
               sys.exit(1)
+          if manifest_uid(candidate) != workflow_uid:
+              print("Candidate manifest does not match this workflow UID", file=sys.stderr)
+              sys.exit(1)
+          if os.path.exists(backup):
+              print(f"UID backup already exists: {backup}", file=sys.stderr)
+              sys.exit(1)
 
-          SYS_RENAMEAT2 = 316
+          syscall_numbers = {"x86_64": 316, "aarch64": 276}
+          machine = platform.machine().lower()
+          if machine not in syscall_numbers:
+              print(f"Unsupported architecture for renameat2: {machine}", file=sys.stderr)
+              sys.exit(1)
+          SYS_RENAMEAT2 = syscall_numbers[machine]
           RENAME_EXCHANGE = 2
           AT_FDCWD = -100
 
-          libc = ctypes.CDLL("libc.so.6", use_errno=True)
+          libc = ctypes.CDLL(None, use_errno=True)
           libc.syscall.restype = ctypes.c_long
 
+          os.sync()
           ctypes.set_errno(0)
           ret = libc.syscall(
               ctypes.c_long(SYS_RENAMEAT2),
               ctypes.c_int(AT_FDCWD),
-              live.encode(),
+              ctypes.c_char_p(os.fsencode(live)),
               ctypes.c_int(AT_FDCWD),
-              candidate.encode(),
+              ctypes.c_char_p(os.fsencode(candidate)),
               ctypes.c_uint(RENAME_EXCHANGE),
           )
           if ret != 0:
@@ -1111,39 +1735,31 @@ spec:
               sys.exit(1)
 
           print("Atomic exchange complete: live <-> candidate")
-
-          timestamp = time.strftime("%Y%m%dT%H%M%S")
-          backup_name = f"{live_base}.pre-padding-repair-{timestamp}"
-          backup = os.path.join("/mnt/parent", backup_name)
           os.rename(candidate, backup)
           print(f"Old live renamed to backup: {backup_name}")
 
-          backup_host = os.path.join(parent_host, backup_name)
-          with open("/tmp/backup_dir", "w") as f:
+          with open(backup_output_path, "w") as f:
               f.write(backup_host)
 
-          manifest_path = os.path.join(live, "padding_repair_manifest.json")
-          if os.path.isfile(manifest_path):
-              with open(manifest_path) as f:
-                  m = json.load(f)
-              m["promotion"]["state"] = "completed"
-              m["promotion"]["backup_dir"] = backup_host
-              with open(manifest_path, "w") as f:
-                  json.dump(m, f, indent=2)
+          update_live_manifest()
           print(f"Promotion complete. Backup: {backup_host}")
           # END PROMOTE_CANDIDATE_PYTHON
 
     # ═══════════════════════════════════════════════════════════════════
-    # Inline template: update-manifest-projection
-    # Records TMB publication outcome in the manifest. Runs on publish
-    # success, failure, and skip (validate mode).
+    # Inline template: finalize-repair
+    # Always records terminal validation/promotion/projection state after
+    # transaction paths exist. It can recover an exchange that completed
+    # before the old live directory was renamed to the UID backup.
     # ═══════════════════════════════════════════════════════════════════
-    - name: update-manifest-projection
+    - name: finalize-repair
       inputs:
         parameters:
           - name: sample-output-dir
           - name: candidate-dir
           - name: output-parent
+          - name: tx-root
+          - name: validation-status
+            default: ""
           - name: promote-status
             default: ""
           - name: publish-status
@@ -1156,69 +1772,150 @@ spec:
       script:
         image: python:3.11-alpine3.18
         command: [python]
+        env:
+          - name: LIVE_BASE
+            value: "{{=sprig.osBase(sprig.trimSuffix('/', inputs.parameters['sample-output-dir']))}}"
+          - name: CANDIDATE_BASE
+            value: "{{=sprig.osBase(sprig.trimSuffix('/', inputs.parameters['candidate-dir']))}}"
+          - name: TX_BASE
+            value: "{{=sprig.osBase(sprig.trimSuffix('/', inputs.parameters['tx-root']))}}"
+          - name: OUTPUT_PARENT_HOST
+            value: "{{inputs.parameters.output-parent}}"
+          - name: WORKFLOW_UID
+            value: "{{workflow.uid}}"
+          - name: REPAIR_MODE
+            value: "{{workflow.parameters.mode}}"
+          - name: VALIDATION_STATUS
+            value: "{{inputs.parameters.validation-status}}"
+          - name: PROMOTE_STATUS
+            value: "{{inputs.parameters.promote-status}}"
+          - name: PUBLISH_STATUS
+            value: "{{inputs.parameters.publish-status}}"
         volumeMounts:
           - name: output-parent
             mountPath: /mnt/parent/
         source: |
-          import json, os
+          # BEGIN FINALIZE_REPAIR_PYTHON
+          import json
+          import os
+          import shutil
+          import sys
 
-          mode = "{{workflow.parameters.mode}}"
-          promote_status = "{{inputs.parameters.promote-status}}"
-          publish_status = "{{inputs.parameters.publish-status}}"
+          uid = os.environ["WORKFLOW_UID"]
+          mode = os.environ["REPAIR_MODE"]
+          validation_status = os.environ["VALIDATION_STATUS"]
+          promote_status = os.environ["PROMOTE_STATUS"]
+          publish_status = os.environ["PUBLISH_STATUS"]
+          live_base = os.environ["LIVE_BASE"]
+          candidate_base = os.environ["CANDIDATE_BASE"]
+          tx_base = os.environ["TX_BASE"]
+          parent_host = os.environ["OUTPUT_PARENT_HOST"]
 
-          if mode == "apply" and promote_status == "Succeeded":
-              live_base = os.path.basename("{{=sprig.trimSuffix('/', inputs.parameters['sample-output-dir'])}}")
-              manifest_path = os.path.join("/mnt/parent", live_base, "padding_repair_manifest.json")
-          else:
-              cd_base = os.path.basename("{{=sprig.trimSuffix('/', inputs.parameters['candidate-dir'])}}")
-              manifest_path = os.path.join("/mnt/parent", cd_base, "padding_repair_manifest.json")
+          parent = os.environ.get("MOUNT_PARENT", "/mnt/parent")
+          live = os.path.join(parent, live_base)
+          candidate = os.path.join(parent, candidate_base)
+          tx_root = os.path.join(parent, tx_base)
+          backup_name = f"{live_base}.pre-padding-repair-{uid}"
+          backup = os.path.join(parent, backup_name)
+          backup_host = os.path.join(parent_host, backup_name)
+          recovery_errors = []
 
-          if not os.path.isfile(manifest_path):
-              print(f"Manifest not found at {manifest_path}, skipping projection update")
-              open("/tmp/ok", "w").close()
+          def load_manifest(directory):
+              path = os.path.join(directory, "padding_repair_manifest.json")
+              try:
+                  with open(path) as handle:
+                      manifest = json.load(handle)
+              except (FileNotFoundError, json.JSONDecodeError, OSError):
+                  return None, path
+              if manifest.get("workflow_uid") != uid:
+                  return None, path
+              return manifest, path
+
+          live_manifest, live_manifest_path = load_manifest(live)
+          candidate_manifest, candidate_manifest_path = load_manifest(candidate)
+
+          # Recover the only safe post-exchange partial state: new manifest
+          # is live and the old live tree is still at the candidate path.
+          if live_manifest is not None and os.path.isdir(candidate):
+              if os.path.exists(backup):
+                  recovery_errors.append(
+                      "Both swapped candidate and UID backup exist; manual recovery required"
+                  )
+              else:
+                  try:
+                      os.rename(candidate, backup)
+                      candidate_manifest = None
+                  except OSError as error:
+                      recovery_errors.append(f"Could not finish backup rename: {error}")
+
+          manifest = live_manifest or candidate_manifest
+          manifest_path = live_manifest_path if live_manifest else candidate_manifest_path
+
+          if manifest is None:
+              print("No current-workflow repair manifest exists; retaining transaction data")
               raise SystemExit(0)
 
-          with open(manifest_path) as f:
-              m = json.load(f)
+          if validation_status == "Succeeded":
+              manifest["validation"]["state"] = "validated"
+          elif validation_status in ("Failed", "Errored"):
+              manifest["validation"]["state"] = "failed"
+          else:
+              manifest["validation"]["state"] = "incomplete"
+
+          promoted = live_manifest is not None and os.path.isdir(backup)
+          if mode != "apply":
+              manifest["promotion"]["state"] = "not-applicable"
+          elif promoted and not recovery_errors:
+              manifest["promotion"]["state"] = "completed"
+              manifest["promotion"]["backup_dir"] = backup_host
+          elif recovery_errors:
+              manifest["promotion"]["state"] = "recovery-required"
+          elif promote_status in ("Failed", "Errored"):
+              manifest["promotion"]["state"] = "failed"
+          else:
+              manifest["promotion"]["state"] = "incomplete"
 
           if mode != "apply":
-              m["projection"]["state"] = "not-applicable"
+              manifest["projection"]["state"] = "not-applicable"
+          elif not promoted:
+              manifest["projection"]["state"] = "not-published"
           elif publish_status == "Succeeded":
-              m["projection"]["state"] = "published"
-          elif publish_status in ("Failed", "Error"):
-              m["projection"]["state"] = "failed"
+              manifest["projection"]["state"] = "published"
           else:
-              m["projection"]["state"] = "pending"
+              manifest["projection"]["state"] = "failed"
 
-          with open(manifest_path, "w") as f:
-              json.dump(m, f, indent=2)
-          print(f"Manifest projection updated: {m['projection']['state']}")
+          manifest["terminal_tasks"] = {
+              "validation": validation_status,
+              "promotion": promote_status,
+              "tmb_publication": publish_status,
+          }
+          if recovery_errors:
+              manifest["recovery_errors"] = recovery_errors
 
-    # ═══════════════════════════════════════════════════════════════════
-    # Inline template: cleanup-repair
-    # ═══════════════════════════════════════════════════════════════════
-    - name: cleanup-repair
-      inputs:
-        parameters:
-          - name: tx-root
-          - name: candidate-dir
-          - name: output-parent
-      volumes:
-        - name: output-parent
-          hostPath:
-            path: "{{inputs.parameters.output-parent}}"
-            type: Directory
-      script:
-        image: alpine:3.18
-        command: [sh]
-        volumeMounts:
-          - name: output-parent
-            mountPath: /mnt/parent/
-        source: |
-          set -e
-          TX_BASE="$(basename "{{=sprig.trimSuffix('/', inputs.parameters['tx-root'])}}")"
-          CD_BASE="$(basename "{{=sprig.trimSuffix('/', inputs.parameters['candidate-dir'])}}")"
+          temporary = manifest_path + ".tmp"
+          with open(temporary, "w") as handle:
+              json.dump(manifest, handle, indent=2)
+              handle.flush()
+              os.fsync(handle.fileno())
+          os.replace(temporary, manifest_path)
 
-          [ -d "/mnt/parent/${TX_BASE}" ] && rm -rf "/mnt/parent/${TX_BASE}"
-          [ -d "/mnt/parent/${CD_BASE}" ] && rm -rf "/mnt/parent/${CD_BASE}"
-          echo "Cleaned transaction paths"
+          # Remove only a positively identified UID-scoped work directory,
+          # and only after candidate validation succeeded. Candidates and
+          # backups are retained for review/recovery.
+          expected_suffix = f".repair-wk-{uid}"
+          if validation_status == "Succeeded" and tx_base.endswith(expected_suffix):
+              if os.path.isdir(tx_root):
+                  shutil.rmtree(tx_root)
+                  print(f"Removed completed transaction work directory: {tx_base}")
+
+          print(
+              "Final state: "
+              f"validation={manifest['validation']['state']} "
+              f"promotion={manifest['promotion']['state']} "
+              f"projection={manifest['projection']['state']}"
+          )
+          if recovery_errors:
+              for error in recovery_errors:
+                  print(error, file=sys.stderr)
+              raise SystemExit(1)
+          # END FINALIZE_REPAIR_PYTHON
