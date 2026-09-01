@@ -12,7 +12,7 @@ metadata:
 spec:
   workflowMetadata:
     annotations:
-      gennext.bio/source-revision: "DIRECT_FIX_COMMIT"
+      gennext.bio/source-revision: "f18a97e48067b73d28f9c4ed8c87a4662ebe671f"
   serviceAccountName: gennext-workflows
   entrypoint: padding-repair
   synchronization:

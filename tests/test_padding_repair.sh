@@ -110,6 +110,8 @@ grep -q 'ctypes.CDLL(None' "$WORKFLOW" ||
   fail "Promotion is not libc-portable"
 grep -q 'pre-padding-repair-{workflow_uid}' "$WORKFLOW" ||
   fail "Backup name is not workflow-UID scoped"
+grep -qE 'gennext.bio/source-revision: "[0-9a-f]{40}"' "$WORKFLOW" ||
+  fail "Workflow source revision is not pinned to a substantive commit"
 
 echo "=== Production-script behavior ==="
 
