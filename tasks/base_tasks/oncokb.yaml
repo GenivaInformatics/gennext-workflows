@@ -13,6 +13,10 @@ spec:
           - name: ref-version
           - name: tumor-type
             value: "."
+          - name: max-attempts
+            value: "3"
+          - name: retry-delay-seconds
+            value: "5"
       outputs:
         parameters:
           - name: annovar-oncokb-maf-f
@@ -75,7 +79,24 @@ spec:
           }
           
           # Main execution with retry logic
-          max_attempts=3
+          max_attempts="{{inputs.parameters.max-attempts}}"
+          retry_delay_seconds="{{inputs.parameters.retry-delay-seconds}}"
+          case "$max_attempts" in
+              ''|*[!0-9]*)
+                  echo "max-attempts must be a positive integer: $max_attempts" >&2
+                  exit 2
+                  ;;
+          esac
+          if [ "$max_attempts" -lt 1 ]; then
+              echo "max-attempts must be at least 1" >&2
+              exit 2
+          fi
+          case "$retry_delay_seconds" in
+              ''|*[!0-9]*)
+                  echo "retry-delay-seconds must be a non-negative integer: $retry_delay_seconds" >&2
+                  exit 2
+                  ;;
+          esac
           attempt=1
           
           while [ $attempt -le $max_attempts ]; do
@@ -95,8 +116,8 @@ spec:
               fi
               
               if [ $attempt -lt $max_attempts ]; then
-                  echo "Retrying in 5 seconds..."
-                  sleep 5
+                  echo "Retrying in $retry_delay_seconds seconds..."
+                  sleep "$retry_delay_seconds"
               fi
               
               attempt=$((attempt + 1))
@@ -123,6 +144,10 @@ spec:
           - name: oncokb-sv-out-f
           - name: tumor-type
             value: "."
+          - name: max-attempts
+            value: "3"
+          - name: retry-delay-seconds
+            value: "5"
       outputs:
         parameters:
           - name: oncokb-sv-out-f
@@ -174,7 +199,24 @@ spec:
           }
           
           # Main execution with retry logic
-          max_attempts=3
+          max_attempts="{{inputs.parameters.max-attempts}}"
+          retry_delay_seconds="{{inputs.parameters.retry-delay-seconds}}"
+          case "$max_attempts" in
+              ''|*[!0-9]*)
+                  echo "max-attempts must be a positive integer: $max_attempts" >&2
+                  exit 2
+                  ;;
+          esac
+          if [ "$max_attempts" -lt 1 ]; then
+              echo "max-attempts must be at least 1" >&2
+              exit 2
+          fi
+          case "$retry_delay_seconds" in
+              ''|*[!0-9]*)
+                  echo "retry-delay-seconds must be a non-negative integer: $retry_delay_seconds" >&2
+                  exit 2
+                  ;;
+          esac
           attempt=1
           
           while [ $attempt -le $max_attempts ]; do
@@ -194,8 +236,8 @@ spec:
               fi
               
               if [ $attempt -lt $max_attempts ]; then
-                  echo "Retrying in 5 seconds..."
-                  sleep 5
+                  echo "Retrying in $retry_delay_seconds seconds..."
+                  sleep "$retry_delay_seconds"
               fi
               
               attempt=$((attempt + 1))
@@ -222,6 +264,10 @@ spec:
           - name: oncokb-fusions-out-f
           - name: tumor-type
             value: "."
+          - name: max-attempts
+            value: "3"
+          - name: retry-delay-seconds
+            value: "5"
       outputs:
         parameters:
           - name: oncokb-fusions-out-f
@@ -273,7 +319,24 @@ spec:
           }
           
           # Main execution with retry logic
-          max_attempts=3
+          max_attempts="{{inputs.parameters.max-attempts}}"
+          retry_delay_seconds="{{inputs.parameters.retry-delay-seconds}}"
+          case "$max_attempts" in
+              ''|*[!0-9]*)
+                  echo "max-attempts must be a positive integer: $max_attempts" >&2
+                  exit 2
+                  ;;
+          esac
+          if [ "$max_attempts" -lt 1 ]; then
+              echo "max-attempts must be at least 1" >&2
+              exit 2
+          fi
+          case "$retry_delay_seconds" in
+              ''|*[!0-9]*)
+                  echo "retry-delay-seconds must be a non-negative integer: $retry_delay_seconds" >&2
+                  exit 2
+                  ;;
+          esac
           attempt=1
           
           while [ $attempt -le $max_attempts ]; do
@@ -293,8 +356,8 @@ spec:
               fi
               
               if [ $attempt -lt $max_attempts ]; then
-                  echo "Retrying in 5 seconds..."
-                  sleep 5
+                  echo "Retrying in $retry_delay_seconds seconds..."
+                  sleep "$retry_delay_seconds"
               fi
               
               attempt=$((attempt + 1))
@@ -325,6 +388,10 @@ spec:
           - name: node-name
           - name: tumor-type
             value: "."
+          - name: max-attempts
+            value: "3"
+          - name: retry-delay-seconds
+            value: "5"
       outputs:
         parameters:
           - name: annovar-oncokb-maf-f
@@ -387,7 +454,24 @@ spec:
           }
           
           # Main execution with retry logic
-          max_attempts=3
+          max_attempts="{{inputs.parameters.max-attempts}}"
+          retry_delay_seconds="{{inputs.parameters.retry-delay-seconds}}"
+          case "$max_attempts" in
+              ''|*[!0-9]*)
+                  echo "max-attempts must be a positive integer: $max_attempts" >&2
+                  exit 2
+                  ;;
+          esac
+          if [ "$max_attempts" -lt 1 ]; then
+              echo "max-attempts must be at least 1" >&2
+              exit 2
+          fi
+          case "$retry_delay_seconds" in
+              ''|*[!0-9]*)
+                  echo "retry-delay-seconds must be a non-negative integer: $retry_delay_seconds" >&2
+                  exit 2
+                  ;;
+          esac
           attempt=1
           
           while [ $attempt -le $max_attempts ]; do
@@ -407,8 +491,8 @@ spec:
               fi
               
               if [ $attempt -lt $max_attempts ]; then
-                  echo "Retrying in 5 seconds..."
-                  sleep 5
+                  echo "Retrying in $retry_delay_seconds seconds..."
+                  sleep "$retry_delay_seconds"
               fi
               
               attempt=$((attempt + 1))
@@ -438,6 +522,10 @@ spec:
           - name: node-name
           - name: tumor-type
             value: "."
+          - name: max-attempts
+            value: "3"
+          - name: retry-delay-seconds
+            value: "5"
       outputs:
         parameters:
           - name: oncokb-sv-out-f
@@ -489,7 +577,24 @@ spec:
           }
           
           # Main execution with retry logic
-          max_attempts=3
+          max_attempts="{{inputs.parameters.max-attempts}}"
+          retry_delay_seconds="{{inputs.parameters.retry-delay-seconds}}"
+          case "$max_attempts" in
+              ''|*[!0-9]*)
+                  echo "max-attempts must be a positive integer: $max_attempts" >&2
+                  exit 2
+                  ;;
+          esac
+          if [ "$max_attempts" -lt 1 ]; then
+              echo "max-attempts must be at least 1" >&2
+              exit 2
+          fi
+          case "$retry_delay_seconds" in
+              ''|*[!0-9]*)
+                  echo "retry-delay-seconds must be a non-negative integer: $retry_delay_seconds" >&2
+                  exit 2
+                  ;;
+          esac
           attempt=1
           
           while [ $attempt -le $max_attempts ]; do
@@ -509,8 +614,8 @@ spec:
               fi
               
               if [ $attempt -lt $max_attempts ]; then
-                  echo "Retrying in 5 seconds..."
-                  sleep 5
+                  echo "Retrying in $retry_delay_seconds seconds..."
+                  sleep "$retry_delay_seconds"
               fi
               
               attempt=$((attempt + 1))

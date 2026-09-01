@@ -6,6 +6,7 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 cd "$REPO_ROOT"
 
 WORKFLOW=workflows/somatic/v2/somatic-dna-padding-repair.yaml
+ONCOKB=tasks/base_tasks/oncokb.yaml
 
 fail() {
   echo "FAIL: $*" >&2
@@ -63,6 +64,7 @@ bcftools=$(task_block bcftools-filter)
 compute_tmb=$(task_block compute-tmb)
 publish_tmb=$(task_block publish-tmb)
 finalize=$(task_block finalize)
+oncokb_snv=$(task_block oncokb-snv)
 
 grep -A1 'name: regions-file' <<< "$mutect" | grep -q validated-bed-analysis-file ||
   fail "Mutect2 does not consume the padded analysis BED"
@@ -84,6 +86,25 @@ grep -q 'test:///mnt/output/tmb_api_payload.json' "$WORKFLOW" ||
   fail "TMB compute does not stage the exact API payload"
 grep -q -- '--api-token STAGED' "$WORKFLOW" ||
   fail "TMB compute does not use the non-secret staged token"
+
+[[ $(grep -c '^          - name: max-attempts$' "$ONCOKB") == 5 ]] ||
+  fail "Every OncoKB template must expose max-attempts"
+[[ $(grep -c '^            value: "3"$' "$ONCOKB") == 5 ]] ||
+  fail "Every OncoKB max-attempts parameter must default to 3"
+[[ $(grep -c '^          - name: retry-delay-seconds$' "$ONCOKB") == 5 ]] ||
+  fail "Every OncoKB template must expose retry-delay-seconds"
+[[ $(grep -c '^            value: "5"$' "$ONCOKB") == 5 ]] ||
+  fail "Every OncoKB retry-delay-seconds parameter must default to 5"
+[[ $(grep -c 'max_attempts="{{inputs.parameters.max-attempts}}"' "$ONCOKB") == 5 ]] ||
+  fail "Every OncoKB retry loop must consume max-attempts"
+[[ $(grep -c 'retry_delay_seconds="{{inputs.parameters.retry-delay-seconds}}"' "$ONCOKB") == 5 ]] ||
+  fail "Every OncoKB retry loop must consume retry-delay-seconds"
+[[ $(grep -c 'sleep "$retry_delay_seconds"' "$ONCOKB") == 5 ]] ||
+  fail "Every OncoKB retry loop must use the configured delay"
+grep -A1 'name: max-attempts' <<< "$oncokb_snv" | grep -q 'value: "12"' ||
+  fail "Padding repair does not request 12 OncoKB attempts"
+grep -A1 'name: retry-delay-seconds' <<< "$oncokb_snv" | grep -q 'value: "30"' ||
+  fail "Padding repair does not request a 30-second OncoKB retry delay"
 
 for terminal in \
   promote.Failed promote.Errored promote.Omitted \
@@ -360,6 +381,52 @@ mv "$TEST_DIR/analysis.good" "$CANDIDATE/metrics/bed_validation/$ANALYSIS_BED_NA
 env "${COMMON_MANIFEST_ENV[@]}" PATH="$TEST_DIR/bin:$PATH" \
   python3 "$TEST_DIR/write_manifest.py"
 
+# A successful validate finalizer must record completion and exit zero.
+env \
+  MOUNT_PARENT="$PARENT" \
+  LIVE_BASE="$LIVE_BASE" \
+  CANDIDATE_BASE="$CANDIDATE_BASE" \
+  TX_BASE="$TX_BASE" \
+  OUTPUT_PARENT_HOST=/host/output/ \
+  WORKFLOW_UID=test-uid \
+  REPAIR_MODE=validate \
+  VALIDATION_STATUS=Succeeded \
+  PROMOTE_STATUS=Skipped \
+  PUBLISH_STATUS=Skipped \
+  PATH="$TEST_DIR/bin:$PATH" \
+  python3 "$TEST_DIR/finalize.py"
+PATH="$TEST_DIR/bin:$PATH" python3 - "$CANDIDATE/padding_repair_manifest.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1]) as handle:
+    manifest = json.load(handle)
+assert manifest["validation"]["state"] == "validated"
+assert manifest["promotion"]["state"] == "not-applicable"
+assert manifest["projection"]["state"] == "not-applicable"
+PY
+
+# Missing manifest plus an omitted validation must fail and retain transaction data.
+INCOMPLETE_PARENT="$TEST_DIR/incomplete"
+mkdir -p "$INCOMPLETE_PARENT/live" "$INCOMPLETE_PARENT/live.repair-wk-incomplete-uid"
+if env \
+  MOUNT_PARENT="$INCOMPLETE_PARENT" \
+  LIVE_BASE=live \
+  CANDIDATE_BASE=live.repair-cd-incomplete-uid \
+  TX_BASE=live.repair-wk-incomplete-uid \
+  OUTPUT_PARENT_HOST=/host/output/ \
+  WORKFLOW_UID=incomplete-uid \
+  REPAIR_MODE=validate \
+  VALIDATION_STATUS=Omitted \
+  PROMOTE_STATUS=Omitted \
+  PUBLISH_STATUS=Omitted \
+  PATH="$TEST_DIR/bin:$PATH" \
+  python3 "$TEST_DIR/finalize.py" >/dev/null 2>&1; then
+  fail "Finalizer accepted an omitted validation with no repair manifest"
+fi
+[[ -d $INCOMPLETE_PARENT/live.repair-wk-incomplete-uid ]] ||
+  fail "Failed finalization removed incomplete transaction data"
+
 # Atomic promotion must retain a UID backup and be idempotently recoverable.
 PROMOTE_PARENT="$TEST_DIR/promote"
 mkdir -p "$PROMOTE_PARENT/live" "$PROMOTE_PARENT/candidate"
@@ -382,9 +449,9 @@ env "${PROMOTE_ENV[@]}" PATH="$TEST_DIR/bin:$PATH" python3 "$TEST_DIR/promote.py
   fail "Old live tree was not retained as the UID backup"
 env "${PROMOTE_ENV[@]}" PATH="$TEST_DIR/bin:$PATH" python3 "$TEST_DIR/promote.py"
 
-# Finalization must record Errored publication and clean only successful UID work.
+# Finalization must record Errored publication, fail, and clean validated UID work.
 mkdir -p "$PROMOTE_PARENT/live.repair-wk-promote-uid"
-env \
+if env \
   MOUNT_PARENT="$PROMOTE_PARENT" \
   LIVE_BASE=live \
   CANDIDATE_BASE=candidate \
@@ -396,7 +463,9 @@ env \
   PROMOTE_STATUS=Succeeded \
   PUBLISH_STATUS=Errored \
   PATH="$TEST_DIR/bin:$PATH" \
-  python3 "$TEST_DIR/finalize.py"
+  python3 "$TEST_DIR/finalize.py"; then
+  fail "Finalizer accepted an Errored TMB publication"
+fi
 [[ ! -e $PROMOTE_PARENT/live.repair-wk-promote-uid ]] ||
   fail "Successful UID transaction work was not cleaned"
 PATH="$TEST_DIR/bin:$PATH" python3 - "$PROMOTE_PARENT/live/padding_repair_manifest.json" <<'PY'

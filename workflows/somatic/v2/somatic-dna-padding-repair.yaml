@@ -266,6 +266,10 @@ spec:
                   value: "{{tasks.load-and-prepare-dna.outputs.parameters.ref-version}}"
                 - name: tumor-type
                   value: "{{tasks.load-and-prepare-dna.outputs.parameters.tumor-type}}"
+                - name: max-attempts
+                  value: "12"
+                - name: retry-delay-seconds
+                  value: "30"
             depends: "annovar-to-maf"
 
           # ── 14. Determine OtherInfo column names ───────────────────
@@ -1819,6 +1823,7 @@ spec:
           backup = os.path.join(parent, backup_name)
           backup_host = os.path.join(parent_host, backup_name)
           recovery_errors = []
+          terminal_errors = []
 
           def load_manifest(directory):
               path = os.path.join(directory, "padding_repair_manifest.json")
@@ -1852,8 +1857,11 @@ spec:
           manifest_path = live_manifest_path if live_manifest else candidate_manifest_path
 
           if manifest is None:
-              print("No current-workflow repair manifest exists; retaining transaction data")
-              raise SystemExit(0)
+              print(
+                  "No current-workflow repair manifest exists; retaining transaction data",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
 
           if validation_status == "Succeeded":
               manifest["validation"]["state"] = "validated"
@@ -1889,6 +1897,19 @@ spec:
               "promotion": promote_status,
               "tmb_publication": publish_status,
           }
+          if validation_status != "Succeeded":
+              terminal_errors.append(
+                  f"Candidate validation did not succeed: {validation_status or 'Missing'}"
+              )
+          if mode == "apply":
+              if promote_status != "Succeeded":
+                  terminal_errors.append(
+                      f"Candidate promotion did not succeed: {promote_status or 'Missing'}"
+                  )
+              if publish_status != "Succeeded":
+                  terminal_errors.append(
+                      f"TMB publication did not succeed: {publish_status or 'Missing'}"
+                  )
           if recovery_errors:
               manifest["recovery_errors"] = recovery_errors
 
@@ -1914,8 +1935,8 @@ spec:
               f"promotion={manifest['promotion']['state']} "
               f"projection={manifest['projection']['state']}"
           )
-          if recovery_errors:
-              for error in recovery_errors:
+          if recovery_errors or terminal_errors:
+              for error in recovery_errors + terminal_errors:
                   print(error, file=sys.stderr)
               raise SystemExit(1)
           # END FINALIZE_REPAIR_PYTHON
