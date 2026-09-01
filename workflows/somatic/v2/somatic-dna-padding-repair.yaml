@@ -12,7 +12,7 @@ metadata:
 spec:
   workflowMetadata:
     annotations:
-      gennext.bio/source-revision: "d5a560f8027b0b09bd2fcda2646f03b03a639bc8"
+      gennext.bio/source-revision: "695c59cb04a9df1863f1b4228f544b8fa0d304cf"
   serviceAccountName: gennext-workflows
   entrypoint: padding-repair
   synchronization:
