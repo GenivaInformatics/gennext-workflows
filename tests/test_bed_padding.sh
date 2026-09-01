@@ -47,8 +47,8 @@ if grep -q 'cp .*validAnalysisBedName' "$BED_VALIDATOR"; then
 fi
 
 yaml_opt_ins=$(grep -R --include='*.yaml' -h 'name: generate-padded-artifacts' tasks workflows | wc -l)
-[[ $yaml_opt_ins == 3 ]] ||
-  fail "expected one parameter definition and two v2 opt-ins, found $yaml_opt_ins"
+[[ $yaml_opt_ins == 4 ]] ||
+  fail "expected one parameter definition and three opt-ins (two v2 + repair), found $yaml_opt_ins"
 
 for workflow in "${WORKFLOWS[@]}"; do
   validator=$(task_block validate-bed-file "$workflow")
@@ -85,11 +85,14 @@ for workflow in "${WORKFLOWS[@]}"; do
 done
 
 analysis_consumers=$(grep -R --include='*.yaml' -h 'validated-bed-analysis-file' workflows | wc -l)
-[[ $analysis_consumers == 4 ]] ||
-  fail "expected exactly four analysis BED consumers, found $analysis_consumers"
-if grep -R --include='*.yaml' -q 'validated-bed-igv-file' workflows; then
-  fail "the presentation-only IGV BED must not be passed to analysis tasks"
-fi
+[[ $analysis_consumers == 8 ]] ||
+  fail "expected exactly eight analysis BED consumers (bam:2 + fastq:2 + repair:4), found $analysis_consumers"
+# The IGV BED may only appear in validation contexts (e.g. padding-repair's
+# validate-candidate), never as input to an analysis tool like Mutect2/bcftools/TMB.
+igv_non_validation=$(grep -R --include='*.yaml' -h 'validated-bed-igv-file' workflows |
+  { grep -v 'validate-candidate\|validate-bed\|igv-bed' || true; } | wc -l)
+[[ $igv_non_validation == 0 ]] ||
+  fail "the presentation-only IGV BED is passed to non-validation analysis tasks ($igv_non_validation occurrences)"
 
 direct_padding=$(grep -c -- '--interval-padding 100' "$MUTECT2_TEMPLATE")
 [[ $direct_padding == 2 ]] ||
