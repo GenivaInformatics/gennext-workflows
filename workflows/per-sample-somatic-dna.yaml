@@ -80,6 +80,8 @@ spec:
                   value: "{{workflow.parameters.sample-uuid}}"
                 - name: dna-input-files
                   value: "{{tasks.load-and-prepare-dna.outputs.parameters.dna-input-files}}"
+                - name: sample-run-data
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-run-data}}"
                 - name: tumor-type
                   value: "{{tasks.load-and-prepare-dna.outputs.parameters.tumor-type}}"
                 - name: ref-version
@@ -118,6 +120,8 @@ spec:
                   value: "{{workflow.parameters.sample-uuid}}"
                 - name: dna-input-files
                   value: "{{tasks.load-and-prepare-dna.outputs.parameters.dna-input-files}}"
+                - name: sample-run-data
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-run-data}}"
                 - name: tumor-type
                   value: "{{tasks.load-and-prepare-dna.outputs.parameters.tumor-type}}"
                 - name: ref-version

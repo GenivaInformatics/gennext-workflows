@@ -13,6 +13,9 @@ spec:
           - name: sample-id
           - name: sample-uuid
           - name: dna-input-files
+          # Raw per-sample manifest from the backend. Carries msiMinCoverage,
+          # the per-kit MSI depth gate consumed by filter-msisensor-pro below.
+          - name: sample-run-data
           - name: tumor-type
           - name: ref-version
           - name: ref-paths
@@ -521,8 +524,13 @@ spec:
                   value: "{{tasks.msisensor-pro.outputs.parameters.output-tsv}}_all"
                 - name: regions-bed-f
                   value: "{{= jsonpath(inputs.parameters['dna-input-files'], '$.msiBedFile') != '' ? tasks['validate-msi-bed-file'].outputs.parameters['validated-bed-file'] : tasks['validate-bed-file'].outputs.parameters['validated-bed-file'] }}"
+                # Per-kit MSI depth gate, from enrichment_kits.msi_min_coverage.
+                # The backend resolves the default and emits msiMinCoverage at the
+                # top level of every sample, never null, so this is a plain lookup:
+                # no kit, or a kit that pins nothing, already arrives as 500.
+                # Requires backend >= the release adding RunManifestSample.msiMinCoverage.
                 - name: min-coverage
-                  value: "500"
+                  value: "{{=jsonpath(inputs.parameters['sample-run-data'], '$.msiMinCoverage')}}"
                 - name: filtered-output-tsv
                   value: "{{inputs.parameters.sample-temp-dir}}metrics/msi/{{inputs.parameters.sample-id}}_msi_filtered.tsv"
                 - name: summary-output-json
