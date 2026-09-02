@@ -525,12 +525,22 @@ spec:
                 - name: regions-bed-f
                   value: "{{= jsonpath(inputs.parameters['dna-input-files'], '$.msiBedFile') != '' ? tasks['validate-msi-bed-file'].outputs.parameters['validated-bed-file'] : tasks['validate-bed-file'].outputs.parameters['validated-bed-file'] }}"
                 # Per-kit MSI depth gate, from enrichment_kits.msi_min_coverage.
-                # The backend resolves the default and emits msiMinCoverage at the
-                # top level of every sample, never null, so this is a plain lookup:
-                # no kit, or a kit that pins nothing, already arrives as 500.
-                # Requires backend >= the release adding RunManifestSample.msiMinCoverage.
+                #
+                # sample-run-data is the run manifest (type: runManifest), so the
+                # per-sample fields live under samples[]. The per-sample workflows
+                # resolve exactly one sample, which is why samples[0] is the
+                # established idiom here -- see the files.* lookups above.
+                #
+                # The backend resolves the default, so this is a plain lookup that
+                # cannot fail: a kit pinning nothing, or a sample with no kit at
+                # all, already arrives as 500. Argo 3.4's jsonpath() errors on a
+                # missing path and then emits the unevaluated template text as the
+                # parameter value, which reaches the filter script as a Python
+                # syntax error -- so the path has to be exactly right, and the
+                # backend has to be new enough to emit the field.
+                # Requires backend >= 0.83.0 (RunManifestSample.msiMinCoverage).
                 - name: min-coverage
-                  value: "{{=jsonpath(inputs.parameters['sample-run-data'], '$.msiMinCoverage')}}"
+                  value: "{{=jsonpath(inputs.parameters['sample-run-data'], '$.samples[0].msiMinCoverage')}}"
                 - name: filtered-output-tsv
                   value: "{{inputs.parameters.sample-temp-dir}}metrics/msi/{{inputs.parameters.sample-id}}_msi_filtered.tsv"
                 - name: summary-output-json
