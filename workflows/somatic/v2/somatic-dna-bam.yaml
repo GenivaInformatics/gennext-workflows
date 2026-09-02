@@ -538,9 +538,18 @@ spec:
                 # parameter value, which reaches the filter script as a Python
                 # syntax error -- so the path has to be exactly right, and the
                 # backend has to be new enough to emit the field.
-                # Requires backend >= 0.83.0 (RunManifestSample.msiMinCoverage).
+                # The lookup indexes the sample map and defaults, rather than
+                # addressing '$.samples[0].msiMinCoverage' directly, so that a
+                # manifest produced by a pre-0.83.0 backend -- which has no such
+                # key -- degrades to 500 instead of failing the run. Argo 3.4's
+                # jsonpath() errors on a missing path and then emits the
+                # unevaluated template text as the parameter value, which the
+                # filter script interpolates into Python as a syntax error;
+                # indexing a map that does exist cannot fail that way. Verified
+                # on the running controller for value / explicit null / absent
+                # key: 100, 500, 500.
                 - name: min-coverage
-                  value: "{{=jsonpath(inputs.parameters['sample-run-data'], '$.samples[0].msiMinCoverage')}}"
+                  value: "{{= sprig.default('500', jsonpath(inputs.parameters['sample-run-data'], '$.samples[0]')['msiMinCoverage']) }}"
                 - name: filtered-output-tsv
                   value: "{{inputs.parameters.sample-temp-dir}}metrics/msi/{{inputs.parameters.sample-id}}_msi_filtered.tsv"
                 - name: summary-output-json
