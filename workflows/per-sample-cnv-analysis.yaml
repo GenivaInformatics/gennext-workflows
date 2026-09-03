@@ -254,11 +254,46 @@ spec:
             /output/${SAMPLE_ID}.cnr \
             -o /output/${SAMPLE_ID}.cns
 
-          # Call with BAF from VCF (produces cn1, cn2 columns).
+          # cnvkit's -v expects germline HETEROZYGOUS SNPs: their BAF sits at ~0.5,
+          # and drift away from it is the allele-imbalance signal that produces
+          # cn1/cn2. What we pass is the vLoD *somatic* call set, which is the
+          # wrong population. cnvkit's own heterozygous() filter reads zygosity
+          # from GT, and Mutect2 in tumour-only mode emits 0/1 for every call
+          # (observed at AF 0.994), so that filter is a no-op: homozygous
+          # germline and low-VAF somatic calls both reach the BAF. cnvkit then
+          # mirrors BAF about 0.5, so 0.03 and 0.97 both collapse to ~0,
+          # upper_baf approaches 1, cn2 rounds to 0, and the genome reads as
+          # near-universal LOH. Measured across nine TSO500 samples: 80-98% of
+          # segments called LOH, median segment BAF 0.025-0.167.
+          #
+          # Selecting PASS sites with 0.25 <= VAF <= 0.75 restores it: median
+          # segment BAF 0.395-0.601, LOH-called segments 32-52%.
+          HET_VCF="/output/${SAMPLE_ID}.het.vcf"
+          case "$VCF" in *.gz) READ_VCF="gzip -dc";; *) READ_VCF="cat";; esac
+          $READ_VCF "$VCF" | awk -F'\t' -v OFS='\t' '
+            /^#/ { print; next }
+            $7 != "PASS" { next }
+            {
+              split($9, k, ":"); split($10, v, ":"); af = ""
+              for (i in k) if (k[i] == "AF") { split(v[i], a, ","); af = a[1] }
+              if (af == "") next
+              if (af + 0 >= 0.25 && af + 0 <= 0.75) print
+            }' > "$HET_VCF"
+          N_HET=$(grep -vc '^#' "$HET_VCF" || true)
+          echo "BAF sites after germline-heterozygote selection: $N_HET"
+          # Deliberately no fallback to the unfiltered VCF: too few het sites
+          # means there is no allelic information, and scarhrd-cli's
+          # --unsupported-segments balanced handles the resulting empty BAF
+          # honestly. Falling back would reinstate the artefact.
+          if [ "$N_HET" -lt 50 ]; then
+            echo "WARN: only $N_HET heterozygous BAF sites; allele-specific copy number will be sparse" >&2
+          fi
+
+          # Call with BAF from the germline-heterozygote subset (produces cn1, cn2).
           cnvkit.py call \
             --drop-low-coverage \
             /output/${SAMPLE_ID}.cns \
-            -v "$VCF" \
+            -v "$HET_VCF" \
             -i ${SAMPLE_ID} \
             --ploidy 2 \
             -o /output/${SAMPLE_ID}.call.cns
@@ -267,7 +302,7 @@ spec:
           cnvkit.py scatter \
             /output/${SAMPLE_ID}.cnr \
             -s /output/${SAMPLE_ID}.call.cns \
-            -v "$VCF" \
+            -v "$HET_VCF" \
             -o /output/${SAMPLE_ID}-scatter.png
 
           # Export to VCF from the called segments. Must be .call.cns (integer
