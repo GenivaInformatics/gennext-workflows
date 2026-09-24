@@ -271,7 +271,7 @@ spec:
           - name: ref-flat
           - name: thread-count
       container:
-        image: bergun/gennext-cnv-cohort-builder:0.1.1
+        image: bergun/gennext-cnv-cohort-builder:0.1.2-wgs
         args:
           - "ensure-kit"
           - "--kit-bed=/ref/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}}"
@@ -423,7 +423,11 @@ spec:
           # segment/call/genemetrics, where the actual filtering matters);
           # low-coverage bins are still emitted to .cnr with log2=-20 sentinel
           # but get excluded downstream by the --drop-low-coverage on segment.
-          cnvkit.py fix \
+          EDGE_FLAG=""
+          if [ -f "$KIT_DIR/cnv-mode.txt" ] && [ "$(cat "$KIT_DIR/cnv-mode.txt")" = wgs ]; then
+            EDGE_FLAG="--no-edge"
+          fi
+          cnvkit.py fix $EDGE_FLAG \
             /scratch/cnv/coverage/${SAMPLE_ID}.targetcoverage.cnn \
             /scratch/cnv/coverage/${SAMPLE_ID}.antitargetcoverage.cnn \
             "$KIT_DIR/pooled_reference.cnn" \

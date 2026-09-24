@@ -241,7 +241,11 @@ spec:
           # segment/call/genemetrics, where the actual filtering matters);
           # low-coverage bins are still emitted to .cnr with log2=-20 sentinel
           # but get excluded downstream by the --drop-low-coverage on segment.
-          cnvkit.py fix \
+          EDGE_FLAG=""
+          if [ -f /scratch/references/cnv-mode.txt ] && [ "$(cat /scratch/references/cnv-mode.txt)" = wgs ]; then
+            EDGE_FLAG="--no-edge"
+          fi
+          cnvkit.py fix $EDGE_FLAG \
             /scratch/coverage/${UUID}.targetcoverage.cnn \
             /scratch/coverage/${UUID}.antitargetcoverage.cnn \
             /scratch/references/pooled_reference.cnn \

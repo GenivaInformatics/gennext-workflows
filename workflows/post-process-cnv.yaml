@@ -104,6 +104,10 @@ spec:
             template: cnvkit-build-reference
             arguments:
               parameters:
+                - name: kit-references-dir
+                  value: "{{=sprig.osDir(sprig.osDir(tasks['batch-load-and-prepare'].outputs.parameters['ref-flat']))}}/other/cnvkit/"
+                - name: regions-file
+                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.regions-file}}"
                 - name: ref-genome
                   value: "{{tasks.batch-load-and-prepare.outputs.parameters.ref-genome}}"
                 - name: scratch-cnv-dir
@@ -173,29 +177,17 @@ spec:
           - name: ref-flat
           - name: scratch-cnv-dir
       script:
-        image: quay.io/biocontainers/cnvkit:0.9.13--pyhdfd78af_0
+        image: bergun/gennext-cnv-cohort-builder:0.1.2-wgs
         command: [sh]
         source: |
           set -e
           mkdir -p /scratch/references /scratch/coverage
 
-          # Generate accessible regions
-          cnvkit.py access \
-            /ref/genome/{{=sprig.osBase(inputs.parameters['ref-genome'])}} \
-            -o /scratch/references/access.bed
-
-          # Process capture regions with gene annotations
-          cnvkit.py target \
-            /ref/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}} \
-            --annotate /ref/refflat/{{=sprig.osBase(inputs.parameters['ref-flat'])}} \
-            --split \
-            -o /scratch/references/targets.bed
-
-          # Generate antitarget regions
-          cnvkit.py antitarget \
-            /scratch/references/targets.bed \
-            -g /scratch/references/access.bed \
-            -o /scratch/references/antitargets.bed
+          cnv-cohort-builder prepare-bins \
+            --kit-bed /ref/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}} \
+            --ref-fa /ref/genome/{{=sprig.osBase(inputs.parameters['ref-genome'])}} \
+            --ref-flat /ref/refflat/{{=sprig.osBase(inputs.parameters['ref-flat'])}} \
+            --output-dir /scratch/references --mode auto --wgs-bin-size 10000
         volumeMounts:
           - name: ref-genome-dir
             mountPath: /ref/genome/
@@ -255,11 +247,16 @@ spec:
             /scratch/references/targets.bed \
             -o /scratch/coverage/${UUID}.targetcoverage.cnn
 
-          # Antitarget coverage
-          cnvkit.py coverage \
-            "$BAM_PATH" \
-            /scratch/references/antitargets.bed \
-            -o /scratch/coverage/${UUID}.antitargetcoverage.cnn
+          # WGS has no off-target bins.
+          if [ -s /scratch/references/antitargets.bed ]; then
+            cnvkit.py coverage \
+              "$BAM_PATH" \
+              /scratch/references/antitargets.bed \
+              -o /scratch/coverage/${UUID}.antitargetcoverage.cnn
+          else
+            printf 'chromosome\tstart\tend\tgene\tdepth\tlog2\n' \
+              > /scratch/coverage/${UUID}.antitargetcoverage.cnn
+          fi
         volumeMounts:
           - name: scratch
             mountPath: /scratch/
@@ -282,6 +279,8 @@ spec:
     - name: cnvkit-build-reference
       inputs:
         parameters:
+          - name: kit-references-dir
+          - name: regions-file
           - name: ref-genome
           - name: scratch-cnv-dir
       script:
@@ -289,17 +288,34 @@ spec:
         command: [sh]
         source: |
           set -e
-          cnvkit.py reference \
-            /scratch/coverage/*.cnn \
-            -f /ref/genome/{{=sprig.osBase(inputs.parameters['ref-genome'])}} \
-            -o /scratch/references/pooled_reference.cnn
+          if [ "$(cat /scratch/references/cnv-mode.txt)" = wgs ]; then
+            # A WGS tumor must never serve as its own normal. The main workflow
+            # builds this healthy-cohort reference before batch post-processing.
+            KIT_DIR="/kits/{{=sprig.trimSuffix(".bed", sprig.osBase(inputs.parameters['regions-file']))}}"
+            test "$(cat "$KIT_DIR/cnv-mode.txt")" = wgs
+            cmp /scratch/references/targets.bed "$KIT_DIR/targets.bed"
+            test -s "$KIT_DIR/pooled_reference.cnn"
+            cp "$KIT_DIR/pooled_reference.cnn" /scratch/references/pooled_reference.cnn
+          else
+            cnvkit.py reference \
+              /scratch/coverage/*.cnn \
+              -f /ref/genome/{{=sprig.osBase(inputs.parameters['ref-genome'])}} \
+              -o /scratch/references/pooled_reference.cnn
+          fi
         volumeMounts:
+          - name: kit-references
+            mountPath: /kits/
+            readOnly: true
           - name: ref-genome-dir
             mountPath: /ref/genome/
             readOnly: true
           - name: scratch
             mountPath: /scratch/
       volumes:
+        - name: kit-references
+          hostPath:
+            path: "{{inputs.parameters.kit-references-dir}}"
+            type: DirectoryOrCreate
         - name: ref-genome-dir
           hostPath:
             path: "{{=sprig.osDir(inputs.parameters['ref-genome'])}}"

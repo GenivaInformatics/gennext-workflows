@@ -21,7 +21,7 @@ Usage:
       --ref-flat  /ref/refflat/refFlat.txt \\
       --kits-dir  /kits \\
       [--kit-name <name>]              # default: <kit-bed basename minus .bed>
-      [--mode hybrid|amplicon|auto]    # default: auto
+      [--mode hybrid|amplicon|wgs|auto]    # default: auto
       [--workers 12]
 """
 
@@ -175,6 +175,42 @@ def detect_panel_mode(bed: Path, mb_threshold: float = 1.0) -> tuple[str, dict]:
                   "mb_threshold": mb_threshold}
 
 
+def resolve_mode(kit_bed: Path, ref_fa: Path, requested: str) -> str:
+    """Recognize whole-chromosome BEDs against the exact FASTA index.
+
+    Do not infer WGS from panel size alone. Every interval must cover an entire
+    indexed contig and at least one interval must be present.
+    """
+    if requested != "auto":
+        return requested
+    fai = Path(str(ref_fa) + ".fai")
+    if fai.exists():
+        sizes = {r.split("\t")[0]: int(r.split("\t")[1])
+                 for r in fai.read_text().splitlines() if r.strip()}
+        rows = load_bins(kit_bed, None)
+        if rows and all(start == 0 and sizes.get(chrom) == end
+                        for chrom, start, end, _ in rows):
+            return "wgs"
+    return detect_panel_mode(kit_bed)[0]
+
+
+def intersect_access(kit_bed: Path, access_bed: Path, output: Path) -> None:
+    """Restrict accessible regions to the kit's selected chromosomes/intervals."""
+    allowed: dict[str, list[tuple[int, int]]] = {}
+    for chrom, start, end, _ in load_bins(kit_bed, None):
+        allowed.setdefault(chrom, []).append((start, end))
+    count = 0
+    with output.open("w") as handle:
+        for chrom, start, end, _ in load_bins(access_bed, None):
+            for left, right in allowed.get(chrom, []):
+                lo, hi = max(start, left), min(end, right)
+                if lo < hi:
+                    handle.write(f"{chrom}\t{lo}\t{hi}\n")
+                    count += 1
+    if not count:
+        raise RuntimeError("WGS kit has no overlap with accessible reference regions")
+
+
 def load_bins(bed: Path, default_gene: str | None) -> list[tuple[str, int, int, str]]:
     """Parse a CNVkit-format BED into (chrom, start, end, gene) rows in BED order.
 
@@ -252,22 +288,32 @@ def synthesize_cnn_for_sample(
 
 
 def build_target_beds(kit_bed: Path, ref_flat: Path, access_bed: Path,
-                      kit_dir: Path, mode: str, log_dir: Path) -> tuple[Path, Path]:
-    """Run cnvkit target [+ antitarget]. Amplicon mode writes an empty
+                      kit_dir: Path, mode: str, log_dir: Path,
+                      wgs_bin_size: int = 10000) -> tuple[Path, Path]:
+    """Run cnvkit target [+ antitarget]. WGS and amplicon modes write an empty
     antitargets.bed so the rest of the pipeline still finds the file but no
     antitarget bins are processed (matches cnv-ref-dataset's amplicon path)."""
     targets = kit_dir / "targets.bed"
     antitargets = kit_dir / "antitargets.bed"
 
+    source_bed = kit_bed
+    extra = []
+    if mode == "wgs":
+        if wgs_bin_size < 1000:
+            raise ValueError("WGS bin size must be at least 1000 bases")
+        source_bed = kit_dir / "wgs-access.bed"
+        intersect_access(kit_bed, access_bed, source_bed)
+        extra = ["--avg-size", str(wgs_bin_size)]
+    (kit_dir / "cnv-mode.txt").write_text(mode + "\n")
     print(f"  cnvkit target  -> {targets.name}", flush=True)
     cnvkit(
-        ["target", str(kit_bed), "--annotate", str(ref_flat), "--split",
+        ["target", str(source_bed), "--annotate", str(ref_flat), "--split", *extra,
          "-o", str(targets)],
         log=log_dir / f"cnvkit_target_{kit_dir.name}.log",
     )
 
-    if mode == "amplicon":
-        print(f"  amplicon mode: writing empty {antitargets.name}", flush=True)
+    if mode in ("amplicon", "wgs"):
+        print(f"  {mode} mode: writing empty {antitargets.name}", flush=True)
         antitargets.write_text("")
     else:
         print(f"  cnvkit antitarget -> {antitargets.name}", flush=True)
@@ -296,16 +342,17 @@ def ensure_access_bed(ref_fa: Path, kit_dir: Path, log_dir: Path) -> Path:
     return out
 
 
-def build_pooled_reference(kit_dir: Path, ref_fa: Path, log_dir: Path) -> Path:
+def build_pooled_reference(kit_dir: Path, ref_fa: Path, log_dir: Path, mode: str = "hybrid") -> Path:
     """Pool the per-cohort-sample cnns into pooled_reference.cnn."""
     coverage_dir = kit_dir / "coverage"
-    cnns = sorted(coverage_dir.glob("*.cnn"))
+    cnns = sorted(coverage_dir.glob("*.targetcoverage.cnn" if mode == "wgs" else "*.cnn"))
     if not cnns:
         raise RuntimeError(f"no cnn files in {coverage_dir}")
     out = kit_dir / "pooled_reference.cnn"
     print(f"  cnvkit reference ({len(cnns)} cnns) -> {out.name}", flush=True)
     cnvkit(
-        ["reference", *[str(p) for p in cnns], "-f", str(ref_fa), "-o", str(out)],
+        ["reference", *[str(p) for p in cnns], "-f", str(ref_fa),
+         *(["--no-edge"] if mode == "wgs" else []), "-o", str(out)],
         log=log_dir / f"cnvkit_reference_{kit_dir.name}.log",
     )
     return out
@@ -333,7 +380,7 @@ def d4tools_version() -> str:
 
 
 def write_metadata(kit_dir: Path, kit_bed: Path, cohort_d4: Path, samples: list[str],
-                   ref_fa: Path, ref_flat: Path, mode: str) -> None:
+                   ref_fa: Path, ref_flat: Path, mode: str, wgs_bin_size: int = 10000) -> None:
     fai = ref_fa.with_suffix(ref_fa.suffix + ".fai")
     meta = {
         "kit_name": kit_dir.name,
@@ -347,6 +394,7 @@ def write_metadata(kit_dir: Path, kit_bed: Path, cohort_d4: Path, samples: list[
         "ref_fa_fai_sha256": sha256_file(fai) if fai.exists() else "",
         "ref_flat": str(ref_flat),
         "panel_mode": mode,
+        "wgs_bin_size": wgs_bin_size if mode == "wgs" else None,
         "cnvkit_version": cnvkit_version(),
         "d4tools_version": d4tools_version(),
         "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -373,6 +421,7 @@ def cmd_ensure_kit(args: argparse.Namespace) -> int:
             print(f"{label} not found: {p}", file=sys.stderr)
             return 2
 
+    mode = resolve_mode(kit_bed, ref_fa, args.mode)
     kit_name = args.kit_name or kit_bed.stem
     kit_dir = kits_dir / kit_name
     kit_dir.mkdir(parents=True, exist_ok=True)
@@ -389,12 +438,19 @@ def cmd_ensure_kit(args: argparse.Namespace) -> int:
     with lock_path.open("w") as lock_f:
         fcntl.flock(lock_f, fcntl.LOCK_EX)
         if pooled_ref.exists() and pooled_ref.stat().st_size > 0:
+            if mode == "wgs":
+                metadata_path = kit_dir / "build.json"
+                metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() else {}
+                if (metadata.get("panel_mode") != "wgs"
+                        or metadata.get("wgs_bin_size") != args.wgs_bin_size
+                        or metadata.get("kit_bed_sha256") != sha256_file(kit_bed)):
+                    raise RuntimeError("Cached WGS reference does not match mode, bin size or BED; use a new kit directory")
             print(f"Kit reference already exists at {pooled_ref}; nothing to do.")
             return 0
         return _build_under_lock(
             kit_name, kit_dir, coverage_dir, log_dir,
             kit_bed, cohort_d4, ref_fa, ref_flat,
-            mode_arg=args.mode, workers=args.workers,
+            mode_arg=mode, workers=args.workers, wgs_bin_size=args.wgs_bin_size,
             skip_existing=args.skip_existing,
         )
 
@@ -402,7 +458,7 @@ def cmd_ensure_kit(args: argparse.Namespace) -> int:
 def _build_under_lock(
     kit_name: str, kit_dir: Path, coverage_dir: Path, log_dir: Path,
     kit_bed: Path, cohort_d4: Path, ref_fa: Path, ref_flat: Path,
-    mode_arg: str, workers: int, skip_existing: bool,
+    mode_arg: str, workers: int, skip_existing: bool, wgs_bin_size: int = 10000,
 ) -> int:
     """Lock is held for the duration of this call."""
     if mode_arg == "auto":
@@ -420,10 +476,10 @@ def _build_under_lock(
     print(f"  Out:  {kit_dir}\n")
 
     # Phase 1
-    print(f"[1/4] cnvkit access + target{' + antitarget' if mode == 'hybrid' else ' (amplicon mode: no antitarget)'}")
+    print(f"[1/4] cnvkit access + target{' + antitarget' if mode == 'hybrid' else ' (no antitarget bins)'}")
     access_bed = ensure_access_bed(ref_fa, kit_dir, log_dir)
     targets_bed, antitargets_bed = build_target_beds(
-        kit_bed, ref_flat, access_bed, kit_dir, mode, log_dir,
+        kit_bed, ref_flat, access_bed, kit_dir, mode, log_dir, wgs_bin_size,
     )
     n_tgt = sum(1 for _ in targets_bed.open())
     n_anti = (sum(1 for _ in antitargets_bed.open())
@@ -467,15 +523,29 @@ def _build_under_lock(
     # Phase 3
     print("\n[3/4] cnvkit reference (pool cohort cnns)")
     started = time.monotonic()
-    pooled = build_pooled_reference(kit_dir, ref_fa, log_dir)
+    pooled = build_pooled_reference(kit_dir, ref_fa, log_dir, mode)
     size_mb = pooled.stat().st_size / 1024 / 1024
     print(f"  -> {pooled} ({size_mb:.1f} MB) in {time.monotonic() - started:.1f}s")
 
     # Phase 4
     print("\n[4/4] build.json")
-    write_metadata(kit_dir, kit_bed, cohort_d4, samples, ref_fa, ref_flat, mode)
+    write_metadata(kit_dir, kit_bed, cohort_d4, samples, ref_fa, ref_flat, mode, wgs_bin_size)
     print(f"  -> {kit_dir / 'build.json'}")
     print(f"\nDone. Kit reference: {kit_dir}")
+    return 0
+
+
+def cmd_prepare_bins(args: argparse.Namespace) -> int:
+    kit_bed, ref_fa, ref_flat = map(Path, (args.kit_bed, args.ref_fa, args.ref_flat))
+    output = Path(args.output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    logs = output / "logs"
+    mode = resolve_mode(kit_bed, ref_fa, args.mode)
+    # Existing batch panels keep hybrid binning; only WGS changes this path.
+    if args.mode == "auto" and mode != "wgs":
+        mode = "hybrid"
+    access = ensure_access_bed(ref_fa, output, logs)
+    build_target_beds(kit_bed, ref_flat, access, output, mode, logs, args.wgs_bin_size)
     return 0
 
 
@@ -495,14 +565,23 @@ def main() -> int:
                          "is created here.")
     pe.add_argument("--kit-name", default=None,
                     help="Kit subdir name. Defaults to <kit-bed basename minus .bed>.")
-    pe.add_argument("--mode", choices=["hybrid", "amplicon", "auto"], default="auto",
-                    help="Panel chemistry. auto = pick from BED footprint "
-                         "(<1 Mb merged ⇒ amplicon, else hybrid).")
+    pe.add_argument("--mode", choices=["hybrid", "amplicon", "wgs", "auto"], default="auto",
+                    help="auto detects whole-chromosome BEDs as WGS; otherwise uses panel footprint.")
+    pe.add_argument("--wgs-bin-size", type=int, default=10000)
     pe.add_argument("--workers", type=int, default=12,
                     help="Concurrent per-sample cnn synthesis workers.")
     pe.add_argument("--skip-existing", action="store_true",
                     help="Skip per-sample synthesis when the cnn already exists.")
     pe.set_defaults(func=cmd_ensure_kit)
+
+    pb = sub.add_parser("prepare-bins", help="Prepare identical cohort and batch CNV bins")
+    pb.add_argument("--kit-bed", required=True)
+    pb.add_argument("--ref-fa", required=True)
+    pb.add_argument("--ref-flat", required=True)
+    pb.add_argument("--output-dir", required=True)
+    pb.add_argument("--mode", choices=["auto", "hybrid", "amplicon", "wgs"], default="auto")
+    pb.add_argument("--wgs-bin-size", type=int, default=10000)
+    pb.set_defaults(func=cmd_prepare_bins)
 
     args = ap.parse_args()
     return args.func(args)

@@ -1,0 +1,53 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: wgs-cnv-validation-
+  namespace: argo
+  labels:
+    gennext.bio/purpose: wgs-cnv-validation
+spec:
+  entrypoint: validate
+  serviceAccountName: gennext-workflows
+  nodeSelector:
+    kubernetes.io/hostname: acurare-01
+  activeDeadlineSeconds: 1800
+  templates:
+  - name: validate
+    container:
+      image: bergun/gennext-cnv-cohort-builder:0.1.1
+      command:
+      - sh
+      - -ec
+      args:
+      - 'python3 -m unittest discover -s /code -p "test_*.py" -v
+
+        python3 /code/smoke_wgs.py
+
+        python3 /code/validate_node.py'
+      env:
+      - name: BUILDER_PATH
+        value: /code/cnv_cohort_builder.py
+      - name: PYTHONDONTWRITEBYTECODE
+        value: '1'
+      resources:
+        requests:
+          cpu: '2'
+          memory: 4Gi
+        limits:
+          cpu: '4'
+          memory: 16Gi
+      volumeMounts:
+      - name: code
+        mountPath: /code
+        readOnly: true
+      - name: reference
+        mountPath: /reference
+        readOnly: true
+  volumes:
+  - name: code
+    configMap:
+      name: wgs-cnv-validation-code
+  - name: reference
+    hostPath:
+      path: /runspace/gennext/data/ref
+      type: Directory
