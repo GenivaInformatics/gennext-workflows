@@ -478,6 +478,14 @@ spec:
               raise RuntimeError(f"Incomplete CNVkit reference cache: {kit_dir}")
 
           metadata = json.loads(metadata_path.read_text())
+          mode = metadata.get("panel_mode")
+          mode_path = kit_dir / "cnv-mode.txt"
+          if mode == "wgs" and (
+              not mode_path.is_file() or mode_path.read_text().strip() != "wgs"
+          ):
+              raise RuntimeError(
+                  f"WGS CNVkit reference is missing its wgs mode marker: {kit_dir}"
+              )
           bed_sha256 = hashlib.sha256(bed.read_bytes()).hexdigest()
           checks = {
               "kit BED sha256": (

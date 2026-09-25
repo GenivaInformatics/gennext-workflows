@@ -221,6 +221,11 @@ spec:
           cp "${KIT_DIR}/antitargets.bed" /scratch/references/antitargets.bed
           cp "${KIT_DIR}/pooled_reference.cnn" /scratch/references/pooled_reference.cnn
           cp "${KIT_DIR}/build.json" /scratch/references/build.json
+          # `cnvkit.py fix` needs the builder's WGS mode marker to disable
+          # edge correction, matching the per-sample cohort path.
+          if [ -f "${KIT_DIR}/cnv-mode.txt" ]; then
+            cp "${KIT_DIR}/cnv-mode.txt" /scratch/references/cnv-mode.txt
+          fi
           echo "Staged healthy-cohort CNVkit reference: ${KIT_NAME}"
         volumeMounts:
           - name: kits-dir
