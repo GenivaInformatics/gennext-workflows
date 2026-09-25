@@ -313,10 +313,22 @@ spec:
           # Drop well-known fusion-call artefacts (MT-, IG@, snoRNA,
           # pseudogenes, antisense, unannotated clones, self-fusions) from
           # both the consolidated TSV and fusions.json. Single source of
-          # truth for the artefact list — every downstream consumer
-          # (oncokb, duckdb, extract-fusion-reads → FI) sees the same
+          # truth for the artefact list — oncokb and duckdb consume this
           # filtered view, so the user-facing fusions.json no longer lists
           # artefacts the pipeline never intended to call.
+          #
+          # The task also emits a second, narrower list for FusionInspector
+          # only: database-rescued, then filtered to calls with real evidence
+          # (caller concordance, arriba confidence >= medium, or in-frame).
+          # FI's cost is linear in candidate count and it has fatal STAR
+          # ceilings at contig-index build, so it cannot take the reporting
+          # view — which stays unbounded here, so no call is ever withheld
+          # from the report. The FI list carries no fixed cap either: it is
+          # bounded only by a budget derived from STAR's own junction
+          # ceiling, which does not bind on any sample measured so far and
+          # engages only on a library noisy enough to abort FI outright.
+          # Any truncation is logged. fi-max-candidates pins an explicit
+          # ceiling instead, if one is ever wanted.
           - name: filter-artifact-fusions
             templateRef:
               name: filter-artifact-fusions-template
@@ -333,6 +345,8 @@ spec:
                   value: "{{inputs.parameters.sample-temp-dir}}results/fusions/fusion-report/{{inputs.parameters.sample-id}}_fusions.filtered.json"
                 - name: output-fusion-list-tsv
                   value: "{{inputs.parameters.sample-temp-dir}}results/fusions/fusion-report/{{inputs.parameters.sample-id}}_fusion_list.filtered.tsv"
+                - name: output-fi-fusion-list-tsv
+                  value: "{{inputs.parameters.sample-temp-dir}}results/fusions/fusion-report/{{inputs.parameters.sample-id}}_fusion_list.fi.tsv"
             depends: "fusion-report"
 
           # Pre-filter the marked BAM down to the read set FI actually needs:
@@ -356,7 +370,7 @@ spec:
                 - name: arriba-tsv
                   value: "{{tasks.arriba.outputs.parameters.output-fusions-tsv}}"
                 - name: fusion-list-tsv
-                  value: "{{tasks.filter-artifact-fusions.outputs.parameters.output-fusion-list-tsv}}"
+                  value: "{{tasks.filter-artifact-fusions.outputs.parameters.output-fi-fusion-list-tsv}}"
                 - name: output-dir
                   value: "{{inputs.parameters.sample-scratch-dir}}extracted_reads/"
                 - name: thread-count

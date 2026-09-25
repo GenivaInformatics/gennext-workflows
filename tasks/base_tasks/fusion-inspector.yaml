@@ -134,11 +134,13 @@ spec:
           # FFPE) trip STAR's "limitGenomeGenerateRAM too small" fatal
           # error at index build before any alignment happens. STAR's
           # --STAR_xtra_params channel only flows to alignReads, not to
-          # genomeGenerate, so we patch the Perl source in-place. 24 GB
-          # fits comfortably within the 54Gi pod request.
+          # genomeGenerate, so we patch the Perl source in-place. 34 GB
+          # fits comfortably within the 54Gi pod request. Raised from
+          # 24 GB after Betulin-2 (needed 32.6 GB) and control-1 (needed
+          # 29.7 GB) both tripped the fatal ceiling at index build.
           PERL_FI_STAR="/usr/local/src/STAR-Fusion/FusionInspector/util/run_FI_STAR.pl"
           if [ -f "${PERL_FI_STAR}" ]; then
-            sed -i 's|--limitGenomeGenerateRAM $estimated_ram|--limitGenomeGenerateRAM 24000000000|' "${PERL_FI_STAR}"
+            sed -i 's|--limitGenomeGenerateRAM $estimated_ram|--limitGenomeGenerateRAM 34000000000|' "${PERL_FI_STAR}"
           fi
 
           echo "Running FusionInspector"
@@ -459,11 +461,13 @@ spec:
           # FFPE) trip STAR's "limitGenomeGenerateRAM too small" fatal
           # error at index build before any alignment happens. STAR's
           # --STAR_xtra_params channel only flows to alignReads, not to
-          # genomeGenerate, so we patch the Perl source in-place. 24 GB
-          # fits comfortably within the 54Gi pod request.
+          # genomeGenerate, so we patch the Perl source in-place. 34 GB
+          # fits comfortably within the 54Gi pod request. Raised from
+          # 24 GB after Betulin-2 (needed 32.6 GB) and control-1 (needed
+          # 29.7 GB) both tripped the fatal ceiling at index build.
           PERL_FI_STAR="/usr/local/src/STAR-Fusion/FusionInspector/util/run_FI_STAR.pl"
           if [ -f "${PERL_FI_STAR}" ]; then
-            sed -i 's|--limitGenomeGenerateRAM $estimated_ram|--limitGenomeGenerateRAM 24000000000|' "${PERL_FI_STAR}"
+            sed -i 's|--limitGenomeGenerateRAM $estimated_ram|--limitGenomeGenerateRAM 34000000000|' "${PERL_FI_STAR}"
           fi
 
           echo "Running FusionInspector"

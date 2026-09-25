@@ -182,8 +182,17 @@ def parse_arriba_breakpoints(tsv: Path):
                     continue
 
 
-def filter_fusion_list(in_path: Path, out_path: Path) -> tuple[int, int]:
-    """Filter the consolidated geneA--geneB list. Returns (kept, dropped)."""
+def filter_fusion_list(in_path: Path, out_path: Path,
+                       apply_filter: bool = True) -> tuple[int, int]:
+    """Filter the consolidated geneA--geneB list. Returns (kept, dropped).
+
+    With apply_filter=False the list is passed through verbatim (minus blank
+    and comment lines). Use that when the caller already filtered upstream:
+    filter-artifact-fusions-template's FI list deliberately re-admits a
+    handful of database-recorded fusions whose gene names match a pattern
+    here (e.g. NF1--SUZ12P1, PAX8--PAX8-AS1), and re-running this filter
+    would silently drop them again.
+    """
     kept = dropped = 0
     with open(in_path) as src, open(out_path, "w") as dst:
         for line in src:
@@ -194,7 +203,7 @@ def filter_fusion_list(in_path: Path, out_path: Path) -> tuple[int, int]:
             if "--" not in name:
                 continue
             a, b = name.split("--", 1)
-            if pair_keep(a, b):
+            if not apply_filter or pair_keep(a, b):
                 dst.write(stripped + "\n")
                 kept += 1
             else:
@@ -330,6 +339,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="±bp window around each fusion breakpoint to collect "
                         "spanning fragments. 0 disables the BED-based scan and "
                         "the script returns chimeric (supplementary) reads only.")
+    p.add_argument("--no-artifact-filter", action="store_true",
+                   help="Pass --fusion-list-tsv through verbatim instead of "
+                        "re-applying ARTIFACT_PATTERNS. Set this when the list "
+                        "was already filtered upstream and deliberately "
+                        "re-admits database-recorded fusions that match a "
+                        "pattern here.")
     p.add_argument("--threads", type=int, default=8)
     p.add_argument("--work", type=Path, default=Path("/tmp/extract"))
     args = p.parse_args(argv)
@@ -349,9 +364,11 @@ def main(argv: list[str] | None = None) -> int:
     ar_tsv = args.arriba_tsv if args.arriba_tsv and str(args.arriba_tsv) != "." else Path("/dev/null")
 
     # 1. Filter the consolidated fusion list.
-    kept, dropped = filter_fusion_list(args.fusion_list_tsv, args.out_filtered_list)
-    logging.info("Fusion list: %d kept, %d dropped (artifact / self-fusion filter)",
-                 kept, dropped)
+    kept, dropped = filter_fusion_list(args.fusion_list_tsv, args.out_filtered_list,
+                                       apply_filter=not args.no_artifact_filter)
+    logging.info("Fusion list: %d kept, %d dropped (%s)", kept, dropped,
+                 "passed through verbatim" if args.no_artifact_filter
+                 else "artifact / self-fusion filter")
     if kept == 0:
         logging.warning("All upstream candidates filtered out — emitting empty FASTQs and exiting.")
         for p_ in (args.out_r1, args.out_r2):
