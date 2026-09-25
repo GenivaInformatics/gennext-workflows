@@ -58,6 +58,8 @@ spec:
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.regionsFile.name')}}"
                 - name: input-rel-dir
                   value: "{{inputs.parameters.input-rel-dir}}"
+                - name: sample-uuid
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleUuid')}}"
           - name: copy-fastq-to-scratch
             templateRef:
               name: copy-inputs-to-scratch
@@ -76,6 +78,21 @@ spec:
                 - name: scratch-rel-dir
                   value: "{{inputs.parameters.scratch-rel-dir}}/reads/"
             depends: "check-file-path"
+          - name: validate-bed-file
+            templateRef:
+              name: bed-validator-template
+              template: validate-bed-file
+            arguments:
+              parameters:
+                - name: input-bed-file
+                  value: "{{tasks.check-file-path.outputs.parameters.input-rel-dir-3}}/{{tasks.check-file-path.outputs.parameters.output-file-3}}"
+                - name: gtf-file
+                  value: "{{inputs.parameters.ref-base-dir}}{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/gene_annots/gencode.v49.basic.annotation.MANE_Select.gtf.gz"
+                - name: chains-dir
+                  value: "{{inputs.parameters.ref-base-dir}}{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/other/chains/"
+                - name: output-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}metrics/bed_validation/"
+            depends: "check-file-path"
           - name: copy-regions-file-to-scratch
             templateRef:
               name: copy-inputs-to-scratch
@@ -83,18 +100,18 @@ spec:
             arguments:
               parameters:
                 - name: provided-regions-file
-                  value: "{{tasks.check-file-path.outputs.parameters.output-file-3}}"
+                  value: "{{=sprig.osBase(tasks['validate-bed-file'].outputs.parameters['validated-bed-file'])}}"
                 - name: enrichment-kit-regions-file
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.enrichmentKit.filename')}}"
                 - name: default-regions-file
                   value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
                 - name: input-rel-dir
-                  value: "{{tasks.check-file-path.outputs.parameters.input-rel-dir-3}}"
+                  value: "{{inputs.parameters.temp-rel-dir}}metrics/bed_validation/"
                 - name: scratch-rel-dir
                   value: "{{inputs.parameters.scratch-rel-dir}}"
                 - name: ref-regions-dir
                   value: "{{inputs.parameters.ref-base-dir}}/{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}/regions/"
-            depends: "copy-fastq-to-scratch && get-abs-ref-dirs"
+            depends: "copy-fastq-to-scratch && get-abs-ref-dirs && validate-bed-file"
                   # - name: run-data
                   #   value: "{{inputs.parameters.run-data}}"
                   # - name: input-rel-dir
@@ -498,11 +515,47 @@ spec:
                 - name: input-file-1
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.bam.name')}}"
                 - name: input-file-2
-                  value: "."
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.regionsFile.name')}}"
                 - name: input-file-3
                   value: "."
                 - name: input-rel-dir
                   value: "{{inputs.parameters.input-rel-dir}}"
+                - name: sample-uuid
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleUuid')}}"
+          - name: validate-bed-file
+            templateRef:
+              name: bed-validator-template
+              template: validate-bed-file
+            arguments:
+              parameters:
+                - name: input-bed-file
+                  value: "{{tasks.check-file-path.outputs.parameters.input-rel-dir-2}}/{{tasks.check-file-path.outputs.parameters.output-file-2}}"
+                - name: gtf-file
+                  value: "{{inputs.parameters.ref-base-dir}}hg38/gene_annots/gencode.v49.basic.annotation.MANE_Select.gtf.gz"
+                - name: chains-dir
+                  value: "{{inputs.parameters.ref-base-dir}}hg38/other/chains/"
+                - name: output-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}metrics/bed_validation/"
+            depends: "check-file-path"
+          - name: copy-regions-file-to-scratch
+            templateRef:
+              name: copy-inputs-to-scratch
+              template: copy-regions-file-to-scratch-v3
+            arguments:
+              parameters:
+                - name: provided-regions-file
+                  value: "{{=sprig.osBase(tasks['validate-bed-file'].outputs.parameters['validated-bed-file'])}}"
+                - name: enrichment-kit-regions-file
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.enrichmentKit.filename')}}"
+                - name: default-regions-file
+                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.temp-rel-dir}}metrics/bed_validation/"
+                - name: scratch-rel-dir
+                  value: "{{inputs.parameters.scratch-rel-dir}}"
+                - name: ref-regions-dir
+                  value: "{{inputs.parameters.ref-base-dir}}hg38/regions/"
+            depends: "get-abs-ref-dirs && validate-bed-file"
           - name: copy-bam-to-scratch
             templateRef:
               name: copy-inputs-to-scratch
@@ -589,10 +642,10 @@ spec:
                 - name: known-sites
                   value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-dbsnp-f}}"
                 - name: regions-file
-                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
+                  value: "{{tasks.copy-regions-file-to-scratch.outputs.parameters.regions-bed-f}}"
                 - name: output-recal-file
                   value: "{{inputs.parameters.temp-rel-dir}}metrics/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}.recal"
-            depends: "pb-fq2bam && get-abs-ref-dirs"
+            depends: "pb-fq2bam && get-abs-ref-dirs && copy-regions-file-to-scratch"
           - name: pb-applybqsr
             templateRef:
               name: parabricks-bqsr-template
@@ -621,7 +674,7 @@ spec:
                 - name: genome-ref-f
                   value: "{{tasks.get-abs-ref-dirs.outputs.parameters.ref-genome-f}}"
                 - name: regions-file
-                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
+                  value: "{{tasks.copy-regions-file-to-scratch.outputs.parameters.regions-bed-f}}"
                 - name: output-vcf
                   value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_dv.vcf.gz"
                 - name: output-g-vcf
@@ -630,7 +683,7 @@ spec:
                   value: "{{inputs.parameters.thread-count}}"
                 - name: scratch-dir
                   value: "{{inputs.parameters.scratch-rel-dir}}"
-            depends: "pb-applybqsr && get-abs-ref-dirs"
+            depends: "pb-applybqsr && get-abs-ref-dirs && copy-regions-file-to-scratch"
           - name: filter-vcf
             templateRef:
               name: bcftools-template
@@ -642,8 +695,8 @@ spec:
                 - name: output-vcf-f
                   value: "{{inputs.parameters.temp-rel-dir}}vcf/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_filtered_dv.vcf.gz"
                 - name: regions-file
-                  value: "{{tasks.get-abs-ref-dirs.outputs.parameters.regions-bed-f}}"
-            depends: "deepvariant && get-abs-ref-dirs"
+                  value: "{{tasks.copy-regions-file-to-scratch.outputs.parameters.regions-bed-f}}"
+            depends: "deepvariant && get-abs-ref-dirs && copy-regions-file-to-scratch"
           # - name: manta
           #   templateRef:
           #     name: manta-template
@@ -864,6 +917,22 @@ spec:
             default: "8"
       dag:
         tasks:
+          - name: check-file-path
+            templateRef:
+              name: check-file-path
+              template: check-file-path
+            arguments:
+              parameters:
+                - name: input-file-1
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.vcf.name')}}"
+                - name: input-file-2
+                  value: "."
+                - name: input-file-3
+                  value: "."
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: sample-uuid
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleUuid')}}"
           - name: copy-vcf-to-output
             templateRef:
               name: copy-inputs-to-scratch
@@ -873,11 +942,12 @@ spec:
                 - name: sample-id
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}"
                 - name: vcf
-                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.vcf.name')}}"
+                  value: "{{tasks.check-file-path.outputs.parameters.output-file-1}}"
                 - name: input-rel-dir
-                  value: "{{inputs.parameters.input-rel-dir}}"
+                  value: "{{tasks.check-file-path.outputs.parameters.input-rel-dir-1}}"
                 - name: output-rel-dir
                   value: "{{inputs.parameters.output-rel-dir}}/vcf/"
+            depends: "check-file-path"
           - name: cravat
             templateRef:
               name: cravat-templates

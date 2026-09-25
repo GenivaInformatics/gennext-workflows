@@ -49,6 +49,8 @@ spec:
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.regionsFileRNA.name')}}"
                 - name: input-rel-dir
                   value: "{{inputs.parameters.input-rel-dir}}"
+                - name: sample-uuid
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleUuid')}}"
           - name: copy-fastq-to-scratch
             templateRef:
               name: copy-inputs-to-scratch
@@ -455,6 +457,8 @@ spec:
                   value: "."
                 - name: input-rel-dir
                   value: "{{inputs.parameters.input-rel-dir}}"
+                - name: sample-uuid
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleUuid')}}"
           - name: copy-bam-to-scratch
             templateRef:
               name: copy-inputs-to-scratch
