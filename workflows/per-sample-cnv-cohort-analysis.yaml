@@ -36,10 +36,10 @@ spec:
           - name: ref-version
           - name: ref-base-dir
           - name: ref-paths
-          # Validated kit BED. The pooled reference is bin-locked to this BED,
-          # so its basename (sans .bed) is what indexes the kit reference dir
-          # under {ref-base-dir}{ref-version}/other/cnvkit/<basename>/. Same
-          # BED ⇒ same cached reference; no separate kit identifier is needed.
+          - name: sample-run-data
+          # Validated assay BED. It is retained as kit-identification context,
+          # but CNV bin generation resolves the canonical per-design `sv-cnv`
+          # BED from ref-paths so cohort and batch use identical coordinates.
           - name: regions-file
           - name: input-bam
           - name: input-vcf
@@ -61,6 +61,18 @@ spec:
             default: "20"
       dag:
         tasks:
+          # --- Resolve the canonical CNV BED and refFlat used by batch CNV ---
+          - name: resolve-cnv-reference-inputs
+            template: resolve-cnv-reference-inputs
+            arguments:
+              parameters:
+                - name: sample-run-data
+                  value: "{{inputs.parameters.sample-run-data}}"
+                - name: ref-paths
+                  value: "{{inputs.parameters.ref-paths}}"
+                - name: assay-regions-file
+                  value: "{{inputs.parameters.regions-file}}"
+
           # --- Lazily build the per-kit pooled reference if missing ---
           - name: ensure-kit-reference
             template: ensure-kit-reference
@@ -71,16 +83,31 @@ spec:
                 - name: ref-version
                   value: "{{inputs.parameters.ref-version}}"
                 - name: regions-file
-                  value: "{{inputs.parameters.regions-file}}"
+                  value: "{{tasks.resolve-cnv-reference-inputs.outputs.parameters.regions-file}}"
                 - name: ref-genome
                   value: "{{=jsonpath(inputs.parameters['ref-paths'], '$.genome')}}"
-                # refFlat is at a fixed location under ref-base-dir; not pulled
-                # from the ref-paths jsonpath (which doesn't expose it consistently
-                # across modes).
                 - name: ref-flat
-                  value: "{{inputs.parameters.ref-base-dir}}{{inputs.parameters.ref-version}}/gene_annots/refFlat_mane.txt"
+                  value: "{{tasks.resolve-cnv-reference-inputs.outputs.parameters.ref-flat}}"
                 - name: thread-count
                   value: "{{inputs.parameters.thread-count}}"
+            depends: resolve-cnv-reference-inputs
+
+          # --- Fail closed if a filename-keyed cache is stale ---
+          - name: validate-kit-reference
+            template: validate-kit-reference
+            arguments:
+              parameters:
+                - name: ref-base-dir
+                  value: "{{inputs.parameters.ref-base-dir}}"
+                - name: ref-version
+                  value: "{{inputs.parameters.ref-version}}"
+                - name: regions-file
+                  value: "{{tasks.resolve-cnv-reference-inputs.outputs.parameters.regions-file}}"
+                - name: ref-genome
+                  value: "{{=jsonpath(inputs.parameters['ref-paths'], '$.genome')}}"
+                - name: ref-flat
+                  value: "{{tasks.resolve-cnv-reference-inputs.outputs.parameters.ref-flat}}"
+            depends: ensure-kit-reference
 
           # --- Per-sample target/antitarget coverage on the tumor BAM ---
           - name: cnvkit-coverage
@@ -94,12 +121,12 @@ spec:
                 - name: ref-version
                   value: "{{inputs.parameters.ref-version}}"
                 - name: regions-file
-                  value: "{{inputs.parameters.regions-file}}"
+                  value: "{{tasks.resolve-cnv-reference-inputs.outputs.parameters.regions-file}}"
                 - name: input-bam
                   value: "{{inputs.parameters.input-bam}}"
                 - name: sample-scratch-dir
                   value: "{{inputs.parameters.sample-scratch-dir}}"
-            depends: ensure-kit-reference
+            depends: validate-kit-reference
 
           # --- CNVkit fix + segment + call + scatter + export ---
           - name: cnvkit-analyze
@@ -113,7 +140,7 @@ spec:
                 - name: ref-version
                   value: "{{inputs.parameters.ref-version}}"
                 - name: regions-file
-                  value: "{{inputs.parameters.regions-file}}"
+                  value: "{{tasks.resolve-cnv-reference-inputs.outputs.parameters.regions-file}}"
                 - name: sample-scratch-dir
                   value: "{{inputs.parameters.sample-scratch-dir}}"
                 - name: sample-temp-dir
@@ -136,14 +163,11 @@ spec:
                 - name: ref-version
                   value: "{{inputs.parameters.ref-version}}"
                 - name: regions-file
-                  value: "{{inputs.parameters.regions-file}}"
+                  value: "{{tasks.resolve-cnv-reference-inputs.outputs.parameters.regions-file}}"
                 - name: sample-temp-dir
                   value: "{{inputs.parameters.sample-temp-dir}}"
-                # refFlat is at a fixed location under ref-base-dir; not pulled
-                # from the ref-paths jsonpath (which doesn't expose it consistently
-                # across modes).
                 - name: ref-flat
-                  value: "{{inputs.parameters.ref-base-dir}}{{inputs.parameters.ref-version}}/gene_annots/refFlat_mane.txt"
+                  value: "{{tasks.resolve-cnv-reference-inputs.outputs.parameters.ref-flat}}"
             depends: cnvkit-analyze
 
           # --- AnnotSV structural variant annotation ---
@@ -249,6 +273,101 @@ spec:
             depends: scarhrd
 
     # =====================================================================
+    # Resolve the same canonical CNV inputs as batch-load-and-prepare:
+    # `somtest.<design>.regions.sv-cnv` and `regions.ref-flat`.
+    # =====================================================================
+    - name: resolve-cnv-reference-inputs
+      inputs:
+        parameters:
+          - name: sample-run-data
+          - name: ref-paths
+          - name: assay-regions-file
+      outputs:
+        parameters:
+          - name: regions-file
+            valueFrom:
+              path: /tmp/cnv_regions_file.txt
+          - name: ref-flat
+            valueFrom:
+              path: /tmp/cnv_ref_flat.txt
+          - name: design-id
+            valueFrom:
+              path: /tmp/cnv_design_id.txt
+      script:
+        image: python:3.13-alpine
+        command: [python]
+        env:
+          - name: SAMPLE_RUN_DATA
+            value: "{{inputs.parameters.sample-run-data}}"
+          - name: REF_PATHS
+            value: "{{inputs.parameters.ref-paths}}"
+          - name: ASSAY_REGIONS_FILE
+            value: "{{inputs.parameters.assay-regions-file}}"
+        source: |
+          import json
+          import os
+          from pathlib import Path
+
+          run_data = json.loads(os.environ["SAMPLE_RUN_DATA"])
+          ref_paths = json.loads(os.environ["REF_PATHS"])
+          assay_regions = os.environ["ASSAY_REGIONS_FILE"]
+          somtest = ref_paths.get("somtest", {})
+
+          kit = run_data.get("enrichmentKit") or {}
+          if not kit and run_data.get("samples"):
+              kit = run_data["samples"][0].get("enrichmentKit") or {}
+
+          candidates = []
+          if isinstance(kit, dict):
+              candidates.extend(
+                  str(kit.get(key, ""))
+                  for key in ("filename", "name", "title")
+                  if kit.get(key)
+              )
+          elif kit:
+              candidates.append(str(kit))
+          candidates.append(Path(assay_regions).name)
+
+          def design_id(value):
+              value = Path(value.split(",")[0].strip()).name
+              value = value.split(" - ")[-1]
+              return value.split("_")[0].split(".")[0].strip()
+
+          design = next(
+              (design_id(value) for value in candidates if design_id(value) in somtest),
+              "",
+          )
+          if not design:
+              design = next(
+                  (
+                      key
+                      for key in somtest
+                      if any(key.lower() in value.lower() for value in candidates)
+                  ),
+                  "",
+              )
+          if not design:
+              raise RuntimeError(
+                  "No canonical somtest CNV design mapping for enrichment kit "
+                  f"candidates {candidates!r}"
+              )
+
+          regions = somtest[design].get("regions", {})
+          cnv_bed = regions.get("sv-cnv", "")
+          ref_flat = ref_paths.get("regions", {}).get("ref-flat", "")
+          if not cnv_bed:
+              raise RuntimeError(f"No CNV BED configured for design {design}")
+          if not ref_flat:
+              raise RuntimeError("No regions.ref-flat entry in ref-paths")
+
+          Path("/tmp/cnv_regions_file.txt").write_text(cnv_bed)
+          Path("/tmp/cnv_ref_flat.txt").write_text(ref_flat)
+          Path("/tmp/cnv_design_id.txt").write_text(design)
+          print(f"CNV design: {design}")
+          print(f"CNV BED: {cnv_bed}")
+          print(f"refFlat: {ref_flat}")
+
+    # =====================================================================
     # Lazy Phase A: ensure the per-kit pooled reference exists.
     #
     # Idempotent: if {ref-base-dir}{ref-version}/other/cnvkit/<bed-stem>/
@@ -258,8 +377,8 @@ spec:
     # them into pooled_reference.cnn. flock on .build.lock serialises
     # concurrent first-time-on-this-kit invocations.
     #
-    # The kit-name (output sub-dir) is the BED's basename without its `.bed`
-    # extension, derived inside the builder. Same BED bytes ⇒ same kit dir.
+    # The kit-name (output sub-dir) is the canonical CNV BED's basename without
+    # its `.bed` extension, derived inside the builder.
     # =====================================================================
     - name: ensure-kit-reference
       inputs:
@@ -316,6 +435,90 @@ spec:
         - name: refflat-dir
           hostPath:
             path: "{{=sprig.osDir(inputs.parameters['ref-flat'])}}"
+            type: Directory
+
+    # =====================================================================
+    # Validate the filename-keyed cache against its recorded source inputs.
+    # The BED is hashed because it defines the bin grid; reference paths are
+    # compared by basename because older build.json files do not record their
+    # content hashes. Stale references fail closed and must be archived/rebuilt.
+    # =====================================================================
+    - name: validate-kit-reference
+      inputs:
+        parameters:
+          - name: ref-base-dir
+          - name: ref-version
+          - name: regions-file
+          - name: ref-genome
+          - name: ref-flat
+      script:
+        image: python:3.13-alpine
+        command: [python]
+        env:
+          - name: REGIONS_BASENAME
+            value: "{{=sprig.osBase(inputs.parameters['regions-file'])}}"
+          - name: REF_GENOME_BASENAME
+            value: "{{=sprig.osBase(inputs.parameters['ref-genome'])}}"
+          - name: REF_FLAT_BASENAME
+            value: "{{=sprig.osBase(inputs.parameters['ref-flat'])}}"
+        source: |
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          regions_name = os.environ["REGIONS_BASENAME"]
+          kit_name = Path(regions_name).stem
+          kit_dir = Path("/kits") / kit_name
+          bed = Path("/ref/regions") / regions_name
+          metadata_path = kit_dir / "build.json"
+          pooled_reference = kit_dir / "pooled_reference.cnn"
+
+          if not metadata_path.is_file() or not pooled_reference.is_file():
+              raise RuntimeError(f"Incomplete CNVkit reference cache: {kit_dir}")
+
+          metadata = json.loads(metadata_path.read_text())
+          bed_sha256 = hashlib.sha256(bed.read_bytes()).hexdigest()
+          checks = {
+              "kit BED sha256": (
+                  metadata.get("kit_bed_sha256", ""),
+                  bed_sha256,
+              ),
+              "reference FASTA": (
+                  Path(metadata.get("ref_fa", "")).name,
+                  os.environ["REF_GENOME_BASENAME"],
+              ),
+              "refFlat": (
+                  Path(metadata.get("ref_flat", "")).name,
+                  os.environ["REF_FLAT_BASENAME"],
+              ),
+          }
+          mismatches = [
+              f"{label}: cached={cached!r}, configured={configured!r}"
+              for label, (cached, configured) in checks.items()
+              if cached != configured
+          ]
+          if mismatches:
+              raise RuntimeError(
+                  "Stale CNVkit reference cache; archive and rebuild "
+                  f"{kit_dir}: " + "; ".join(mismatches)
+              )
+          print(f"Validated CNVkit reference cache: {kit_dir}")
+        volumeMounts:
+          - name: kits-dir
+            mountPath: /kits/
+            readOnly: true
+          - name: regions-dir
+            mountPath: /ref/regions/
+            readOnly: true
+      volumes:
+        - name: kits-dir
+          hostPath:
+            path: "{{inputs.parameters.ref-base-dir}}{{inputs.parameters.ref-version}}/other/cnvkit/"
+            type: Directory
+        - name: regions-dir
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['regions-file'])}}"
             type: Directory
 
     # =====================================================================

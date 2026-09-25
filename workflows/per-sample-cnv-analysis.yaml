@@ -251,9 +251,18 @@ spec:
             /scratch/references/pooled_reference.cnn \
             -o /output/${SAMPLE_ID}.cnr
 
-          # Segment via CBS with smoothing for tumor robustness.
+          # Match cohort analysis: DNAcopy smoothing is safe only for hybrid
+          # references. Amplicon references have an empty antitarget BED and
+          # may contain single-bin chromosomes that make smooth.CNA fail.
+          if [ -s /scratch/references/antitargets.bed ]; then
+            SMOOTH_FLAG="--smooth-cbs"
+          else
+            SMOOTH_FLAG=""
+          fi
+
+          # Segment via CBS with hybrid-only smoothing for tumor robustness.
           cnvkit.py segment \
-            --smooth-cbs \
+            $SMOOTH_FLAG \
             --drop-low-coverage \
             /output/${SAMPLE_ID}.cnr \
             -o /output/${SAMPLE_ID}.cns
@@ -366,10 +375,9 @@ spec:
           - name: output-cnv-dir
           - name: ref-flat
       container:
-        # Batch path uses --sigma-source=spread so thresholds derive from the
-        # self-pooled reference's per-bin SD (real noise) rather than its
-        # consensus log2 column (which carries the batch cohort's CNV dynamic
-        # range and previously inflated sigma_1 past every real call). See
+        # Batch and cohort paths use the same healthy-cohort reference and
+        # --sigma-source=spread, so thresholds derive from its per-bin normal
+        # sample SD rather than from the consensus log2 column. See
         # gennext-cnv-analysis v0.4.0.
         image: bergun/gennext-cnv-analysis:0.4.0
         args:

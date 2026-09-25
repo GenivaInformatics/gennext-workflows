@@ -15,11 +15,11 @@ on the builder; changing it requires matching cohort/batch parameters and a new
 reference cache. It is not a validated analytical resolution claim.
 
 Both the main cohort-CNV stage and post-processing use the healthy D4 cohort.
-WGS post-processing copies its already-built reference only after exact target-BED
-comparison; it never pools tumors into their own normal reference. Existing panel
-post-processing retains hybrid binning and its previous sample-pooling behavior.
-A mismatched cached WGS mode, BED or bin size fails rather than silently reusing
-an incompatible reference.
+Batch post-processing stages the same per-design healthy-cohort reference used by
+per-sample CNV. This applies to WGS and panels; tumor samples never become their
+own pooled normal. The cache is checked against the configured canonical BED,
+reference FASTA, and refFlat before use. WGS also requires its 10 kb binning
+mode to match the cached reference.
 
 CNVkit guidance: https://cnvkit.readthedocs.io/en/master/pipeline.html and
 https://cnvkit.readthedocs.io/en/v0.8.5/nonhybrid.html .

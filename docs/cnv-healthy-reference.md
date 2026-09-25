@@ -98,7 +98,7 @@ This is an **offline batch job**, not part of the per-run post-process workflow.
 
 ### Steps
 
-**Step 1 — Build the bin grid for this kit.** Standard CNVkit `target` / `antitarget` / `access`, identical to what `cnvkit-prepare-references` does in `workflows/post-process-cnv.yaml`:
+**Step 1 — Build the bin grid for this kit.** Standard CNVkit `target` / `antitarget` / `access`, performed by `cnv-cohort-builder` through the shared `ensure-kit-reference` template:
 
 ```bash
 cnvkit.py access ${REF_GENOME} -o access.bed
@@ -154,7 +154,7 @@ Add `--sample-sex` and split by sex from the manifest if building sex-specific r
 }
 ```
 
-This is what `batch-load-and-prepare` should validate against at run time — if the kit's `build.json.kit-bed-sha256` doesn't match the BED currently configured for the kit, fail loudly rather than running with a stale reference.
+The shared `validate-kit-reference` template checks this metadata at run time. If the recorded kit BED hash, reference FASTA basename, or refFlat basename differs from the configured canonical inputs, both cohort and batch workflows fail loudly rather than using a stale reference.
 
 ## 6. FFPE caveat
 
@@ -177,19 +177,26 @@ The current recommendation is to start with the blood/saliva WGS cohort, deploy 
 
 ## 7. Integration with the existing workflow
 
-`workflows/post-process-cnv.yaml` currently builds the pooled reference inline at runtime from the current batch's tumor samples (lines 100–109). With this design:
+Both cohort and batch CNV now resolve the canonical
+`somtest.<design>.regions.sv-cnv` BED and `regions.ref-flat` from the reference
+ConfigMap. The per-design reference is lazily generated once from the healthy
+WGS D4 cohort under `${REF_BASE_DIR}/{ref-version}/other/cnvkit/{bed-stem}/`.
 
-- `cnvkit-prepare-references` (lines 164–223) and `cnvkit-build-reference` (lines 278–306) move out of the per-run DAG.
-- `batch-load-and-prepare` is extended to look up `${REF_BASE_DIR}/healthy-cohort-wgs/kits/{enrichment-kit}/` and emit `pooled-reference-cnn`, `targets-bed`, `antitargets-bed` as outputs, validated against the kit BED's sha256.
-- `cnvkit-coverage` (lines 230–273) reads `targets.bed` / `antitargets.bed` from the kit reference directory rather than `/scratch/references/`.
-- `cnvkit-analyze` (`per-sample-cnv-analysis.yaml` lines 237–241) reads `pooled_reference.cnn` from the kit reference directory.
+`workflows/post-process-cnv.yaml` calls the same `ensure-kit-reference` template
+as the per-sample cohort workflow, then stages its `targets.bed`,
+`antitargets.bed`, `pooled_reference.cnn`, and `build.json` into batch scratch.
+The batch workflow calculates only tumor coverage; it no longer builds a pooled
+reference from the current batch's tumor samples.
 
-Net effect: per-run CNV becomes coverage + fix + segment + call + downstream, with the reference treated as a static input keyed on `enrichment-kit`. Smaller batches stop producing misleading results because the reference is no longer derived from the batch.
+Net effect: cohort and batch analysis use byte-identical region grids and the
+same healthy-cohort reference. A design without a canonical `sv-cnv` ConfigMap
+entry fails closed rather than silently generating an incomparable reference.
 
 ## 8. Maintenance
 
 - **Cohort refresh.** When ≥5 new samples are added or platform/chemistry shifts, re-run the per-kit build job for all active kits. Old `pooled_reference.cnn` files are kept under `kits/{kit}/archive/{date}/` for audit.
 - **Kit BED revision.** Vendors occasionally release updated BEDs. A new BED ⇒ a full rebuild for that kit. The `kit-bed-sha256` in `build.json` is the trigger for a stale-reference failure at run time.
+- **Canonical CNV input migration.** Changing from an assay BED or a different refFlat to the canonical `sv-cnv` BED + `regions.ref-flat` requires rebuilding the derived per-kit BED/CNN/reference artifacts. The source WGS D4 cohort does not need to be regenerated when the genome reference is unchanged. Keep the old kit directory for audit, and re-run historical CNV analysis only where results must be comparable with the new reference.
 - **Genome reference change.** All `d4/` files are tied to the alignment reference. A genome change requires regenerating D4 from the source alignments (kept in cold storage per consent policy) or from re-aligned BAMs.
 - **Sample retirement.** If a cohort sample is later found to carry a pathogenic CNV, remove it from the manifest, archive its `.d4`, and rebuild affected kits.
 
