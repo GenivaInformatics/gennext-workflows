@@ -523,6 +523,8 @@ spec:
                   value: "{{tasks.arriba.outputs.parameters.output-fusions-tsv}}"
                 - name: fusion-list-tsv
                   value: "{{tasks.filter-artifact-fusions.outputs.parameters.output-fi-fusion-list-tsv}}"
+                - name: artifact-filter-mode
+                  value: passthrough
                 - name: output-dir
                   value: "{{inputs.parameters.sample-scratch-dir}}extracted_reads/"
                 - name: thread-count

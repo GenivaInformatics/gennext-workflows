@@ -339,6 +339,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="±bp window around each fusion breakpoint to collect "
                         "spanning fragments. 0 disables the BED-based scan and "
                         "the script returns chimeric (supplementary) reads only.")
+    p.add_argument("--artifact-filter-mode", choices=("filter", "passthrough"),
+                   default="filter", help="Use passthrough when the upstream FI "
+                   "candidate list is already filtered, including DB rescues.")
     p.add_argument("--no-artifact-filter", action="store_true",
                    help="Pass --fusion-list-tsv through verbatim instead of "
                         "re-applying ARTIFACT_PATTERNS. Set this when the list "
@@ -365,9 +368,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # 1. Filter the consolidated fusion list.
     kept, dropped = filter_fusion_list(args.fusion_list_tsv, args.out_filtered_list,
-                                       apply_filter=not args.no_artifact_filter)
+                                       apply_filter=not (args.no_artifact_filter or
+                                                         args.artifact_filter_mode == "passthrough"))
     logging.info("Fusion list: %d kept, %d dropped (%s)", kept, dropped,
-                 "passed through verbatim" if args.no_artifact_filter
+                 "passed through verbatim" if (args.no_artifact_filter or
+                                               args.artifact_filter_mode == "passthrough")
                  else "artifact / self-fusion filter")
     if kept == 0:
         logging.warning("All upstream candidates filtered out — emitting empty FASTQs and exiting.")

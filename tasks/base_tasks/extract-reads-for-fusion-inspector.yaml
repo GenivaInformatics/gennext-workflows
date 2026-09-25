@@ -40,6 +40,8 @@ spec:
           - name: arriba-tsv
             default: "."
           - name: fusion-list-tsv
+          - name: artifact-filter-mode
+            default: filter
           - name: output-dir
           - name: thread-count
           # 0 = chimeric-only mode (supplementary alignments only). >0 also
@@ -83,16 +85,17 @@ spec:
             type: DirectoryOrCreate
       container:
         name: extract-reads-for-fusion-inspector
-        # 0.3.0: dropped ENTRYPOINT; image now hosts two tools
+        # 0.3.3: supports filter/passthrough mode and hosts two tools
         # (extract-reads-for-fusion-inspector + propagate-fi-dup-flags), so
         # pods specify command explicitly. pysam added for the propagate tool.
-        image: bergun/extract-fusion-reads:0.3.0
+        image: bergun/extract-fusion-reads:0.3.3
         command: ["extract-reads-for-fusion-inspector"]
         args:
           - "--in-bam=/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}"
           - "--starfusion-tsv=/mnt/input/starfusion/{{=sprig.osBase(inputs.parameters['starfusion-tsv'])}}"
           - "--arriba-tsv=/mnt/input/arriba/{{=sprig.osBase(inputs.parameters['arriba-tsv'])}}"
           - "--fusion-list-tsv=/mnt/input/fusion-list/{{=sprig.osBase(inputs.parameters['fusion-list-tsv'])}}"
+          - "--artifact-filter-mode={{inputs.parameters.artifact-filter-mode}}"
           - "--out-r1=/mnt/output/{{inputs.parameters.sample-id}}_filtered_R1.fq.gz"
           - "--out-r2=/mnt/output/{{inputs.parameters.sample-id}}_filtered_R2.fq.gz"
           - "--out-filtered-list=/mnt/output/{{inputs.parameters.sample-id}}_fusion_list.filtered.tsv"
@@ -130,6 +133,8 @@ spec:
           - name: arriba-tsv
             default: "."
           - name: fusion-list-tsv
+          - name: artifact-filter-mode
+            default: filter
           - name: output-dir
           - name: thread-count
           - name: node-name
@@ -174,16 +179,17 @@ spec:
             type: DirectoryOrCreate
       container:
         name: extract-reads-for-fusion-inspector
-        # 0.3.0: dropped ENTRYPOINT; image now hosts two tools
+        # 0.3.3: supports filter/passthrough mode and hosts two tools
         # (extract-reads-for-fusion-inspector + propagate-fi-dup-flags), so
         # pods specify command explicitly. pysam added for the propagate tool.
-        image: bergun/extract-fusion-reads:0.3.0
+        image: bergun/extract-fusion-reads:0.3.3
         command: ["extract-reads-for-fusion-inspector"]
         args:
           - "--in-bam=/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}"
           - "--starfusion-tsv=/mnt/input/starfusion/{{=sprig.osBase(inputs.parameters['starfusion-tsv'])}}"
           - "--arriba-tsv=/mnt/input/arriba/{{=sprig.osBase(inputs.parameters['arriba-tsv'])}}"
           - "--fusion-list-tsv=/mnt/input/fusion-list/{{=sprig.osBase(inputs.parameters['fusion-list-tsv'])}}"
+          - "--artifact-filter-mode={{inputs.parameters.artifact-filter-mode}}"
           - "--out-r1=/mnt/output/{{inputs.parameters.sample-id}}_filtered_R1.fq.gz"
           - "--out-r2=/mnt/output/{{inputs.parameters.sample-id}}_filtered_R2.fq.gz"
           - "--out-filtered-list=/mnt/output/{{inputs.parameters.sample-id}}_fusion_list.filtered.tsv"
