@@ -18,7 +18,7 @@ spec:
         source: |
           import os
           token = os.environ["GENNEXT_CLUSTER_TOKEN"]
-          addr = "gennext-backend.gennext-dev.svc.cluster.local:3030"
+          addr = "gennext-backend.gennext-prod.svc.cluster.local:3030"
           url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/samples/{{inputs.parameters.sample-uuid}}/state"
           import requests
           res = requests.post(url, json={"state": "{{inputs.parameters.sample-state}}", "token": token })

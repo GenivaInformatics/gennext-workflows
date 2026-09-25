@@ -33,7 +33,7 @@ spec:
 
           # cluster info
           token = os.environ["GENNEXT_CLUSTER_TOKEN"]
-          addr = "gennext-backend.gennext-dev.svc.cluster.local:3030"
+          addr = "gennext-backend.gennext-prod.svc.cluster.local:3030"
           url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/quality"
 
           # collect input data
@@ -164,7 +164,7 @@ spec:
 
           # cluster info
           token = os.environ["GENNEXT_CLUSTER_TOKEN"]
-          addr = "gennext-backend.gennext-dev.svc.cluster.local:3030"
+          addr = "gennext-backend.gennext-prod.svc.cluster.local:3030"
           url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/quality"
 
           # collect input data
@@ -346,7 +346,7 @@ spec:
 
           # cluster info
           token = os.environ["GENNEXT_CLUSTER_TOKEN"]
-          addr = "gennext-backend.gennext-dev.svc.cluster.local:3030"
+          addr = "gennext-backend.gennext-prod.svc.cluster.local:3030"
           url = f"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/quality"
 
           # collect input data
