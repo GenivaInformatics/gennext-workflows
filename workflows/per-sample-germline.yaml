@@ -5,7 +5,7 @@ metadata:
   namespace: argo
   annotations:
     gennext.bio/expected-pods-wgs-fastq: "25"
-    gennext.bio/expected-pods-wgs-bam: "23"
+    gennext.bio/expected-pods-wgs-bam: "24"
     gennext.bio/expected-pods-wgs-vcf: "5"
     gennext.bio/expected-pods-wes-fastq: "26"
     gennext.bio/expected-pods-wes-bam: "25"

@@ -1,0 +1,4 @@
+# Keep the validated CNVkit 0.9.13 / D4tools environment unchanged.
+FROM bergun/gennext-cnv-cohort-builder:0.1.1@sha256:3872fa7af9bf75bcefd6dd8e64c75abd7199c27aee6a13604ae6c75999a8f55d
+COPY cnv_cohort_builder.py /usr/local/bin/cnv-cohort-builder
+RUN chmod +x /usr/local/bin/cnv-cohort-builder

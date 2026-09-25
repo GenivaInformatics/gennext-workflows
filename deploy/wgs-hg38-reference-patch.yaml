@@ -1,0 +1,4 @@
+# Merge patch for argo/gennext-references. The loader resolves WGS_hg38's
+# DNA design id as WGS (prefix before underscore), within the hg38 namespace.
+data:
+  hg38.somtest.WGS.regions.sv-cnv: hg38/regions/hg38_canonical_chrom_contig_regions.bed
