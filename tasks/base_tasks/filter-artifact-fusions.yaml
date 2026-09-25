@@ -26,6 +26,26 @@ spec:
     # Mirrors images/extract-reads-for-fusion-inspector/extract_reads.py
     # ARTIFACT_PATTERNS so the filter view is identical between fusion
     # outputs and FI input. Keep both in sync if the list is updated.
+    #
+    # This task emits TWO lists, deliberately at different stringencies:
+    #
+    #   output-fusion-list-tsv / output-fusions-json
+    #     The reporting view: name-filtered only. oncokb-fusion-annotation
+    #     and duckdb-fusions consume this, so nothing with real evidence is
+    #     ever withheld from the clinical report.
+    #
+    #   output-fi-fusion-list-tsv
+    #     The FusionInspector view: evidence-filtered and hard-capped.
+    #     FI realigns every candidate onto its own STAR contig index, so its
+    #     cost is linear in candidate count — measured at ~223 KB of contig
+    #     GTF, ~49 KB of contig FASTA and ~48 on-the-fly splice junctions per
+    #     candidate. Unbounded lists therefore hit STAR's own fatal ceilings
+    #     at index build: MP115-26 (28,334 candidates) blew
+    #     limitSjdbInsertNsj=1000000 with 1,357,521 junctions, and MP118-26
+    #     (63,314 candidates) needed 42.7 GB against the 34 GB
+    #     limitGenomeGenerateRAM this pipeline pins in fusion-inspector.yaml.
+    #     Since FI's role here is visualisation-only, narrowing its input
+    #     costs no reportable calls.
     - name: filter-artifact-fusions
       inputs:
         parameters:
@@ -34,12 +54,28 @@ spec:
           - name: input-fusion-list-tsv
           - name: output-fusions-json
           - name: output-fusion-list-tsv
+          - name: output-fi-fusion-list-tsv
+          # Manual override for the candidate bound. 0 (the default) derives
+          # the bound from STAR's own junction ceiling — see the SJDB_*
+          # constants in the script for the arithmetic. Set a positive integer
+          # to pin an explicit ceiling instead; it is a template parameter, so
+          # no image rebuild either way.
+          #
+          # The derived bound exists because the evidence filter cuts a
+          # roughly constant ~6.5x (28,334 -> 4,401 on MP115-26; 63,314 ->
+          # 9,603 on MP118-26), which means the input still sets the scale.
+          # It does not bind on either measured sample; it only engages on a
+          # library noisy enough to otherwise abort FusionInspector.
+          - name: fi-max-candidates
+            default: "0"
       outputs:
         parameters:
           - name: output-fusions-json
             value: "{{inputs.parameters.output-fusions-json}}"
           - name: output-fusion-list-tsv
             value: "{{inputs.parameters.output-fusion-list-tsv}}"
+          - name: output-fi-fusion-list-tsv
+            value: "{{inputs.parameters.output-fi-fusion-list-tsv}}"
       volumes:
         - name: input-fusions-json
           hostPath:
@@ -57,6 +93,10 @@ spec:
           hostPath:
             path: "{{=sprig.osDir(inputs.parameters['output-fusion-list-tsv'])}}"
             type: DirectoryOrCreate
+        - name: output-fi-fusion-list-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-fi-fusion-list-tsv'])}}"
+            type: DirectoryOrCreate
       script:
         name: filter-artifact-fusions
         image: python:3.12-slim
@@ -70,6 +110,8 @@ spec:
           IN_TSV  = "/mnt/input/tsv/{{=sprig.osBase(inputs.parameters['input-fusion-list-tsv'])}}"
           OUT_JSON = "/mnt/output/json/{{=sprig.osBase(inputs.parameters['output-fusions-json'])}}"
           OUT_TSV  = "/mnt/output/tsv/{{=sprig.osBase(inputs.parameters['output-fusion-list-tsv'])}}"
+          OUT_FI_TSV = "/mnt/output/fi-tsv/{{=sprig.osBase(inputs.parameters['output-fi-fusion-list-tsv'])}}"
+          FI_MAX = int("{{inputs.parameters.fi-max-candidates}}")
 
           # IMPORTANT: keep this list in sync with
           # images/extract-reads-for-fusion-inspector/extract_reads.py.
@@ -112,6 +154,10 @@ spec:
               return pair_keep(a, b)
 
           # ---- TSV (one geneA--geneB per line; no header) -----------------------
+          # tsv_lines keeps every input line keyed by fusion name, including
+          # ones the blocklist drops, so the FI list below can re-emit a
+          # DB-rescued fusion in its original column layout.
+          tsv_lines = {}
           kept_tsv = dropped_tsv = 0
           with open(IN_TSV) as src, open(OUT_TSV, "w") as dst:
               for line in src:
@@ -119,6 +165,7 @@ spec:
                   if not s or s.startswith("#"):
                       continue
                   pair = s.split("\t", 1)[0]
+                  tsv_lines.setdefault(pair, s)
                   if name_keep(pair):
                       dst.write(s + "\n")
                       kept_tsv += 1
@@ -162,6 +209,134 @@ spec:
           with open(OUT_JSON, "w") as fh:
               json.dump(filtered, fh, indent=2)
           print(f"fusions.json: {kept_json} kept, {dropped_json} dropped")
+
+          # ---- FusionInspector candidate list ----------------------------------
+          # Narrower than the reporting view above; see the template header for
+          # the cost model that forces a bound here.
+          CONF_RANK = {"high": 3, "medium": 2, "low": 1}
+
+          def num(x):
+              try:
+                  return float(x)
+              except (TypeError, ValueError):
+                  return 0.0
+
+          def iter_named(obj):
+              """Yield (fusion_name, entry) over either JSON shape."""
+              items = obj.items() if isinstance(obj, dict) else \
+                      ((None, v) for v in obj) if isinstance(obj, list) else ()
+              for k, v in items:
+                  if isinstance(v, dict):
+                      yield (v.get("Fusion") or v.get("fusion") or k or ""), v
+
+          def evidence(entry):
+              """Rank key, most significant field first."""
+              sf = entry.get("starfusion") or {}
+              ar = entry.get("arriba") or {}
+              return (
+                  bool(entry.get("Databases")),
+                  ar.get("reading-frame") == "in-frame",
+                  bool(sf) and bool(ar),
+                  CONF_RANK.get(ar.get("confidence"), 0),
+                  num(entry.get("Fusion Indication Index (FII)")),
+                  num(sf.get("junction_reads")) + num(sf.get("spanning_reads"))
+                  + num(ar.get("split_reads1")) + num(ar.get("split_reads2"))
+                  + num(ar.get("discordant_mates")),
+              )
+
+          # 1. Database rescue, read from the RAW json so that DB-recorded
+          #    fusions the name blocklist drops still reach FI (measured: 3 on
+          #    MP115-26, 12 on MP118-26 — NF1--SUZ12P1, LINC00469--DNMT1,
+          #    KMT2D--AC055854.1 and assorted -AS1 partners). Self-fusions are
+          #    NOT rescued: ~280 per sample are gene-vs-itself read-through
+          #    artefacts, and realigning a gene against itself shows nothing.
+          fi_selected = {}
+          for name, entry in iter_named(data):
+              if not entry.get("Databases") or "--" not in name:
+                  continue
+              a, b = name.split("--", 1)
+              if a and b and a != b:
+                  fi_selected[name] = evidence(entry)
+          n_rescued = len(fi_selected)
+
+          # 2. Evidence filter over the name-filtered set: caller concordance,
+          #    or arriba confidence >= medium, or an in-frame call. A raw
+          #    read-count floor was measured and rejected — it retains only 10
+          #    of 361 in-frame calls on MP118-26, because in-frame fusions in
+          #    these FFPE libraries are typically low-confidence-but-corroborated
+          #    rather than deeply covered.
+          ranked = []
+          for name, entry in iter_named(filtered):
+              if name in fi_selected:
+                  continue
+              ev = evidence(entry)
+              _, inframe, both, conf, _, _ = ev
+              if both or conf >= 2 or inframe:
+                  ranked.append((name, ev))
+
+          # 3. Rank, then bound. in-frame deliberately outranks concordance —
+          #    rank concordance first and several thousand concordant calls
+          #    crowd the in-frame ones out of any truncation. Ranking runs even
+          #    when nothing is truncated: it orders the emitted file
+          #    strongest-evidence-first, which is how a human reads it.
+          ranked.sort(key=lambda t: t[1], reverse=True)
+
+          # The bound is derived from STAR's own ceiling, not fixed. FI builds
+          # one STAR contig index over the whole candidate set, and STAR aborts
+          # at index build once on-the-fly junctions exceed limitSjdbInsertNsj
+          # (default 1,000,000; FI never raises it, and unlike
+          # limitGenomeGenerateRAM it is not patchable from
+          # fusion-inspector.yaml because run_FI_STAR.pl does not pass it).
+          # Measured on the MP115-26 failure: 1,357,521 junctions for 28,334
+          # candidates, i.e. ~48 per candidate. Budgeting 70% of the limit
+          # leaves margin for that ratio varying between samples, while
+          # letting the evidence filter — not a constant — decide the list
+          # size on every run that is not pathological. On the two measured
+          # samples the bound never binds: MP115-26 lands at 21% of the limit
+          # and MP118-26 at 46%.
+          SJDB_PER_CANDIDATE = 48
+          SJDB_LIMIT = 1000000
+          SJDB_BUDGET_FRACTION = 0.70
+          derived_max = int(SJDB_LIMIT * SJDB_BUDGET_FRACTION / SJDB_PER_CANDIDATE)
+
+          # fi-max-candidates > 0 overrides the derived bound outright.
+          bound = FI_MAX if FI_MAX > 0 else derived_max
+          n_eligible = len(fi_selected) + len(ranked)
+          # Database-recorded fusions are seated first and are never truncated,
+          # even in the (currently hypothetical) case where they alone exceed
+          # the budget — a few hundred contigs cannot threaten the ceiling.
+          ranked = ranked[:max(0, bound - len(fi_selected))]
+          fi_selected.update(dict(ranked))
+
+          with open(OUT_FI_TSV, "w") as fh:
+              for name, _ in sorted(fi_selected.items(), key=lambda t: t[1], reverse=True):
+                  fh.write(tsv_lines.get(name, name) + "\n")
+
+          n_fi = len(fi_selected)
+          n_dropped = n_eligible - n_fi
+          origin = "fi-max-candidates" if FI_MAX > 0 else \
+                   f"{SJDB_BUDGET_FRACTION:.0%} of limitSjdbInsertNsj"
+          print(f"fusion_list.fi.tsv: {n_fi} candidates for FusionInspector "
+                f"(of {kept_json} name-filtered; {n_rescued} database-rescued; "
+                f"{n_eligible} eligible after the evidence filter)")
+          # Never truncate silently: a shorter list than the evidence justifies
+          # is a result the reader has to know about.
+          if n_dropped > 0:
+              print(f"  TRUNCATED: dropped the {n_dropped} lowest-ranked eligible "
+                    f"candidates to stay within the bound of {bound} ({origin}). "
+                    f"Database, in-frame and concordant calls are seated first.",
+                    file=sys.stderr)
+          else:
+              print(f"  bound not reached ({n_fi}/{bound}, {origin}) — "
+                    "the evidence filter alone set this list size")
+          # Projected STAR cost at contig-index build, from the per-candidate
+          # scaling measured on the MP115-26 / MP118-26 failures. Logged so a
+          # run drifting toward the fatal ceilings is visible here rather than
+          # two hours later inside FusionInspector.
+          print(f"  projected STAR index build: ~{n_fi * 223 / 1024 / 1024:.2f} GB contig GTF, "
+                f"~{n_fi * SJDB_PER_CANDIDATE:,} sjdb junctions "
+                f"({n_fi * SJDB_PER_CANDIDATE / SJDB_LIMIT:.0%} of limitSjdbInsertNsj), "
+                f"~{n_fi * 675 / 1024 / 1024:.1f} GB RAM (34 GB ceiling)")
         volumeMounts:
           - name: input-fusions-json
             mountPath: "/mnt/input/json/{{=sprig.osBase(inputs.parameters['input-fusions-json'])}}"
@@ -171,6 +346,8 @@ spec:
             mountPath: "/mnt/output/json/"
           - name: output-fusion-list-tsv
             mountPath: "/mnt/output/tsv/"
+          - name: output-fi-fusion-list-tsv
+            mountPath: "/mnt/output/fi-tsv/"
         resources:
           requests:
             memory: 1Gi

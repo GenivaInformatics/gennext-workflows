@@ -211,7 +211,7 @@ rules:
 - Cluster: RKE2 v1.28
 - Argo Workflows: v3.4.11
 - Namespace: `argo` (workflows), `gennext-dev`/`gennext-prod` (services)
-- Backend URL (from within cluster): `gennext-backend.gennext-dev.svc.cluster.local:3030`
+- Backend URL (from within cluster): `gennext-backend.gennext-prod.svc.cluster.local:3030`
 - Cluster token: stored in secret `gennext-cluster-secrets` key `gennext_cluster_token`
 
 ## Testing

@@ -6,7 +6,7 @@ Post-processing workflows run batch-level analysis (e.g. CNV) across groups of s
 
 | Template | WorkflowTemplate name | Status |
 |---|---|---|
-| `workflows/post-process-cnv.yaml` | `post-process-cnv` | Dummy (sleep steps, replace with real CNV) |
+| `workflows/post-process-cnv.yaml` | `post-process-cnv` | CNVkit against the shared healthy-cohort per-design reference |
 
 ## Template contract
 

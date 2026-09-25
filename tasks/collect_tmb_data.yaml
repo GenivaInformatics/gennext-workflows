@@ -93,7 +93,7 @@ spec:
             --af-lower-threshold \"{{inputs.parameters.af-lower-threshold}}\" \
             --af-upper-threshold \"{{inputs.parameters.af-upper-threshold}}\" \
             --output-dir \"/mnt/output/\" \
-            --api-endpoint \"http://gennext-backend.gennext-dev.svc.cluster.local:3030/api/v0/runs/{{inputs.parameters.run-id}}/somatic\" \
+            --api-endpoint \"http://gennext-backend.gennext-prod.svc.cluster.local:3030/api/v0/runs/{{inputs.parameters.run-id}}/somatic\" \
             --api-token \"$GENNEXT_CLUSTER_TOKEN\" \
             --run-id \"{{inputs.parameters.run-id}}\" \
             --sample-id \"{{inputs.parameters.sample-id}}\""
@@ -234,7 +234,7 @@ spec:
             --af-lower-threshold \"{{inputs.parameters.af-lower-threshold}}\" \
             --af-upper-threshold \"{{inputs.parameters.af-upper-threshold}}\" \
             --output-dir \"/mnt/output/\" \
-            --api-endpoint \"http://gennext-backend.gennext-dev.svc.cluster.local:3030/api/v0/runs/{{inputs.parameters.run-id}}/somatic\" \
+            --api-endpoint \"http://gennext-backend.gennext-prod.svc.cluster.local:3030/api/v0/runs/{{inputs.parameters.run-id}}/somatic\" \
             --api-token \"$GENNEXT_CLUSTER_TOKEN\" \
             --run-id \"{{inputs.parameters.run-id}}\" \
             --sample-id \"{{inputs.parameters.sample-id}}\""
@@ -381,7 +381,7 @@ spec:
             --af-lower-threshold \"{{inputs.parameters.af-lower-threshold}}\" \
             --af-upper-threshold \"{{inputs.parameters.af-upper-threshold}}\" \
             --output-dir \"/mnt/output/\" \
-            --api-endpoint \"http://gennext-backend.gennext-dev.svc.cluster.local:3030/api/v0/runs/{{inputs.parameters.run-id}}/somatic\" \
+            --api-endpoint \"http://gennext-backend.gennext-prod.svc.cluster.local:3030/api/v0/runs/{{inputs.parameters.run-id}}/somatic\" \
             --api-token \"$GENNEXT_CLUSTER_TOKEN\" \
             --run-id \"{{inputs.parameters.run-id}}\" \
             --sample-id \"{{inputs.parameters.sample-id}}\""

@@ -372,7 +372,12 @@ spec:
                   value: "{{tasks.filter-annotsv.outputs.parameters.annotsv-filtered-out-tsv}}"
                 - name: output-duckdb
                   value: "{{inputs.parameters.temp-rel-dir}}results/db/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_results.duckdb"
-            depends: "oncokb-sv"
+            # duckdb-snv must write the results.duckdb FIRST: DuckDB 0.8.1 fails
+            # to commit a second writer's tables into an already-populated file
+            # ("invalid/unsupported GZIP stream"), silently dropping combined_snv.
+            # Gating sv on duckdb-snv forces snv into the empty db first; the
+            # per-file mutex then serialises the rest safely.
+            depends: "oncokb-sv && duckdb-snv"
           - name: verifybamid
             templateRef:
               name: verifybamid-template
@@ -879,7 +884,12 @@ spec:
                   value: "{{tasks.filter-annotsv.outputs.parameters.annotsv-filtered-out-tsv}}"
                 - name: output-duckdb
                   value: "{{inputs.parameters.temp-rel-dir}}results/db/{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleId')}}_results.duckdb"
-            depends: "oncokb-sv"
+            # duckdb-snv must write the results.duckdb FIRST: DuckDB 0.8.1 fails
+            # to commit a second writer's tables into an already-populated file
+            # ("invalid/unsupported GZIP stream"), silently dropping combined_snv.
+            # Gating sv on duckdb-snv forces snv into the empty db first; the
+            # per-file mutex then serialises the rest safely.
+            depends: "oncokb-sv && duckdb-snv"
           - name: verifybamid
             templateRef:
               name: verifybamid-template

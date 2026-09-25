@@ -57,6 +57,8 @@ spec:
                   value: "."
                 - name: input-rel-dir
                   value: "{{inputs.parameters.input-rel-dir}}"
+                - name: sample-uuid
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleUuid')}}"
           - name: copy-fastq-to-scratch
             templateRef:
               name: copy-inputs-to-scratch
@@ -468,6 +470,22 @@ spec:
                   value: "{{inputs.parameters.ref-base-dir}}"
                 - name: ref-ver
                   value: "{{=jsonpath(inputs.parameters['run-data'], '$.refVersion')}}"
+          - name: check-file-path
+            templateRef:
+              name: check-file-path
+              template: check-file-path
+            arguments:
+              parameters:
+                - name: input-file-1
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.bam.name')}}"
+                - name: input-file-2
+                  value: "."
+                - name: input-file-3
+                  value: "."
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: sample-uuid
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleUuid')}}"
           - name: copy-bam-to-scratch
             templateRef:
               name: copy-inputs-to-scratch
@@ -475,9 +493,9 @@ spec:
             arguments:
               parameters:
                 - name: bam
-                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.bam.name')}}"
+                  value: "{{tasks.check-file-path.outputs.parameters.output-file-1}}"
                 - name: input-rel-dir
-                  value: "{{inputs.parameters.input-rel-dir}}"
+                  value: "{{tasks.check-file-path.outputs.parameters.input-rel-dir-1}}"
                 - name: scratch-rel-dir
                   value: "{{inputs.parameters.scratch-rel-dir}}"
                   # - name: run-data
@@ -486,6 +504,7 @@ spec:
                   #   value: "{{inputs.parameters.input-rel-dir}}"
                   # - name: scratch-rel-dir
                   #   value: "{{inputs.parameters.scratch-rel-dir}}"
+            depends: "check-file-path"
           - name: pb-bam2fq
             templateRef:
               name: parabricks-bam2fq-template
@@ -796,6 +815,22 @@ spec:
             default: "8"
       dag:
         tasks:
+          - name: check-file-path
+            templateRef:
+              name: check-file-path
+              template: check-file-path
+            arguments:
+              parameters:
+                - name: input-file-1
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.vcf.name')}}"
+                - name: input-file-2
+                  value: "."
+                - name: input-file-3
+                  value: "."
+                - name: input-rel-dir
+                  value: "{{inputs.parameters.input-rel-dir}}"
+                - name: sample-uuid
+                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].sampleUuid')}}"
           - name: copy-vcf-to-output
             templateRef:
               name: copy-inputs-to-scratch
@@ -803,11 +838,12 @@ spec:
             arguments:
               parameters:
                 - name: vcf
-                  value: "{{=jsonpath(inputs.parameters['run-data'], '$.samples[0].files.vcf.name')}}"
+                  value: "{{tasks.check-file-path.outputs.parameters.output-file-1}}"
                 - name: input-rel-dir
-                  value: "{{inputs.parameters.input-rel-dir}}"
+                  value: "{{tasks.check-file-path.outputs.parameters.input-rel-dir-1}}"
                 - name: scratch-rel-dir
                   value: "{{inputs.parameters.output-rel-dir}}/vcf/"
+            depends: "check-file-path"
           - name: cravat
             templateRef:
               name: cravat-templates

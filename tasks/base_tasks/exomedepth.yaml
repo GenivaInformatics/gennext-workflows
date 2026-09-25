@@ -15,6 +15,10 @@ spec:
           - name: ref-cohort
           - name: ref-fasta
           - name: output-vcf
+          # Minimum number of target bins with >5 reads required before CNV
+          # calling is attempted. See the coverage pre-flight in the script.
+          - name: min-informative-bins
+            value: "500"
       outputs:
         parameters:
           - name: output-vcf
@@ -71,6 +75,32 @@ spec:
           output.vcf <- "/mnt/output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf'])}}"
 
           message("Running ExomeDepth for sample: ", input.id)
+
+          # Create VCF header
+          vcf_header <- c(
+            "##fileformat=VCFv4.2",
+            paste0("##fileDate=", format(Sys.Date(), "%Y%m%d")),
+            "##INFO=<ID=END,Number=1,Type=Integer,Description=\"End position of the variant described in this record\">",
+            "##INFO=<ID=SVLEN,Number=1,Type=Integer,Description=\"Difference in length between REF and ALT alleles\">",
+            "##INFO=<ID=SVTYPE,Number=1,Type=String,Description=\"Type of structural variant\">",
+            "##ALT=<ID=DEL,Description=\"Deletion\">",
+            "##ALT=<ID=DUP,Description=\"Duplication\">",
+            "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">",
+            "##FORMAT=<ID=CN,Number=1,Type=Integer,Description=\"Copy number genotype for imprecise events\">",
+            "##FORMAT=<ID=CNQ,Number=1,Type=Float,Description=\"Copy number genotype quality for imprecise events\">",
+            "##FORMAT=<ID=BF,Number=1,Type=Float,Description=\"Bayes Factor from ExomeDepth, log10 likelihood ratio supporting CNV\">",
+            sprintf("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t%s", input.id)
+          )
+
+          # Write the VCF (header plus zero or more body lines), bgzip and index
+          # it. Always called exactly once so every exit path leaves a valid,
+          # indexed output-vcf for the downstream annotsv step.
+          write_vcf <- function(vcf_body) {
+            tmp_vcf <- tempfile(fileext = ".vcf")
+            writeLines(c(vcf_header, vcf_body), con = tmp_vcf)
+            Rsamtools::bgzip(tmp_vcf, dest = output.vcf, overwrite = TRUE)
+            Rsamtools::indexTabix(output.vcf, format = "vcf")
+          }
 
           map_bam_to_column_names <- function(bam_files, count_data_frame) {
             # Create a mapping between original BAM filenames and column names in data frame
@@ -136,6 +166,33 @@ spec:
           # Calculate bin length for optimization (or use constant value if all exons are similar size)
           bin.length <- (new.count.dafr$end - new.count.dafr$start)/1000
 
+          # Coverage pre-flight.
+          #
+          # ExomeDepth needs usable depth across a decent fraction of the target
+          # space. When a targeted panel is run against the exome-wide gencode
+          # BED, nearly every bin is empty: select.reference.set reports "the
+          # coverage is too small to perform any meaningful inference", leaves
+          # mean.p as NA, and then dies inside its own loop with the opaque
+          # "missing value where TRUE/FALSE needed". Sample 25-115-BAM (a 7-gene
+          # lysosomal panel routed as wes) had 88 of 201,809 bins above 5 reads
+          # and took an otherwise complete 19/20 workflow down with it.
+          #
+          # Detect that case up front and skip CNV calling instead of crashing,
+          # emitting an empty-but-valid VCF so downstream steps still run.
+          min.informative.bins <- as.integer("{{inputs.parameters.min-informative-bins}}")
+          informative.bins <- sum(test.counts > 5, na.rm = TRUE)
+          message("Target bins with >5 reads: ", informative.bins, " of ", length(test.counts),
+                  " (minimum required: ", min.informative.bins, ")")
+
+          if (informative.bins < min.informative.bins) {
+            message("Coverage over the target regions is too sparse for ExomeDepth; ",
+                    "skipping CNV calling and writing an empty VCF. This usually means ",
+                    "the sample is a targeted panel being analysed against an exome-wide ",
+                    "region set, or that overall coverage is too low.")
+            write_vcf(character(0))
+            quit(save = "no", status = 0)
+          }
+
           # Select the optimal reference set for this test sample
           my.choice <- select.reference.set(
             test.counts = test.counts,
@@ -200,31 +257,14 @@ spec:
             paste(chrom, pos, id, ref, alt, qual, filter, info, format, sample, sep="\t")
           }
 
-          # Create VCF header
-          vcf_header <- c(
-            "##fileformat=VCFv4.2",
-            paste0("##fileDate=", format(Sys.Date(), "%Y%m%d")),
-            "##INFO=<ID=END,Number=1,Type=Integer,Description=\"End position of the variant described in this record\">",
-            "##INFO=<ID=SVLEN,Number=1,Type=Integer,Description=\"Difference in length between REF and ALT alleles\">",
-            "##INFO=<ID=SVTYPE,Number=1,Type=String,Description=\"Type of structural variant\">",
-            "##ALT=<ID=DEL,Description=\"Deletion\">",
-            "##ALT=<ID=DUP,Description=\"Duplication\">",
-            "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">",
-            "##FORMAT=<ID=CN,Number=1,Type=Integer,Description=\"Copy number genotype for imprecise events\">",
-            "##FORMAT=<ID=CNQ,Number=1,Type=Float,Description=\"Copy number genotype quality for imprecise events\">",
-            "##FORMAT=<ID=BF,Number=1,Type=Float,Description=\"Bayes Factor from ExomeDepth, log10 likelihood ratio supporting CNV\">",
-            sprintf("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t%s", input.id)
-          )
+          # Create VCF body. apply() over a zero-row matrix returns a list, which
+          # writeLines cannot consume, so a sample with no calls is handled
+          # explicitly rather than failing at the write.
+          if (nrow(cnvs) > 0) {
+            vcf_body <- apply(cnvs, 1, make_vcf_line)
+          } else {
+            message("No CNVs called for sample ", input.id, "; writing an empty VCF.")
+            vcf_body <- character(0)
+          }
 
-          # Create VCF body
-          vcf_body <- apply(cnvs, 1, make_vcf_line)
-
-          # Write uncompressed VCF to a temporary file
-          tmp_vcf <- tempfile(fileext = ".vcf")
-          writeLines(c(vcf_header, vcf_body), con = tmp_vcf)
-
-          # Compress with bgzip
-          Rsamtools::bgzip(tmp_vcf, dest = output.vcf, overwrite = TRUE)
-
-          # Index with tabix
-          Rsamtools::indexTabix(output.vcf, format = "vcf")
+          write_vcf(vcf_body)

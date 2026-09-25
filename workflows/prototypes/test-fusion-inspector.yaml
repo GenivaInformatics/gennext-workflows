@@ -278,6 +278,8 @@ spec:
                   value: "{{workflow.parameters.output-dir}}fusions/fusion-report/{{workflow.parameters.sample-id}}_fusions.filtered.json"
                 - name: output-fusion-list-tsv
                   value: "{{workflow.parameters.output-dir}}fusions/fusion-report/{{workflow.parameters.sample-id}}_fusion_list.filtered.tsv"
+                - name: output-fi-fusion-list-tsv
+                  value: "{{workflow.parameters.output-dir}}fusions/fusion-report/{{workflow.parameters.sample-id}}_fusion_list.fi.tsv"
             depends: "fusion-report"
 
           # Pre-filter the marked BAM down to artifact-filtered fusion-relevant
@@ -298,7 +300,7 @@ spec:
                 - name: arriba-tsv
                   value: "{{tasks.arriba.outputs.parameters.output-fusions-tsv}}"
                 - name: fusion-list-tsv
-                  value: "{{tasks.filter-artifact-fusions.outputs.parameters.output-fusion-list-tsv}}"
+                  value: "{{tasks.filter-artifact-fusions.outputs.parameters.output-fi-fusion-list-tsv}}"
                 - name: output-dir
                   value: "{{workflow.parameters.scratch-dir}}extracted_reads/"
                 - name: thread-count

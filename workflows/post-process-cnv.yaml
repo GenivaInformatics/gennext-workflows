@@ -70,20 +70,60 @@ spec:
                   value: "{{workflow.parameters.post-process-steps}}"
             depends: get-node-config
 
-          # --- Prepare reference files (access + target + antitarget) ---
-          - name: prepare-references
-            template: cnvkit-prepare-references
+          # --- Ensure the healthy-cohort reference for this canonical CNV BED ---
+          - name: ensure-kit-reference
+            templateRef:
+              name: per-sample-cnv-cohort-analysis
+              template: ensure-kit-reference
             arguments:
               parameters:
+                - name: ref-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.ref-base-dir}}"
+                - name: ref-version
+                  value: "hg38"
                 - name: ref-genome
                   value: "{{tasks.batch-load-and-prepare.outputs.parameters.ref-genome}}"
                 - name: regions-file
                   value: "{{tasks.batch-load-and-prepare.outputs.parameters.regions-file}}"
                 - name: ref-flat
                   value: "{{tasks.batch-load-and-prepare.outputs.parameters.ref-flat}}"
+                - name: thread-count
+                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.thread-count}}"
+            depends: batch-load-and-prepare
+
+          # --- Validate the filename-keyed cache against canonical inputs ---
+          - name: validate-kit-reference
+            templateRef:
+              name: per-sample-cnv-cohort-analysis
+              template: validate-kit-reference
+            arguments:
+              parameters:
+                - name: ref-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.ref-base-dir}}"
+                - name: ref-version
+                  value: "hg38"
+                - name: regions-file
+                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.regions-file}}"
+                - name: ref-genome
+                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.ref-genome}}"
+                - name: ref-flat
+                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.ref-flat}}"
+            depends: ensure-kit-reference
+
+          # --- Stage the shared kit reference into batch scratch ---
+          - name: stage-kit-reference
+            template: stage-kit-reference
+            arguments:
+              parameters:
+                - name: ref-base-dir
+                  value: "{{tasks.get-node-config.outputs.parameters.ref-base-dir}}"
+                - name: ref-version
+                  value: "hg38"
+                - name: regions-file
+                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.regions-file}}"
                 - name: scratch-cnv-dir
                   value: "{{tasks.batch-load-and-prepare.outputs.parameters.scratch-cnv-dir}}"
-            depends: batch-load-and-prepare
+            depends: validate-kit-reference
 
           # --- Calculate coverage per sample ---
           - name: coverage
@@ -97,22 +137,7 @@ spec:
                 - name: output-base-dir
                   value: "{{tasks.get-node-config.outputs.parameters.output-rel-dir}}"
             withParam: "{{tasks.batch-load-and-prepare.outputs.parameters.sample-list}}"
-            depends: prepare-references
-
-          # --- Build pooled reference from all coverage files ---
-          - name: build-pooled-reference
-            template: cnvkit-build-reference
-            arguments:
-              parameters:
-                - name: kit-references-dir
-                  value: "{{=sprig.osDir(sprig.osDir(tasks['batch-load-and-prepare'].outputs.parameters['ref-flat']))}}/other/cnvkit/"
-                - name: regions-file
-                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.regions-file}}"
-                - name: ref-genome
-                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.ref-genome}}"
-                - name: scratch-cnv-dir
-                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.scratch-cnv-dir}}"
-            depends: coverage
+            depends: stage-kit-reference
 
           # --- Per-sample analysis pipeline (analyze → filter → annotsv → oncokb → duckdb) ---
           - name: per-sample-cnv
@@ -136,7 +161,7 @@ spec:
                 - name: run-hrd
                   value: "{{tasks.batch-load-and-prepare.outputs.parameters.run-hrd}}"
             withParam: "{{tasks.batch-load-and-prepare.outputs.parameters.sample-list}}"
-            depends: build-pooled-reference
+            depends: coverage
 
           # --- Notify backend: post-processing complete ---
           - name: set-postprocess-completed
@@ -167,52 +192,47 @@ spec:
             depends: set-postprocess-completed
 
     # =====================================================================
-    # CNVkit: prepare references (access + target + antitarget)
+    # Stage the shared healthy-cohort kit reference into batch scratch.
+    # Both cohort and batch analysis then consume byte-identical targets,
+    # antitargets, and pooled_reference files.
     # =====================================================================
-    - name: cnvkit-prepare-references
+    - name: stage-kit-reference
       inputs:
         parameters:
-          - name: ref-genome
+          - name: ref-base-dir
+          - name: ref-version
           - name: regions-file
-          - name: ref-flat
           - name: scratch-cnv-dir
       script:
-        image: bergun/gennext-cnv-cohort-builder:0.1.2-wgs
+        image: alpine:3.20
         command: [sh]
         source: |
-          set -e
+          set -eu
+          KIT_NAME="$(basename "{{inputs.parameters.regions-file}}" .bed)"
+          KIT_DIR="/kits/${KIT_NAME}"
+          for FILE in targets.bed antitargets.bed pooled_reference.cnn build.json; do
+            if [ ! -f "${KIT_DIR}/${FILE}" ]; then
+              echo "Missing cohort kit reference file: ${KIT_DIR}/${FILE}" >&2
+              exit 1
+            fi
+          done
           mkdir -p /scratch/references /scratch/coverage
-
-          cnv-cohort-builder prepare-bins \
-            --kit-bed /ref/regions/{{=sprig.osBase(inputs.parameters['regions-file'])}} \
-            --ref-fa /ref/genome/{{=sprig.osBase(inputs.parameters['ref-genome'])}} \
-            --ref-flat /ref/refflat/{{=sprig.osBase(inputs.parameters['ref-flat'])}} \
-            --output-dir /scratch/references --mode auto --wgs-bin-size 10000
+          cp "${KIT_DIR}/targets.bed" /scratch/references/targets.bed
+          cp "${KIT_DIR}/antitargets.bed" /scratch/references/antitargets.bed
+          cp "${KIT_DIR}/pooled_reference.cnn" /scratch/references/pooled_reference.cnn
+          cp "${KIT_DIR}/build.json" /scratch/references/build.json
+          echo "Staged healthy-cohort CNVkit reference: ${KIT_NAME}"
         volumeMounts:
-          - name: ref-genome-dir
-            mountPath: /ref/genome/
-            readOnly: true
-          - name: regions-dir
-            mountPath: /ref/regions/
-            readOnly: true
-          - name: refflat-dir
-            mountPath: /ref/refflat/
+          - name: kits-dir
+            mountPath: /kits/
             readOnly: true
           - name: scratch
             mountPath: /scratch/
       volumes:
-        - name: ref-genome-dir
+        - name: kits-dir
           hostPath:
-            path: "{{=sprig.osDir(inputs.parameters['ref-genome'])}}"
-            type: Directory
-        - name: regions-dir
-          hostPath:
-            path: "{{=sprig.osDir(inputs.parameters['regions-file'])}}"
-            type: Directory
-        - name: refflat-dir
-          hostPath:
-            path: "{{=sprig.osDir(inputs.parameters['ref-flat'])}}"
-            type: Directory
+            path: "{{inputs.parameters.ref-base-dir}}{{inputs.parameters.ref-version}}/other/cnvkit/"
+            type: DirectoryOrCreate
         - name: scratch
           hostPath:
             path: "{{inputs.parameters.scratch-cnv-dir}}"
@@ -247,7 +267,7 @@ spec:
             /scratch/references/targets.bed \
             -o /scratch/coverage/${UUID}.targetcoverage.cnn
 
-          # WGS has no off-target bins.
+          # WGS and amplicon cohort references can have no antitarget bins.
           if [ -s /scratch/references/antitargets.bed ]; then
             cnvkit.py coverage \
               "$BAM_PATH" \
@@ -271,58 +291,6 @@ spec:
         - name: output-base
           hostPath:
             path: "{{inputs.parameters.output-base-dir}}"
-            type: Directory
-
-    # =====================================================================
-    # CNVkit: build pooled reference from all coverage files
-    # =====================================================================
-    - name: cnvkit-build-reference
-      inputs:
-        parameters:
-          - name: kit-references-dir
-          - name: regions-file
-          - name: ref-genome
-          - name: scratch-cnv-dir
-      script:
-        image: quay.io/biocontainers/cnvkit:0.9.13--pyhdfd78af_0
-        command: [sh]
-        source: |
-          set -e
-          if [ "$(cat /scratch/references/cnv-mode.txt)" = wgs ]; then
-            # A WGS tumor must never serve as its own normal. The main workflow
-            # builds this healthy-cohort reference before batch post-processing.
-            KIT_DIR="/kits/{{=sprig.trimSuffix(".bed", sprig.osBase(inputs.parameters['regions-file']))}}"
-            test "$(cat "$KIT_DIR/cnv-mode.txt")" = wgs
-            cmp /scratch/references/targets.bed "$KIT_DIR/targets.bed"
-            test -s "$KIT_DIR/pooled_reference.cnn"
-            cp "$KIT_DIR/pooled_reference.cnn" /scratch/references/pooled_reference.cnn
-          else
-            cnvkit.py reference \
-              /scratch/coverage/*.cnn \
-              -f /ref/genome/{{=sprig.osBase(inputs.parameters['ref-genome'])}} \
-              -o /scratch/references/pooled_reference.cnn
-          fi
-        volumeMounts:
-          - name: kit-references
-            mountPath: /kits/
-            readOnly: true
-          - name: ref-genome-dir
-            mountPath: /ref/genome/
-            readOnly: true
-          - name: scratch
-            mountPath: /scratch/
-      volumes:
-        - name: kit-references
-          hostPath:
-            path: "{{inputs.parameters.kit-references-dir}}"
-            type: DirectoryOrCreate
-        - name: ref-genome-dir
-          hostPath:
-            path: "{{=sprig.osDir(inputs.parameters['ref-genome'])}}"
-            type: Directory
-        - name: scratch
-          hostPath:
-            path: "{{inputs.parameters.scratch-cnv-dir}}"
             type: Directory
 
     # =====================================================================

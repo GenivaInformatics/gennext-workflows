@@ -501,6 +501,8 @@ spec:
                   value: "{{inputs.parameters.ref-base-dir}}"
                 - name: ref-paths
                   value: "{{inputs.parameters.ref-paths}}"
+                - name: sample-run-data
+                  value: "{{inputs.parameters.sample-run-data}}"
                 - name: regions-file
                   value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-file}}"
                 - name: input-bam
@@ -576,29 +578,8 @@ spec:
                 - name: regions-bed-f
                   value: "{{= jsonpath(inputs.parameters['dna-input-files'], '$.msiBedFile') != '' ? tasks['validate-msi-bed-file'].outputs.parameters['validated-bed-file'] : tasks['validate-bed-file'].outputs.parameters['validated-bed-file'] }}"
                 # Per-kit MSI depth gate, from enrichment_kits.msi_min_coverage.
-                #
-                # sample-run-data is the run manifest (type: runManifest), so the
-                # per-sample fields live under samples[]. The per-sample workflows
-                # resolve exactly one sample, which is why samples[0] is the
-                # established idiom here -- see the files.* lookups above.
-                #
-                # The backend resolves the default, so this is a plain lookup that
-                # cannot fail: a kit pinning nothing, or a sample with no kit at
-                # all, already arrives as 500. Argo 3.4's jsonpath() errors on a
-                # missing path and then emits the unevaluated template text as the
-                # parameter value, which reaches the filter script as a Python
-                # syntax error -- so the path has to be exactly right, and the
-                # backend has to be new enough to emit the field.
-                # The lookup indexes the sample map and defaults, rather than
-                # addressing '$.samples[0].msiMinCoverage' directly, so that a
-                # manifest produced by a pre-0.83.0 backend -- which has no such
-                # key -- degrades to 500 instead of failing the run. Argo 3.4's
-                # jsonpath() errors on a missing path and then emits the
-                # unevaluated template text as the parameter value, which the
-                # filter script interpolates into Python as a syntax error;
-                # indexing a map that does exist cannot fail that way. Verified
-                # on the running controller for value / explicit null / absent
-                # key: 100, 500, 500.
+                # Read the first sample from the run manifest. Default to 500
+                # for older manifests without msiMinCoverage.
                 - name: min-coverage
                   value: "{{= sprig.default('500', jsonpath(inputs.parameters['sample-run-data'], '$.samples[0]')['msiMinCoverage']) }}"
                 - name: filtered-output-tsv
