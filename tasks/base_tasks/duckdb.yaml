@@ -136,6 +136,12 @@ spec:
           - name: annovar-oncokb-maf
             mountPath: "/mnt/input/oncokb_maf.tsv"
     - name: duckdb-snv
+      retryStrategy:
+        limit: "2"
+        retryPolicy: "OnFailure"
+        backoff:
+          duration: "30s"
+          factor: 2
       # Serialize all writers of a given results DuckDB file. duckdb-snv/-sv/-cnv
       # run in parallel in the somatic DAGs and all write the same file; without a
       # lock the last writer to checkpoint clobbers the others' tables (e.g. the
@@ -1362,6 +1368,12 @@ spec:
           - name: annovar-oncokb-maf
             mountPath: "/mnt/input/oncokb_maf.tsv"
     - name: duckdb-snv-vcf-only
+      retryStrategy:
+        limit: "2"
+        retryPolicy: "OnFailure"
+        backoff:
+          duration: "30s"
+          factor: 2
       # See duckdb-snv: per-file mutex so concurrent writers of the same results
       # DuckDB serialize instead of clobbering each other.
       synchronization:
