@@ -17,6 +17,8 @@ spec:
           - name: output-base-dir
           - name: run-id
           - name: run-hrd
+          - name: regions-file
+            value: "."
       dag:
         tasks:
           # --- Resolve per-sample paths from scratch JSON ---
@@ -114,6 +116,8 @@ spec:
                   value: "{{tasks.resolve-sample.outputs.parameters.output-cnv-dir}}/{{inputs.parameters.sample-id}}_CNV_oncokb_annot.tsv"
                 - name: tumor-type
                   value: "{{tasks.resolve-sample.outputs.parameters.tumor-type}}"
+                - name: regions-file
+                  value: "{{inputs.parameters.regions-file}}"
             depends: annotsv-to-oncokb
 
           # --- Write results to DuckDB ---

@@ -327,6 +327,8 @@ spec:
                   value: "{{inputs.parameters.ref-version}}"
                 - name: tumor-type
                   value: "{{inputs.parameters.tumor-type}}"
+                - name: regions-file
+                  value: "{{=jsonpath(inputs.parameters['dna-input-files'], '$.regionsFile')}}"
             depends: "annovar-to-maf"
           - name: get-otherinfo-columns
             templateRef:
@@ -451,6 +453,8 @@ spec:
                   value: "{{inputs.parameters.sample-temp-dir}}results/sv/{{inputs.parameters.sample-id}}_SV_oncokb_annot.tsv"
                 - name: tumor-type
                   value: "{{inputs.parameters.tumor-type}}"
+                - name: regions-file
+                  value: "{{=jsonpath(inputs.parameters['dna-input-files'], '$.regionsFile')}}"
             depends: "annotsv-to-oncokb-format"
           - name: duckdb-sv
             templateRef:
