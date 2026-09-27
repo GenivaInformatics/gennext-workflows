@@ -176,13 +176,17 @@ spec:
       script:
         name: "duckdb-snv-script"
         image: qldrsc/duckdb:latest
-        command: ["duckdb", "-init"]
+        command: ["sh"]
         source: |
+          set -eu
+          sql_file=$(mktemp)
+          trap 'rm -f "$sql_file"' EXIT
+          cat > "$sql_file" <<'SQL'
           .open /mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}
+          DROP VIEW IF EXISTS advanced_combined_snv;
+          DROP VIEW IF EXISTS combined_snv;
           DROP TABLE IF EXISTS oncokb_snv;
           DROP TABLE IF EXISTS cancervar_snv;
-          DROP VIEW IF EXISTS combined_snv;
-          DROP VIEW IF EXISTS advanced_combined_snv;
           CREATE TABLE oncokb_snv AS FROM read_csv_auto('/mnt/input/oncokb_snv.tsv', header=True, sep='\t', sample_size=-1);
           CREATE TABLE cancervar_snv AS FROM read_csv_auto('/mnt/input/cancervar_snv.tsv', header=True, sep='\t', sample_size=-1);
           CREATE OR REPLACE VIEW combined_snv AS
@@ -510,6 +514,11 @@ spec:
                         AND cancervar_snv_with_row_ids."Alt" = oncokb_snv."Tumor_Seq_Allele2"
                         AND cancervar_snv_with_row_ids."Ref" = oncokb_snv."Reference_Allele";
           .exit
+          SQL
+          duckdb -init "$sql_file"
+          db_file="/mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}"
+          duckdb -readonly "$db_file" -c "SELECT * FROM combined_snv LIMIT 0;" >/dev/null
+          duckdb -readonly "$db_file" -c "SELECT * FROM advanced_combined_snv LIMIT 0;" >/dev/null
         volumeMounts:
           - name: annovar-oncokb-maf
             mountPath: "/mnt/input/oncokb_snv.tsv"
@@ -1388,13 +1397,17 @@ spec:
       script:
         name: "duckdb-snv-vcf-only-script"
         image: qldrsc/duckdb:latest
-        command: ["duckdb", "-init"]
+        command: ["sh"]
         source: |
+          set -eu
+          sql_file=$(mktemp)
+          trap 'rm -f "$sql_file"' EXIT
+          cat > "$sql_file" <<'SQL'
           .open /mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}
+          DROP VIEW IF EXISTS advanced_combined_snv;
+          DROP VIEW IF EXISTS combined_snv;
           DROP TABLE IF EXISTS oncokb_snv;
           DROP TABLE IF EXISTS cancervar_snv;
-          DROP VIEW IF EXISTS combined_snv;
-          DROP VIEW IF EXISTS advanced_combined_snv;
           CREATE TABLE oncokb_snv AS FROM read_csv_auto('/mnt/input/oncokb_snv.tsv', header=True, sep='\t', sample_size=-1);
           CREATE TABLE cancervar_snv AS FROM read_csv_auto('/mnt/input/cancervar_snv.tsv', header=True, sep='\t', sample_size=-1);
           CREATE OR REPLACE VIEW combined_snv AS
@@ -1716,6 +1729,11 @@ spec:
                         AND cancervar_snv_with_row_ids."Alt" = oncokb_snv."Tumor_Seq_Allele2"
                         AND cancervar_snv_with_row_ids."Ref" = oncokb_snv."Reference_Allele";
           .exit
+          SQL
+          duckdb -init "$sql_file"
+          db_file="/mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}"
+          duckdb -readonly "$db_file" -c "SELECT * FROM combined_snv LIMIT 0;" >/dev/null
+          duckdb -readonly "$db_file" -c "SELECT * FROM advanced_combined_snv LIMIT 0;" >/dev/null
         volumeMounts:
           - name: annovar-oncokb-maf
             mountPath: "/mnt/input/oncokb_snv.tsv"
