@@ -32,7 +32,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-snv-script
-        image: bergun/oncokb-annotator:v0.1.2
+        image: bergun/oncokb-annotator:0.1.3-gennext-filter
         workingDir: /app/oncokb/
         command: [sh]
         source: |
@@ -56,10 +56,10 @@ spec:
               echo "Running OncoKB annotation (attempt $1)..."
               if [ "$tumor_type" != "." ]; then
                   echo "Using tumor type parameter: $tumor_type"
-                  python ./MafAnnotator.py -i "$input_file" -o "$output_file" -r "$grch_ref_version" -b ${ONCOKB_API_TOKEN} -t "$tumor_type"
+                  python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version" --tumor-type "$tumor_type"
               else
                   echo "No tumor type specified (using default)"
-                  python ./MafAnnotator.py -i "$input_file" -o "$output_file" -r "$grch_ref_version" -b ${ONCOKB_API_TOKEN}
+                  python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version"
               fi
               return $?
           }
@@ -407,7 +407,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-snv-script
-        image: bergun/oncokb-annotator:v0.1.2
+        image: bergun/oncokb-annotator:0.1.3-gennext-filter
         workingDir: /app/oncokb/
         command: [sh]
         source: |
@@ -431,10 +431,10 @@ spec:
               echo "Running OncoKB annotation on node (attempt $1)..."
               if [ "$tumor_type" != "." ]; then
                   echo "Using tumor type parameter: $tumor_type"
-                  python ./MafAnnotator.py -i "$input_file" -o "$output_file" -r "$grch_ref_version" -b ${ONCOKB_API_TOKEN} -t "$tumor_type"
+                  python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version" --tumor-type "$tumor_type"
               else
                   echo "No tumor type specified (using default)"
-                  python ./MafAnnotator.py -i "$input_file" -o "$output_file" -r "$grch_ref_version" -b ${ONCOKB_API_TOKEN}
+                  python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version"
               fi
               return $?
           }
