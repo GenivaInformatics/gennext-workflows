@@ -160,6 +160,8 @@ spec:
                   value: "{{workflow.parameters.run-id}}"
                 - name: run-hrd
                   value: "{{tasks.batch-load-and-prepare.outputs.parameters.run-hrd}}"
+                - name: regions-file
+                  value: "{{tasks.batch-load-and-prepare.outputs.parameters.regions-file}}"
             withParam: "{{tasks.batch-load-and-prepare.outputs.parameters.sample-list}}"
             depends: coverage
 

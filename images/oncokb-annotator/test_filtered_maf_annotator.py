@@ -1,10 +1,15 @@
 import csv
+import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from AnnotatorCore import get_oncokb_annotation_column_headers
-from filtered_maf_annotator import merge_maf, should_query, split_maf
+from filtered_maf_annotator import (is_genome_kit_regions_file, main, merge_maf,
+                                    should_query, split_maf)
+from filtered_sv_annotator import main as sv_main
 
 
 HEADER = ["Tumor_Sample_Barcode", "Chromosome", "Start_Position", "End_Position",
@@ -27,6 +32,44 @@ def write_tsv(path, header, rows):
 
 
 class FilteredMafTest(unittest.TestCase):
+    def test_genome_kit_writes_empty_oncokb_columns_without_token_or_api(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source, output = [Path(temp) / name for name in ("in.maf", "out.maf")]
+            write_tsv(source, HEADER, ROWS)
+            argv = ["filtered_maf_annotator.py", "--input", str(source), "--output",
+                    str(output), "--reference", "GRCh38", "--regions-file",
+                    "/sample/hg38_canonical_chrom_contig_regions.bed"]
+            with patch.object(sys, "argv", argv), patch.dict(os.environ, {}, clear=True), \
+                    patch("filtered_maf_annotator.subprocess.run") as run:
+                main()
+                run.assert_not_called()
+            with output.open(newline="") as file:
+                rows = list(csv.reader(file, delimiter="\t"))
+            annotation_header = get_oncokb_annotation_column_headers(False, True)
+            self.assertEqual(rows[0], HEADER + annotation_header)
+            self.assertEqual(rows[1:], [row + [""] * len(annotation_header) for row in ROWS])
+            self.assertEqual(is_genome_kit_regions_file("/sample/panel.bed"), False)
+            self.assertTrue(is_genome_kit_regions_file(
+                "/sample/hg38_canonical_chrom_contig_regions.valid.bed"))
+
+    def test_genome_kit_sv_decoy_preserves_rows_without_token_or_api(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source, output = [Path(temp) / name for name in ("sv.tsv", "annot.tsv")]
+            header = ["Sample", "GeneA", "GeneB", "SVType"]
+            data = [["S1", "GENE1", "GENE2", "DELETION"]]
+            write_tsv(source, header, data)
+            argv = ["filtered_sv_annotator.py", "--input", str(source), "--output",
+                    str(output), "--regions-file",
+                    "/sample/hg38_canonical_chrom_contig_regions.valid.bed"]
+            with patch.object(sys, "argv", argv), patch.dict(os.environ, {}, clear=True), \
+                    patch("filtered_sv_annotator.subprocess.run") as run:
+                sv_main()
+                run.assert_not_called()
+            with output.open(newline="") as file:
+                rows = list(csv.reader(file, delimiter="\t"))
+            suffix = get_oncokb_annotation_column_headers(False, False)
+            self.assertEqual(rows, [header + suffix, data[0] + [""] * len(suffix)])
+
     def test_selects_gene_relevant_rows_and_preserves_full_maf(self):
         with tempfile.TemporaryDirectory() as temp:
             source, query, annotated, output = [Path(temp) / name for name in

@@ -142,6 +142,8 @@ spec:
                   value: "{{inputs.parameters.ref-version}}"
                 - name: tumor-type
                   value: "{{inputs.parameters.tumor-type}}"
+                - name: regions-file
+                  value: "{{=jsonpath(inputs.parameters['dna-input-files'], '$.regionsFile')}}"
             depends: "annovar-to-maf"
           - name: get-otherinfo-columns
             templateRef:

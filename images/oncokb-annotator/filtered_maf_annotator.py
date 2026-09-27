@@ -21,6 +21,14 @@ QUERY_CLASSES = {
     "exonic", "splicing", "utr5", "utr3", "upstream",
     "ncrna_exonic", "ncrna_splicing", "ncrna_utr5", "ncrna_utr3",
 }
+GENOME_KIT_REGIONS_BASENAME = "hg38_canonical_chrom_contig_regions.bed"
+GENOME_KIT_VALIDATED_BASENAME = "hg38_canonical_chrom_contig_regions.valid.bed"
+
+
+def is_genome_kit_regions_file(regions_file):
+    return Path(regions_file).name in {
+        GENOME_KIT_REGIONS_BASENAME, GENOME_KIT_VALIDATED_BASENAME,
+    }
 
 
 def should_query(row, func_index):
@@ -55,7 +63,8 @@ def split_maf(input_path, query_path):
     return header, func_index, total, selected
 
 
-def merge_maf(input_path, annotated_path, output_path, input_header, func_index, selected):
+def merge_maf(input_path, annotated_path, output_path, input_header, func_index, selected,
+              skip_all=False):
     annotation_header = get_oncokb_annotation_column_headers(False, True)
     temp_output = output_path.with_name(output_path.name + ".tmp")
     try:
@@ -81,7 +90,7 @@ def merge_maf(input_path, annotated_path, output_path, input_header, func_index,
                         raise ValueError(f"Input MAF row {seen + 1} changed")
                     seen += 1
                     suffix = [""] * len(annotation_header)
-                    if should_query(row, func_index):
+                    if not skip_all and should_query(row, func_index):
                         annotated = next(annotated_reader, None)
                         if annotated is None or annotated[:len(input_header)] != row:
                             raise ValueError(f"OncoKB output row {used + 1} missing or out of order")
@@ -107,14 +116,22 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--reference", required=True)
     parser.add_argument("--tumor-type", default=".")
+    parser.add_argument("--regions-file", default=".")
     args = parser.parse_args()
-    token = os.environ["ONCOKB_API_TOKEN"]
+    if is_genome_kit_regions_file(args.regions_file):
+        with args.input.open(newline="") as source:
+            header = read_header(csv.reader(source, delimiter="\t"))
+        written = merge_maf(args.input, None, args.output, header, 0, 0, skip_all=True)
+        print(f"Genome kit regions file: {args.regions_file}; skipped OncoKB for all {written} MAF rows", flush=True)
+        return
+
     with tempfile.TemporaryDirectory(prefix="oncokb-maf-", dir=args.output.parent) as temp_dir:
         query = Path(temp_dir) / "query.maf"
         annotated = Path(temp_dir) / "annotated.maf"
         header, func_index, total, selected = split_maf(args.input, query)
         print(f"MAF rows: {total}; OncoKB candidates: {selected}; skipped: {total - selected}", flush=True)
         if selected:
+            token = os.environ["ONCOKB_API_TOKEN"]
             command = [sys.executable, "/app/oncokb/MafAnnotator.py", "-i", str(query),
                        "-o", str(annotated), "-q", "Genomic_Change", "-r", args.reference,
                        "-b", token]
