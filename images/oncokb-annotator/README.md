@@ -12,6 +12,14 @@ order and all 30 OncoKB columns; skipped rows have empty OncoKB values. The
 script fails if the MAF lacks `Func.refGene` or if the annotator changes the
 selected row order or output schema.
 
+For the Genome kit, identified by the exact regions-file basename
+`hg38_canonical_chrom_contig_regions.bed` (or its validated `.valid.bed`
+copy), the SNV and SV/CNV wrappers do not call OncoKB. They retain every input
+row and write the expected OncoKB columns empty. The somatic DNA v2 FASTQ,
+BAM, and VCF workflows forward the original `dna-input-files.regionsFile`
+value. Per-sample and batch CNV workflows forward their regions file to the
+same SV/CNV wrapper. Other kits retain annotation.
+
 Both `oncokb-snv` and `oncokb-snv-on-node` in
 `tasks/base_tasks/oncokb.yaml` use this image. A running Argo workflow may
 have cached the old template in `status.storedTemplates`, so deploying the
