@@ -85,10 +85,17 @@ spec:
             readOnly: true
         command: [/bin/bash]
         source: |
+          target_bed="/mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}"
+          case "{{=sprig.osBase(inputs.parameters['target-bed-file'])}}" in
+            hg38_canonical_chrom_contig_regions.bed|hg38_canonical_chrom_contig_regions.valid.bed)
+              target_bed="/app/data/gencode_v48_canonical_cds.bed"
+              echo "Genome kit: using CDS target for TMB"
+              ;;
+          esac
           # Build base TMB calculation command
           CMD="python /app/calculate_tmb.py \
             --duckdb \"/mnt/input/{{=sprig.osBase(inputs.parameters['duckdb-file'])}}\" \
-            --target-bed \"/mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}\" \
+            --target-bed \"$target_bed\" \
             --cds-bed \"/app/data/gencode_v48_canonical_cds.bed\" \
             --af-lower-threshold \"{{inputs.parameters.af-lower-threshold}}\" \
             --af-upper-threshold \"{{inputs.parameters.af-upper-threshold}}\" \
@@ -125,10 +132,15 @@ spec:
             CMD="$CMD --common-af-threshold {{inputs.parameters.common-af-threshold}}"
           fi
 
-          # Add verbose flag and run
-          CMD="$CMD --verbose"
-          echo "Running: $CMD"
-          eval $CMD
+          echo "Running TMB calculation for sample {{inputs.parameters.sample-id}}"
+          set -o pipefail
+          if ! eval "$CMD" 2>&1 | tee /tmp/tmb-calculation.log; then
+            exit 1
+          fi
+          if grep -q "Failed to post TMB results" /tmp/tmb-calculation.log; then
+            echo "TMB results were rejected by the backend" >&2
+            exit 1
+          fi
         env:
           - name: GENNEXT_CLUSTER_TOKEN
             valueFrom:
@@ -137,10 +149,10 @@ spec:
                 key: gennext_cluster_token
         resources:
           requests:
-            memory: "1Gi"
+            memory: "4Gi"
             cpu: "500m"
           limits:
-            memory: "2Gi"
+            memory: "16Gi"
             cpu: "1000m"
     - name: collect-tmb-data-on-node
       nodeSelector:
@@ -226,10 +238,17 @@ spec:
             readOnly: true
         command: [/bin/bash]
         source: |
+          target_bed="/mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}"
+          case "{{=sprig.osBase(inputs.parameters['target-bed-file'])}}" in
+            hg38_canonical_chrom_contig_regions.bed|hg38_canonical_chrom_contig_regions.valid.bed)
+              target_bed="/app/data/gencode_v48_canonical_cds.bed"
+              echo "Genome kit: using CDS target for TMB"
+              ;;
+          esac
           # Build base TMB calculation command
           CMD="python /app/calculate_tmb.py \
             --duckdb \"/mnt/input/{{=sprig.osBase(inputs.parameters['duckdb-file'])}}\" \
-            --target-bed \"/mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}\" \
+            --target-bed \"$target_bed\" \
             --cds-bed \"/app/data/gencode_v48_canonical_cds.bed\" \
             --af-lower-threshold \"{{inputs.parameters.af-lower-threshold}}\" \
             --af-upper-threshold \"{{inputs.parameters.af-upper-threshold}}\" \
@@ -266,10 +285,15 @@ spec:
             CMD="$CMD --common-af-threshold {{inputs.parameters.common-af-threshold}}"
           fi
 
-          # Add verbose flag and run
-          CMD="$CMD --verbose"
-          echo "Running: $CMD"
-          eval $CMD
+          echo "Running TMB calculation for sample {{inputs.parameters.sample-id}}"
+          set -o pipefail
+          if ! eval "$CMD" 2>&1 | tee /tmp/tmb-calculation.log; then
+            exit 1
+          fi
+          if grep -q "Failed to post TMB results" /tmp/tmb-calculation.log; then
+            echo "TMB results were rejected by the backend" >&2
+            exit 1
+          fi
         env:
           - name: GENNEXT_CLUSTER_TOKEN
             valueFrom:
@@ -278,10 +302,10 @@ spec:
                 key: gennext_cluster_token
         resources:
           requests:
-            memory: "1Gi"
+            memory: "4Gi"
             cpu: "500m"
           limits:
-            memory: "2Gi"
+            memory: "16Gi"
             cpu: "1000m"
     # Template for using custom CDS bed file
     - name: collect-tmb-data-custom-cds
@@ -413,10 +437,15 @@ spec:
             CMD="$CMD --common-af-threshold {{inputs.parameters.common-af-threshold}}"
           fi
 
-          # Add verbose flag and run
-          CMD="$CMD --verbose"
-          echo "Running: $CMD"
-          eval $CMD
+          echo "Running TMB calculation for sample {{inputs.parameters.sample-id}}"
+          set -o pipefail
+          if ! eval "$CMD" 2>&1 | tee /tmp/tmb-calculation.log; then
+            exit 1
+          fi
+          if grep -q "Failed to post TMB results" /tmp/tmb-calculation.log; then
+            echo "TMB results were rejected by the backend" >&2
+            exit 1
+          fi
         env:
           - name: GENNEXT_CLUSTER_TOKEN
             valueFrom:
