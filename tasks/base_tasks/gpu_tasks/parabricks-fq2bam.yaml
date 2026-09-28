@@ -54,7 +54,7 @@ spec:
             type: Directory
       script:
         name: "parabricks-germline-fq2bamfast-no-bqsr-script"
-        image: "{{=workflow.labels['gennext.bio/node'] == 'gennext-01' ? 'nvcr.io/nvidia/clara/clara-parabricks:4.5.1-1' : 'nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1'}}"
+        image: "{{=(workflow.labels['gennext.bio/gpu-compute-major'] == '10' || workflow.labels['gennext.bio/gpu-compute-major'] == '12') ? 'nvcr.io/nvidia/clara/clara-parabricks:4.5.1-1' : 'nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1'}}"
         resources:
           limits:
             nvidia.com/gpu: 1
@@ -130,7 +130,7 @@ spec:
             type: Directory
       script:
         name: "parabricks-germline-fq2bam-no-bqsr-script"
-        image: "{{=workflow.labels['gennext.bio/node'] == 'gennext-01' ? 'nvcr.io/nvidia/clara/clara-parabricks:4.5.1-1' : 'nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1'}}"
+        image: "{{=(workflow.labels['gennext.bio/gpu-compute-major'] == '10' || workflow.labels['gennext.bio/gpu-compute-major'] == '12') ? 'nvcr.io/nvidia/clara/clara-parabricks:4.5.1-1' : 'nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1'}}"
         resources:
           limits:
             nvidia.com/gpu: 1
@@ -207,7 +207,7 @@ spec:
             type: Directory
       script:
         name: "parabricks-germline-fq2bam-no-bqsr-script"
-        image: "{{=workflow.labels['gennext.bio/node'] == 'gennext-01' ? 'nvcr.io/nvidia/clara/clara-parabricks:4.5.1-1' : 'nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1'}}"
+        image: "{{=(workflow.labels['gennext.bio/gpu-compute-major'] == '10' || workflow.labels['gennext.bio/gpu-compute-major'] == '12') ? 'nvcr.io/nvidia/clara/clara-parabricks:4.5.1-1' : 'nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1'}}"
         resources:
           limits:
             nvidia.com/gpu: 1
