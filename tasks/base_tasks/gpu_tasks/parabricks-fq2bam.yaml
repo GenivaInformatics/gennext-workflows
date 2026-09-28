@@ -54,7 +54,7 @@ spec:
             type: Directory
       script:
         name: "parabricks-germline-fq2bamfast-no-bqsr-script"
-        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        image: nvcr.io/nvidia/clara/clara-parabricks:4.5.1-1
         resources:
           limits:
             nvidia.com/gpu: 1
@@ -130,7 +130,7 @@ spec:
             type: Directory
       script:
         name: "parabricks-germline-fq2bam-no-bqsr-script"
-        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        image: nvcr.io/nvidia/clara/clara-parabricks:4.5.1-1
         resources:
           limits:
             nvidia.com/gpu: 1
@@ -207,7 +207,7 @@ spec:
             type: Directory
       script:
         name: "parabricks-germline-fq2bam-no-bqsr-script"
-        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        image: nvcr.io/nvidia/clara/clara-parabricks:4.5.1-1
         resources:
           limits:
             nvidia.com/gpu: 1

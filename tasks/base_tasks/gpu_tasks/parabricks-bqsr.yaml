@@ -148,7 +148,7 @@ spec:
               mountPath: /mnt/input/bam/
       script:
         name: "parabricks-bqsr-script"
-        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        image: nvcr.io/nvidia/clara/clara-parabricks:4.5.1-1
         resources:
           limits:
             nvidia.com/gpu: 1
@@ -282,7 +282,7 @@ spec:
               mountPath: /mnt/input/bam/
       script:
         name: "parabricks-bqsr-script"
-        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        image: nvcr.io/nvidia/clara/clara-parabricks:4.5.1-1
         resources:
           limits:
             nvidia.com/gpu: 1
@@ -410,7 +410,7 @@ spec:
               mountPath: /mnt/input/bam/
       script:
         name: "parabricks-apply-bqsr-script"
-        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        image: nvcr.io/nvidia/clara/clara-parabricks:4.5.1-1
         resources:
           limits:
             nvidia.com/gpu: 1
