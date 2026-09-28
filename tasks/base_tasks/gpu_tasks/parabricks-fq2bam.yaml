@@ -60,7 +60,7 @@ spec:
             nvidia.com/gpu: 1
         command: [sh]
         source: |
-          # Parabricks 4.5 renamed fq2bamfast to fq2bam.
+          # The 4.5.1 image exposes fq2bam; the 4.3.1 image uses fq2bamfast here.
           fq2bam_command=fq2bamfast
           case "{{workflow.parameters.parabricksImage}}" in
             *:4.5.1-1) fq2bam_command=fq2bam ;;
