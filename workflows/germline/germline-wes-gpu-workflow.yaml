@@ -397,7 +397,7 @@ spec:
                   value: "{{inputs.parameters.temp-rel-dir}}"
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}metrics/"
-            depends: "verifybamid && pb-applybqsr && mosdepth"
+            depends: "fastqc && verifybamid && pb-applybqsr && mosdepth"
           - name: collect-qc-data
             templateRef:
               name: collect-qc-data-v2-templates
@@ -828,7 +828,7 @@ spec:
                   value: "{{inputs.parameters.temp-rel-dir}}"
                 - name: output-dir
                   value: "{{inputs.parameters.temp-rel-dir}}metrics/"
-            depends: "verifybamid && pb-applybqsr && mosdepth"
+            depends: "fastqc && verifybamid && pb-applybqsr && mosdepth"
           - name: collect-qc-data
             templateRef:
               name: collect-qc-data-v2-templates
