@@ -39,7 +39,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: "parabricks-starfusion-script"
-        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        image: "{{workflow.parameters.parabricksImage}}"
         resources:
           limits:
             nvidia.com/gpu: 1

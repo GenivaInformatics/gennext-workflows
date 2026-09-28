@@ -123,7 +123,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: "parabricks-rnafq2bam-script"
-        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        image: "{{workflow.parameters.parabricksImage}}"
         resources:
           limits:
             nvidia.com/gpu: 1
@@ -139,6 +139,12 @@ spec:
           [ -n "{{inputs.parameters.read-group-pl}}" ]            && OPT_ARGS="${OPT_ARGS} --read-group-pl {{inputs.parameters.read-group-pl}}"
           [ -n "{{inputs.parameters.out-chim-type}}" ]            && OPT_ARGS="${OPT_ARGS} --out-chim-type {{inputs.parameters.out-chim-type}}"
           [ "{{inputs.parameters.no-markdups}}" = "true" ]        && OPT_ARGS="${OPT_ARGS} --no-markdups"
+
+          # RTX A4000 and RTX 5080 have 16 GB VRAM; RNA alignment needs low-memory mode.
+          memory_options=""
+          case "{{workflow.parameters.parabricksImage}}" in
+            *:4.5.1-1|*:4.7.1-1) memory_options="--low-memory" ;;
+          esac
 
           pbrun rna_fq2bam \
             --ref /mnt/ref/genome-fa/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \
@@ -167,7 +173,7 @@ spec:
             --chim-score-non-gtag {{inputs.parameters.chim-score-non-gtag}} \
             --align-insertion-flush Right \
             --num-threads {{inputs.parameters.thread-count}} \
-            ${OPT_ARGS}
+            ${OPT_ARGS} ${memory_options}
 
           # Relay STAR alignment summary into metrics-dir for MultiQC.
           for f in Log.final.out SJ.out.tab; do
