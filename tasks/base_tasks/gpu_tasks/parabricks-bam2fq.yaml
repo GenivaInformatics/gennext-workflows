@@ -35,7 +35,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: "parabricks-bam2fastq-script"
-        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        image: "{{workflow.parameters.parabricksImage}}"
         resources:
           limits:
             nvidia.com/gpu: 1
@@ -81,7 +81,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: "parabricks-bam2fastq-script"
-        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        image: "{{workflow.parameters.parabricksImage}}"
         resources:
           limits:
             nvidia.com/gpu: 1

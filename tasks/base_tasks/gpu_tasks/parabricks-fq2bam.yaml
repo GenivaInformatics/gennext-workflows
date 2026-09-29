@@ -54,13 +54,18 @@ spec:
             type: Directory
       script:
         name: "parabricks-germline-fq2bamfast-no-bqsr-script"
-        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        image: "{{workflow.parameters.parabricksImage}}"
         resources:
           limits:
             nvidia.com/gpu: 1
         command: [sh]
         source: |
-          pbrun fq2bamfast \
+          # Parabricks 4.3.1 exposes fq2bamfast; newer images expose fq2bam.
+          fq2bam_command=fq2bamfast
+          case "{{workflow.parameters.parabricksImage}}" in
+            *:4.5.1-1|*:4.7.1-1) fq2bam_command=fq2bam ;;
+          esac
+          pbrun "$fq2bam_command" \
             --ref /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \
             --in-fq /mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-fq-r1'])}} /mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-fq-r2'])}} \
             "{{inputs.parameters.read-group-str}}" \
@@ -130,7 +135,7 @@ spec:
             type: Directory
       script:
         name: "parabricks-germline-fq2bam-no-bqsr-script"
-        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        image: "{{workflow.parameters.parabricksImage}}"
         resources:
           limits:
             nvidia.com/gpu: 1
@@ -207,7 +212,7 @@ spec:
             type: Directory
       script:
         name: "parabricks-germline-fq2bam-no-bqsr-script"
-        image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+        image: "{{workflow.parameters.parabricksImage}}"
         resources:
           limits:
             nvidia.com/gpu: 1
@@ -286,13 +291,17 @@ spec:
             type: Directory
       script:
         name: "parabricks-germline-fq2bamfast-no-bqsr-script"
-        image: nvcr.io/nvidia/clara/clara-parabricks:4.5.1-1
+        image: "{{workflow.parameters.parabricksImage}}"
         resources:
           limits:
             nvidia.com/gpu: 1
         command: [sh]
         source: |
-          pbrun fq2bam \
+          fq2bam_command=fq2bamfast
+          case "{{workflow.parameters.parabricksImage}}" in
+            *:4.5.1-1|*:4.7.1-1) fq2bam_command=fq2bam ;;
+          esac
+          pbrun "$fq2bam_command" \
             --ref /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \
             --in-fq /mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-fq-r1'])}} /mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-fq-r2'])}} \
             "{{inputs.parameters.read-group-str}}" \
