@@ -113,6 +113,7 @@ spec:
           --germline-resource /mnt/ref/gnomad/{{=sprig.osBase(inputs.parameters['gnomad-data-f'])}} \
           --panel-of-normals /mnt/ref/1000g/{{=sprig.osBase(inputs.parameters['1000g-pon-data-f'])}} \
           -O /mnt/output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf'])}} \
+          --dont-use-soft-clipped-bases \
           --max-reads-per-alignment-start 0 \
           --initial-tumor-lod 1.0 \
           --tumor-lod-to-emit 1.0
