@@ -1,0 +1,6 @@
+# Merge patch for argo/gennext-references. The TST500C BED is the validated
+# design whose SHA-256 matches the existing 50-normal pooled CNVkit reference
+# on gennext-02. That reference was built with the MANE refFlat.
+data:
+  hg38.somtest.TST500C.regions.sv-cnv: hg38/regions/TST500C_manifest_hg38.valid.bed
+  hg38.somtest.TST500C.ref-flat: hg38/gene_annots/refFlat_mane.txt
