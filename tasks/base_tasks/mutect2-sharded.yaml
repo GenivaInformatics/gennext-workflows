@@ -20,6 +20,12 @@ spec:
             value: "2"
           - name: apply-filter
             value: "true"
+          # Soft-clipped read ends on these libraries carry a 5 bp non-genomic
+          # tag (NNNBT) that fastp does not remove. Feeding those bases into
+          # Mutect2's local assembly buries low-VAF candidates (KRAS G12V at
+          # ~2% in sample 106266 was never assembled). Default: ignore them.
+          - name: use-soft-clipped-bases
+            value: "false"
       outputs:
         parameters:
           - name: output-vcf
@@ -76,6 +82,8 @@ spec:
             value: "{{inputs.parameters.hmm-threads}}"
           - name: APPLY_FILTER
             value: "{{inputs.parameters.apply-filter}}"
+          - name: USE_SOFT_CLIPPED_BASES
+            value: "{{inputs.parameters.use-soft-clipped-bases}}"
         command: [bash]
         source: |
           set -euo pipefail
@@ -98,9 +106,15 @@ spec:
             -O "$WORK/shards"
 
           # 2. Parallel Mutect2
+          SOFTCLIP_ARGS=""
+          if [ "${USE_SOFT_CLIPPED_BASES}" != "true" ]; then
+            SOFTCLIP_ARGS="--dont-use-soft-clipped-bases"
+          fi
+
           run_shard() {
             local shard="$1"
             gatk --java-options "-Xmx4g" Mutect2 \
+              ${SOFTCLIP_ARGS} \
               -R "$REF" \
               -I "$BAM" \
               -L "$WORK/shards/${shard}-scattered.interval_list" \
@@ -117,7 +131,7 @@ spec:
               > "$WORK/logs/${shard}.log" 2>&1
           }
           export -f run_shard
-          export REF BAM WORK SAMPLE_ID HMM_THREADS
+          export REF BAM WORK SAMPLE_ID HMM_THREADS SOFTCLIP_ARGS
 
           ls "$WORK/shards"/*-scattered.interval_list \
             | sed 's|.*/||;s|-scattered.interval_list||' \
