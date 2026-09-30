@@ -130,6 +130,28 @@ class FilteredMafTest(unittest.TestCase):
                 merge_maf(source, annotated, output, header, func_index, selected)
             self.assertFalse(output.exists())
 
+    def test_accepts_oncokb_ascii_stripped_echo_and_keeps_original_text(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source, query, annotated, output = [Path(temp) / name for name in
+                                                ("in.maf", "query.maf", "annotated.maf", "out.maf")]
+            rows = [row.copy() for row in ROWS]
+            rows[2][-1] = "Muir-Torré_syndrome"
+            write_tsv(source, HEADER, rows)
+            header, func_index, _, selected = split_maf(source, query)
+            annotation_header = get_oncokb_annotation_column_headers(False, True)
+            with query.open(newline="") as file:
+                query_rows = list(csv.reader(file, delimiter="\t"))[1:]
+            # Mirror AnnotatorCore.append_annotation_to_file.
+            with annotated.open("w") as file:
+                file.write("\t".join(HEADER + annotation_header) + "\n")
+                for row in query_rows:
+                    line = "\t".join(row + [""] * len(annotation_header))
+                    file.write(line.encode("ascii", "ignore").decode("ascii") + "\n")
+            self.assertEqual(merge_maf(source, annotated, output, header, func_index, selected), 5)
+            with output.open(newline="") as file:
+                out_rows = list(csv.reader(file, delimiter="\t"))
+            self.assertEqual([row[:len(HEADER)] for row in out_rows[1:]], rows)
+
 
 if __name__ == "__main__":
     unittest.main()

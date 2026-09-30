@@ -36,6 +36,13 @@ def should_query(row, func_index):
                for value in row[func_index].split(";"))
 
 
+def oncokb_echo(row):
+    # AnnotatorCore.append_annotation_to_file writes every row through
+    # encode('ascii', 'ignore'), so its echo of the input drops non-ASCII
+    # characters (ClinVar CLNDN "Muir-Torré" comes back as "Muir-Torr").
+    return [value.encode("ascii", "ignore").decode("ascii") for value in row]
+
+
 def read_header(reader):
     for row in reader:
         if row and not row[0].startswith("#"):
@@ -92,7 +99,7 @@ def merge_maf(input_path, annotated_path, output_path, input_header, func_index,
                     suffix = [""] * len(annotation_header)
                     if not skip_all and should_query(row, func_index):
                         annotated = next(annotated_reader, None)
-                        if annotated is None or annotated[:len(input_header)] != row:
+                        if annotated is None or annotated[:len(input_header)] != oncokb_echo(row):
                             raise ValueError(f"OncoKB output row {used + 1} missing or out of order")
                         suffix = annotated[len(input_header):]
                         if len(suffix) != len(annotation_header):
