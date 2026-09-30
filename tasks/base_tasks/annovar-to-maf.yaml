@@ -23,12 +23,20 @@ spec:
             type: Directory
       script:
         name: annovar-script
-        image: bergun/r-maftools:v0.0.1
+        image: bergun/maftools-rs:v0.1.0
         workingDir: /mnt/input/
         command: [sh]
         source: |
-          Rscript -e "library(maftools); \
-          maf = annovarToMaf(annovar='/mnt/input/{{=sprig.osBase(inputs.parameters['annovar-out-f'])}}', sep='\t', refBuild='{{inputs.parameters.ref-version}}', MAFobj=TRUE, basename='{{inputs.parameters.sample-id}}')"
+          set -e
+          maftools-rs annovar-to-maf \
+            --input "/mnt/input/{{=sprig.osBase(inputs.parameters['annovar-out-f'])}}" \
+            --output "/mnt/input/{{inputs.parameters.sample-id}}.maf"
+        resources:
+          requests:
+            cpu: "1"
+            memory: 256Mi
+          limits:
+            memory: 2Gi
         volumeMounts:
           - name: annovar-out-f
             mountPath: "/mnt/input/"
