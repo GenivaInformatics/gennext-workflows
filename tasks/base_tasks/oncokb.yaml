@@ -34,7 +34,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-snv-script
-        image: bergun/oncokb-annotator:0.1.6-ascii-echo
+        image: bergun/oncokb-annotator:0.1.7-unfiltered
         workingDir: /app/oncokb/
         command: [sh]
         source: |
@@ -167,7 +167,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-sv-script
-        image: bergun/oncokb-annotator:0.1.6-ascii-echo
+        image: bergun/oncokb-annotator:0.1.7-unfiltered
         command: [sh]
         source: |
           input_file="/mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-sv-in-f'])}}"
@@ -413,7 +413,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-snv-script
-        image: bergun/oncokb-annotator:0.1.6-ascii-echo
+        image: bergun/oncokb-annotator:0.1.7-unfiltered
         workingDir: /app/oncokb/
         command: [sh]
         source: |
@@ -549,7 +549,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-sv-script
-        image: bergun/oncokb-annotator:0.1.6-ascii-echo
+        image: bergun/oncokb-annotator:0.1.7-unfiltered
         command: [sh]
         source: |
           input_file="/mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-sv-in-f'])}}"
