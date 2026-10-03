@@ -1,16 +1,17 @@
-# Filtered OncoKB SNV annotation
+# OncoKB SNV annotation wrapper
 
-Whole-genome ANNOVAR MAFs contain millions of intergenic and intronic calls.
-Sending every call to the OncoKB API makes the somatic post-processing step
-impractically long.
+`filtered_maf_annotator.py` sends every MAF row to the upstream
+`MafAnnotator.py`, then merges the result back onto the original input rows.
+Upstream writes each output row through `encode('ascii', 'ignore')`, which
+drops non-ASCII characters from echoed input columns (ClinVar `CLNDN`
+"Muir-Torré"); the merge checks the echo against the ASCII-folded input and
+keeps the original text. The script fails if the annotator changes the row
+order, row count, or output schema.
 
-`filtered_maf_annotator.py` selects rows by `Func.refGene` before calling the
-upstream `MafAnnotator.py`. It sends exonic, splice, UTR, upstream/promoter,
-and corresponding noncoding RNA classes. Intergenic, intronic, and downstream
-rows are not sent. The output still contains every input row in the original
-order and all 30 OncoKB columns; skipped rows have empty OncoKB values. The
-script fails if the MAF lacks `Func.refGene` or if the annotator changes the
-selected row order or output schema.
+An earlier version sent only exonic, splice, UTR and upstream rows (by
+`Func.refGene`) to reduce WGS runtime. It applied to every kit, left panel
+samples' intronic and intergenic rows with empty OncoKB fields, and has been
+removed.
 
 For the Genome kit, identified by the exact regions-file basename
 `hg38_canonical_chrom_contig_regions.bed` (or its validated `.valid.bed`
