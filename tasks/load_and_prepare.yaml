@@ -397,7 +397,7 @@ spec:
             valueFrom:
               path: /tmp/run_hrd.txt
       container:
-        image: bergun/gennext-load-and-prepare:0.6.0
+        image: bergun/gennext-load-and-prepare:0.6.1-cnv-mane-20261005
         args:
           - "batch"
           - "--run-id={{inputs.parameters.run-id}}"
