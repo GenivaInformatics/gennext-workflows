@@ -174,6 +174,65 @@ spec:
                 - name: output-dupes
                   value: "{{inputs.parameters.sample-temp-dir}}metrics/{{inputs.parameters.sample-id}}.dupes"
             depends: "fastp && compose-read-group-str"
+          # UMI handling: detect the inline UMI layout from the raw reads (beside
+          # fastp), extract UMIs during alignment, then mask UMI/spacer bases and
+          # mark duplicates by UMI. Samples without a detected scheme pass
+          # through fgbio-umi-dna unchanged. Record: metrics/umi/detection.json.
+          - name: umi-detect
+            templateRef:
+              name: umi-detect-template
+              template: umi-profile
+            arguments:
+              parameters:
+                - name: fq-r1
+                  value: "{{=jsonpath(inputs.parameters['dna-input-files'], '$.fq1')}}"
+                - name: fq-r2
+                  value: "{{=jsonpath(inputs.parameters['dna-input-files'], '$.fq2')}}"
+                - name: metrics-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}metrics/umi/"
+                - name: sample-uuid
+                  value: "{{inputs.parameters.sample-uuid}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+          - name: umi-extract
+            templateRef:
+              name: umi-detect-template
+              template: umi-extract
+            arguments:
+              parameters:
+                - name: fq-r1
+                  value: "{{=jsonpath(inputs.parameters['dna-input-files'], '$.fq1')}}"
+                - name: fq-r2
+                  value: "{{=jsonpath(inputs.parameters['dna-input-files'], '$.fq2')}}"
+                - name: detection-json
+                  value: "{{tasks.umi-detect.outputs.parameters.detection-json}}"
+                - name: umi-dir
+                  value: "{{inputs.parameters.sample-scratch-dir}}umi/"
+                - name: thread-count
+                  value: "8"
+            depends: "umi-detect"
+            when: "{{tasks.umi-detect.outputs.parameters.use-umi}} == true"
+          - name: fgbio-umi-dna
+            templateRef:
+              name: fgbio-umi-dna-template
+              template: fgbio-umi-dna
+            arguments:
+              parameters:
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: input-bam
+                  value: "{{tasks.pb-fq2bam.outputs.parameters.output-bam}}"
+                - name: metrics-dir
+                  value: "{{inputs.parameters.sample-temp-dir}}metrics/umi/"
+                - name: umi-dir
+                  value: "{{inputs.parameters.sample-scratch-dir}}umi/"
+                - name: genome-ref
+                  value: "{{=jsonpath(inputs.parameters['ref-paths'], '$.genome')}}"
+                - name: output-bam
+                  value: "{{inputs.parameters.sample-scratch-dir}}bam/{{inputs.parameters.sample-id}}.umi.bam"
+                - name: thread-count
+                  value: "{{inputs.parameters.thread-count}}"
+            depends: "pb-fq2bam && umi-detect && (umi-extract.Succeeded || umi-extract.Skipped)"
           - name: pb-bqsr
             templateRef:
               name: parabricks-bqsr-template
@@ -181,7 +240,7 @@ spec:
             arguments:
               parameters:
                 - name: input-bam
-                  value: "{{tasks.pb-fq2bam.outputs.parameters.output-bam}}"
+                  value: "{{tasks.fgbio-umi-dna.outputs.parameters.output-bam}}"
                 - name: regions-file
                   value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-file}}"
                 - name: genome-ref
@@ -192,7 +251,7 @@ spec:
                   value: "{{=jsonpath(inputs.parameters['ref-paths'], '$.gnomad4.common.variants')}}"
                 - name: output-recal-file
                   value: "{{inputs.parameters.sample-temp-dir}}metrics/bqsr/{{inputs.parameters.sample-id}}.recal"
-            depends: "pb-fq2bam && validate-bed-file"
+            depends: "fgbio-umi-dna && validate-bed-file"
           - name: pb-applybqsr
             templateRef:
               name: parabricks-bqsr-template
@@ -200,7 +259,7 @@ spec:
             arguments:
               parameters:
                 - name: input-bam
-                  value: "{{tasks.pb-fq2bam.outputs.parameters.output-bam}}"
+                  value: "{{tasks.fgbio-umi-dna.outputs.parameters.output-bam}}"
                 - name: input-recal-file
                   value: "{{tasks.pb-bqsr.outputs.parameters.output-recal-file}}"
                 - name: output-bam
