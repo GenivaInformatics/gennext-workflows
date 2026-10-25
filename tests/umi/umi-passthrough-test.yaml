@@ -1,0 +1,109 @@
+# Checks the no-UMI path of the somatic DNA wiring: a plain library (synthetic
+# random reads) must give umi-detect status `none`, skip umi-extract, and make
+# fgbio-umi-dna return its input BAM path untouched.
+#
+#   argo submit -n argo tests/umi/umi-passthrough-test.yaml -p input-bam=<any existing BAM>
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: umi-passthrough-test-
+  namespace: argo
+  labels:
+    purpose: umi-dna-test
+spec:
+  entrypoint: main
+  serviceAccountName: gennext-workflows
+  nodeSelector:
+    kubernetes.io/hostname: gennext-03
+  tolerations:
+    - {key: gennext.bio/workload, operator: Equal, value: pipeline, effect: NoSchedule}
+  podGC:
+    strategy: OnPodSuccess
+  arguments:
+    parameters:
+      - name: test-dir
+        value: /runspace/gennext/data/scratch/umi-test-20261025/passthrough/
+      - name: input-bam
+        description: Any existing BAM; it must come back as the output path unchanged
+      - name: genome
+        value: /runspace/gennext/data/ref/hg38/genome/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set.fa
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: make-plain-fastq
+            template: make-plain-fastq
+          - name: umi-detect
+            depends: make-plain-fastq
+            templateRef: {name: umi-detect-template, template: umi-profile}
+            arguments:
+              parameters:
+                - {name: fq-r1, value: "{{workflow.parameters.test-dir}}reads/plain_1.fq.gz"}
+                - {name: fq-r2, value: "{{workflow.parameters.test-dir}}reads/plain_2.fq.gz"}
+                - {name: metrics-dir, value: "{{workflow.parameters.test-dir}}metrics/umi/"}
+          - name: umi-extract
+            depends: umi-detect
+            when: "{{tasks.umi-detect.outputs.parameters.use-umi}} == true"
+            templateRef: {name: umi-detect-template, template: umi-extract}
+            arguments:
+              parameters:
+                - {name: fq-r1, value: "{{workflow.parameters.test-dir}}reads/plain_1.fq.gz"}
+                - {name: fq-r2, value: "{{workflow.parameters.test-dir}}reads/plain_2.fq.gz"}
+                - {name: detection-json, value: "{{tasks.umi-detect.outputs.parameters.detection-json}}"}
+                - {name: umi-dir, value: "{{workflow.parameters.test-dir}}umi/"}
+          - name: fgbio-umi-dna
+            depends: "umi-detect && (umi-extract.Succeeded || umi-extract.Skipped)"
+            templateRef: {name: fgbio-umi-dna-template, template: fgbio-umi-dna}
+            arguments:
+              parameters:
+                - {name: sample-id, value: plain}
+                - {name: input-bam, value: "{{workflow.parameters.input-bam}}"}
+                - {name: metrics-dir, value: "{{workflow.parameters.test-dir}}metrics/umi/"}
+                - {name: umi-dir, value: "{{workflow.parameters.test-dir}}umi/"}
+                - {name: genome-ref, value: "{{workflow.parameters.genome}}"}
+                - {name: output-bam, value: "{{workflow.parameters.test-dir}}bam/plain.umi.bam"}
+          - name: check
+            depends: fgbio-umi-dna
+            template: check
+            arguments:
+              parameters:
+                - {name: status, value: "{{tasks.umi-detect.outputs.parameters.status}}"}
+                - {name: output-bam, value: "{{tasks.fgbio-umi-dna.outputs.parameters.output-bam}}"}
+                - {name: umi-applied, value: "{{tasks.fgbio-umi-dna.outputs.parameters.umi-applied}}"}
+
+    - name: make-plain-fastq
+      script:
+        image: docker.io/bergun/fgbio-mark-duplicates:0.1.0
+        command: [python3]
+        source: |
+          import gzip, os, random
+          random.seed(1)
+          os.makedirs("/mnt/test/reads", exist_ok=True)
+          for mate in (1, 2):
+              with gzip.open(f"/mnt/test/reads/plain_{mate}.fq.gz", "wt") as fh:
+                  for i in range(20000):
+                      seq = "".join(random.choice("ACGT") for _ in range(100))
+                      fh.write(f"@plain{i}/{mate}\n{seq}\n+\n{'I' * 100}\n")
+        volumeMounts:
+          - {name: test, mountPath: /mnt/test/}
+      volumes:
+        - name: test
+          hostPath: {path: "{{workflow.parameters.test-dir}}", type: DirectoryOrCreate}
+
+    - name: check
+      inputs:
+        parameters:
+          - name: status
+          - name: output-bam
+          - name: umi-applied
+      script:
+        image: docker.io/bergun/gennext-umi-detect:0.1.2
+        command: [sh]
+        source: |
+          set -eu
+          echo "status={{inputs.parameters.status}} umi-applied={{inputs.parameters.umi-applied}}"
+          echo "output-bam={{inputs.parameters.output-bam}}"
+          [ "{{inputs.parameters.status}}" = "none" ]
+          [ "{{inputs.parameters.umi-applied}}" = "false" ]
+          [ "{{inputs.parameters.output-bam}}" = "{{workflow.parameters.input-bam}}" ]
+          echo "PASSTHROUGH OK"
