@@ -1,0 +1,214 @@
+# UMI-aware masking and duplicate marking for somatic DNA (fgbio).
+#
+# Input: the full-length-read BAM from Parabricks fq2bam (UMI and spacer bases
+# still in the reads, position-based duplicate flags set), the detection
+# record from umi-detect-template/umi-profile, and the UMI-only FASTQs from
+# umi-detect-template/umi-extract.
+#
+# When the sample has no detected UMI scheme the step is a pass-through: it
+# returns the input BAM path untouched.
+#
+# Otherwise:
+#   1. clear the position-based duplicate flags, queryname-sort
+#   2. AnnotateBamWithUmis   UMI from the UMI-only FASTQs -> RX tag
+#   3. ClipBam SoftWithMask  mask UMI + spacer bases (5') and read-through
+#                            past the mate (the mate's UMI in short inserts);
+#                            masked bases become N / minimum quality, read
+#                            length and the original UMI (RX) are kept
+#   4. CorrectUmis           fixed-set schemes only (e.g. KAPA)
+#   5. SetMateInformation    MQ/MC tags, which GroupReadsByUmi requires
+#   6. GroupReadsByUmi       UMI-aware duplicate marking (MI tag, 0x400) on
+#                            primary records; fgbio 2.5.21 drops supplementary
+#                            records from its output, so supplementary and
+#                            secondary records are set aside and then take the
+#                            duplicate flag of their template (as Picard does)
+# Steps 2-6 run as one stream (uncompressed BAM between processes), so only
+# the name-sorted input and the grouped output touch disk.
+# Records fgbio cannot group (both reads unmapped, UMI with N, missing RX,
+# uncorrectable UMI) are set aside and merged back unmarked, so the output
+# holds exactly the input's records; the step fails if the counts differ.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: fgbio-umi-dna-template
+  namespace: argo
+spec:
+  templates:
+    - name: fgbio-umi-dna
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: input-bam
+          - name: metrics-dir
+            description: Directory holding detection.json; fgbio metrics are written here too
+          - name: umi-dir
+            description: Directory with umi_r1.fastq.gz / umi_r2.fastq.gz from umi-extract
+          - name: genome-ref
+          - name: output-bam
+          - name: thread-count
+            default: "8"
+      outputs:
+        parameters:
+          - name: output-bam
+            valueFrom: {path: /tmp/output-bam}
+          - name: umi-applied
+            valueFrom: {path: /tmp/umi-applied}
+      script:
+        image: docker.io/bergun/fgbio-mark-duplicates:0.1.0
+        command: [bash]
+        resources:
+          requests: {cpu: "8", memory: 32Gi}
+        source: |
+          set -euo pipefail
+          IN_HOST="{{inputs.parameters.input-bam}}"
+          OUT_HOST="{{inputs.parameters.output-bam}}"
+          IN="/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}"
+          OUT="/mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}"
+          REF="/mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}}"
+          METRICS=/mnt/metrics
+          UMI_DIR=/mnt/umi
+          SAMPLE="{{inputs.parameters.sample-id}}"
+          THREADS="{{inputs.parameters.thread-count}}"
+          SORT_THREADS=$(( THREADS / 2 < 2 ? 2 : THREADS / 2 ))
+
+          # Settings come from the detection record, the single source of truth.
+          eval "$(python3 - "$METRICS/detection.json" <<'PY'
+          import json, shlex, sys
+          d = json.load(open(sys.argv[1]))["decision"]
+          s = d.get("scheme") or {}
+          corr = s.get("umiCorrection") or {}
+          vals = {
+              "STATUS": d["status"],
+              "RESULT": d["result"],
+              "USE_UMI": "true" if d["status"] == "detected" and s else "false",
+              "MASK_R1": s.get("mask", {}).get("r1", 0),
+              "MASK_R2": s.get("mask", {}).get("r2", 0),
+              "STRATEGY": s.get("grouping", {}).get("strategy", "").capitalize(),
+              "EDITS": s.get("grouping", {}).get("edits", 0),
+              "CORR_UMIS": " ".join(corr.get("umis", [])),
+              "CORR_MISMATCHES": corr.get("maxMismatches", 1),
+              "CORR_DISTANCE": corr.get("minDistance", 2),
+          }
+          for k, v in vals.items():
+              print(f"{k}={shlex.quote(str(v))}")
+          PY
+          )"
+          echo "detection: status=$STATUS result=$RESULT use-umi=$USE_UMI"
+
+          if [ "$USE_UMI" != "true" ]; then
+            echo "no UMI scheme detected: passing ${IN_HOST} through unchanged"
+            printf '%s' "$IN_HOST" > /tmp/output-bam
+            printf 'false' > /tmp/umi-applied
+            exit 0
+          fi
+
+          WORK="/mnt/output/bam/.fgbio-umi-${SAMPLE}"
+          rm -rf "$WORK"; mkdir -p "$WORK"
+          trap 'rm -rf "$WORK"' EXIT
+          # One JVM per streaming stage. Stages pass uncompressed BAM to each
+          # other; only GroupReadsByUmi's output is compressed.
+          fg() { local heap="$1"; shift; fgbio "-Xmx${heap}" "--tmp-dir=$WORK" --async-io=true "$@"; }
+          # Prefix each tool's log lines so a failure in the stream names its stage.
+          tag() { sed -u "s/^/[$1] /" >&2; }
+
+          echo "1/3 clear position-based duplicate flags, queryname sort"
+          samtools view -u --remove-flags 0x400 -@ "$THREADS" "$IN" \
+            | samtools sort -n -l 1 -@ "$SORT_THREADS" -m 1G -T "$WORK/sortn" -o "$WORK/qn.bam" -
+
+          FASTQS=("$UMI_DIR/umi_r1.fastq.gz"); STRUCTS=("+M")
+          if [ -s "$UMI_DIR/umi_r2.fastq.gz" ]; then FASTQS+=("$UMI_DIR/umi_r2.fastq.gz"); STRUCTS+=("+M"); fi
+          correct_umis() {
+            if [ -n "$CORR_UMIS" ]; then
+              # shellcheck disable=SC2086
+              fg 4g --compression=0 CorrectUmis -i /dev/stdin -o /dev/stdout \
+                -r "$WORK/rejects.bam" -M "$METRICS/umi_correction_metrics.txt" \
+                -m "$CORR_MISMATCHES" -d "$CORR_DISTANCE" -u $CORR_UMIS 2> >(tag correct)
+            else
+              cat
+            fi
+          }
+
+          echo "2/3 one stream: AnnotateBamWithUmis | ClipBam SoftWithMask (R1 5' ${MASK_R1}, R2 5' ${MASK_R2}, past mate)"
+          echo "    | CorrectUmis ($( [ -n "$CORR_UMIS" ] && echo "max mismatches ${CORR_MISMATCHES}, min distance ${CORR_DISTANCE}" || echo "skipped, random UMIs"))"
+          echo "    | SetMateInformation | set aside ungroupable records | GroupReadsByUmi (${STRATEGY}, ${EDITS} edits)"
+          fg 16g --compression=0 AnnotateBamWithUmis -i "$WORK/qn.bam" -f "${FASTQS[@]}" -r "${STRUCTS[@]}" \
+              -o /dev/stdout 2> >(tag annotate) \
+            | fg 4g --compression=0 ClipBam -i /dev/stdin -o /dev/stdout -r "$REF" \
+                --clipping-mode=SoftWithMask \
+                --read-one-five-prime="$MASK_R1" --read-two-five-prime="$MASK_R2" \
+                --clip-bases-past-mate=true -m "$METRICS/clip_metrics.txt" 2> >(tag clip) \
+            | correct_umis \
+            | fg 4g --compression=0 SetMateInformation -i /dev/stdin -o /dev/stdout 2> >(tag setmate) \
+            | samtools view -u \
+                -e '[RX] && !([RX] =~ "N") && !(flag.unmap && flag.munmap) && !flag.secondary && !flag.supplementary' \
+                -U "$WORK/aside.bam" -o - - \
+            | fg 8g --compression=1 GroupReadsByUmi -i /dev/stdin -o "$WORK/grouped.bam" \
+                --strategy="$STRATEGY" --edits="$EDITS" --mark-duplicates=true \
+                --family-size-histogram="$METRICS/family_sizes.txt" \
+                --grouping-metrics="$METRICS/grouping_metrics.txt" 2> >(tag group)
+          rm -f "$WORK/qn.bam"
+
+          echo "3/3 duplicate flag to set-aside supplementary/secondary records, merge, coordinate sort, index"
+          samtools view -f 0x400 -@ "$THREADS" "$WORK/grouped.bam" | cut -f1 > "$WORK/dup_names.txt"
+          python3 - "$WORK/dup_names.txt" "$WORK/aside.bam" "$WORK/aside_marked.bam" <<'PY'
+          import sys, pysam
+          dups = set(line.rstrip("\n") for line in open(sys.argv[1]))
+          inp = pysam.AlignmentFile(sys.argv[2], "rb")
+          out = pysam.AlignmentFile(sys.argv[3], "wb", template=inp)
+          marked = 0
+          for r in inp:
+              if (r.is_supplementary or r.is_secondary) and r.query_name in dups:
+                  r.flag |= 0x400
+                  marked += 1
+              out.write(r)
+          out.close(); inp.close()
+          print(f"duplicate flag propagated to {marked} supplementary/secondary records ({len(dups)} duplicate primary records)")
+          PY
+          mv "$WORK/aside_marked.bam" "$WORK/aside.bam"
+          rm -f "$WORK/dup_names.txt"
+          PARTS=("$WORK/grouped.bam" "$WORK/aside.bam")
+          [ -s "$WORK/rejects.bam" ] && PARTS+=("$WORK/rejects.bam")
+          samtools cat -o "$WORK/merged.bam" "${PARTS[@]}"
+          samtools sort -@ "$SORT_THREADS" -m 1G -T "$WORK/sortc" -o "$WORK/out.bam" "$WORK/merged.bam"
+          samtools index -@ "$THREADS" "$WORK/out.bam"
+
+          # Every input record must come out exactly once.
+          n_in=$(samtools view -c -@ "$THREADS" "$IN")
+          n_out=$(samtools view -c -@ "$THREADS" "$WORK/out.bam")
+          echo "records in: ${n_in}  out: ${n_out}"
+          if [ "$n_in" != "$n_out" ]; then
+            echo "record count changed (${n_in} -> ${n_out}); refusing to continue" >&2
+            exit 1
+          fi
+          {
+            echo "# ${SAMPLE} ${RESULT}: duplicates before (position) and after (UMI)"
+            echo "records	${n_in}"
+            echo "dup_flagged_position	$(samtools view -c -f 0x400 -F 0x900 -@ "$THREADS" "$IN")"
+            echo "dup_flagged_umi	$(samtools view -c -f 0x400 -F 0x900 -@ "$THREADS" "$WORK/out.bam")"
+            echo "primary_records	$(samtools view -c -F 0x900 -@ "$THREADS" "$WORK/out.bam")"
+            echo "set_aside_records	$(samtools view -c -@ "$THREADS" "$WORK/aside.bam")"
+            echo "correction_rejects	$( [ -s "$WORK/rejects.bam" ] && samtools view -c "$WORK/rejects.bam" || echo 0)"
+          } > "$METRICS/umi_dedup_summary.tsv"
+          cat "$METRICS/umi_dedup_summary.tsv"
+
+          mv "$WORK/out.bam" "$OUT"
+          mv "$WORK/out.bam.bai" "$OUT.bai"
+          printf '%s' "$OUT_HOST" > /tmp/output-bam
+          printf 'true' > /tmp/umi-applied
+        volumeMounts:
+          - {name: input-bam, mountPath: /mnt/input/bam/}
+          - {name: output-bam, mountPath: /mnt/output/bam/}
+          - {name: metrics, mountPath: /mnt/metrics/}
+          - {name: umi-dir, mountPath: /mnt/umi/, readOnly: true}
+          - {name: genome-ref, mountPath: /mnt/ref/genome/, readOnly: true}
+      volumes:
+        - name: input-bam
+          hostPath: {path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}", type: Directory}
+        - name: output-bam
+          hostPath: {path: "{{=sprig.osDir(inputs.parameters['output-bam'])}}", type: DirectoryOrCreate}
+        - name: metrics
+          hostPath: {path: "{{inputs.parameters.metrics-dir}}", type: Directory}
+        - name: umi-dir
+          hostPath: {path: "{{inputs.parameters.umi-dir}}", type: DirectoryOrCreate}
+        - name: genome-ref
+          hostPath: {path: "{{=sprig.osDir(inputs.parameters['genome-ref'])}}", type: Directory}

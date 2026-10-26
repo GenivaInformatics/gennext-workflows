@@ -1,0 +1,133 @@
+# UMI layout detection and extraction (gennext-umi-detect).
+#
+# umi-profile: reads the first 100k read pairs of the raw FASTQs, decides which
+#   inline UMI scheme (if any) the library carries, and writes the detection
+#   record to <metrics-dir>/detection.json plus one Argo output per value.
+# umi-extract: full pass that writes UMI-only FASTQs (read name + UMI bases)
+#   for fgbio AnnotateBamWithUmis. The raw reads are never modified; UMI and
+#   spacer bases are masked after alignment by fgbio-umi-dna-template.
+#
+# Image: https://github.com/GenivaInformatics/gennext-umi-detect (v0.1.2)
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: umi-detect-template
+  namespace: argo
+spec:
+  templates:
+    - name: umi-profile
+      inputs:
+        parameters:
+          - name: fq-r1
+          - name: fq-r2
+          - name: metrics-dir
+            description: Directory for detection.json, e.g. <sample-temp-dir>metrics/umi/
+          - name: sample-uuid
+            default: ""
+          - name: run-id
+            default: ""
+          - name: fail-on-review
+            # "true" fails the step when the result is `review` instead of
+            # continuing without UMI handling. Off by default: amplicon panels
+            # with primer-driven read starts land in review legitimately.
+            default: "false"
+      outputs:
+        parameters:
+          - name: detection-json
+            value: "{{=sprig.osClean(inputs.parameters['metrics-dir'])}}/detection.json"
+          - name: status
+            valueFrom: {path: /tmp/outputs/status}
+          - name: result
+            valueFrom: {path: /tmp/outputs/result}
+          - name: use-umi
+            valueFrom: {path: /tmp/outputs/use-umi}
+          - name: read-structure-r1
+            valueFrom: {path: /tmp/outputs/read-structure-r1}
+          - name: read-structure-r2
+            valueFrom: {path: /tmp/outputs/read-structure-r2}
+          - name: mask-r1
+            valueFrom: {path: /tmp/outputs/mask-r1}
+          - name: mask-r2
+            valueFrom: {path: /tmp/outputs/mask-r2}
+          - name: group-strategy
+            valueFrom: {path: /tmp/outputs/group-strategy}
+          - name: group-edits
+            valueFrom: {path: /tmp/outputs/group-edits}
+          - name: duplex
+            valueFrom: {path: /tmp/outputs/duplex}
+      script:
+        image: docker.io/bergun/gennext-umi-detect:0.1.2
+        command: [sh]
+        resources:
+          requests: {cpu: "2", memory: 256Mi}
+          limits: {cpu: "4", memory: 1Gi}
+        source: |
+          set -eu
+          set -- umi-detect --log-format json profile \
+            --r1 "/mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}" \
+            --r2 "/mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}" \
+            --out /mnt/output/metrics/detection.json \
+            --outputs-dir /tmp/outputs \
+            --workflow "{{workflow.name}}"
+          [ -n "{{inputs.parameters.sample-uuid}}" ] && set -- "$@" --sample-uuid "{{inputs.parameters.sample-uuid}}"
+          [ -n "{{inputs.parameters.run-id}}" ] && set -- "$@" --run-uuid "{{inputs.parameters.run-id}}"
+          [ "{{inputs.parameters.fail-on-review}}" = "true" ] && set -- "$@" --fail-on-review
+          "$@"
+          echo "UMI decision: $(cat /tmp/outputs/status) / $(cat /tmp/outputs/result)"
+        volumeMounts:
+          - {name: input-r1, mountPath: /mnt/input/r1/, readOnly: true}
+          - {name: input-r2, mountPath: /mnt/input/r2/, readOnly: true}
+          - {name: metrics, mountPath: /mnt/output/metrics/}
+      volumes:
+        - name: input-r1
+          hostPath: {path: "{{=sprig.osDir(inputs.parameters['fq-r1'])}}", type: Directory}
+        - name: input-r2
+          hostPath: {path: "{{=sprig.osDir(inputs.parameters['fq-r2'])}}", type: Directory}
+        - name: metrics
+          hostPath: {path: "{{inputs.parameters.metrics-dir}}", type: DirectoryOrCreate}
+
+    - name: umi-extract
+      inputs:
+        parameters:
+          - name: fq-r1
+          - name: fq-r2
+          - name: detection-json
+            description: detection.json written by umi-profile
+          - name: umi-dir
+            description: Output directory for umi_r1.fastq.gz / umi_r2.fastq.gz (scratch)
+          - name: thread-count
+            default: "8"
+      outputs:
+        parameters:
+          - name: umi-dir
+            value: "{{inputs.parameters.umi-dir}}"
+      script:
+        image: docker.io/bergun/gennext-umi-detect:0.1.2
+        command: [sh]
+        resources:
+          requests: {cpu: "4", memory: 256Mi}
+          limits: {memory: 2Gi}
+        source: |
+          set -eu
+          umi-detect --log-format json extract \
+            --r1 "/mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}" \
+            --r2 "/mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}" \
+            --detection "/mnt/detection/{{=sprig.osBase(inputs.parameters['detection-json'])}}" \
+            --out-dir /mnt/output/umi \
+            --threads "{{inputs.parameters.thread-count}}" \
+            --stats /mnt/detection/extract.json
+          ls -la /mnt/output/umi
+        volumeMounts:
+          - {name: input-r1, mountPath: /mnt/input/r1/, readOnly: true}
+          - {name: input-r2, mountPath: /mnt/input/r2/, readOnly: true}
+          - {name: detection, mountPath: /mnt/detection/}
+          - {name: umi-dir, mountPath: /mnt/output/umi/}
+      volumes:
+        - name: input-r1
+          hostPath: {path: "{{=sprig.osDir(inputs.parameters['fq-r1'])}}", type: Directory}
+        - name: input-r2
+          hostPath: {path: "{{=sprig.osDir(inputs.parameters['fq-r2'])}}", type: Directory}
+        - name: detection
+          hostPath: {path: "{{=sprig.osDir(inputs.parameters['detection-json'])}}", type: Directory}
+        - name: umi-dir
+          hostPath: {path: "{{inputs.parameters.umi-dir}}", type: DirectoryOrCreate}
