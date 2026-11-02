@@ -126,8 +126,8 @@ spec:
           # through named pipes (no copy on disk). Only reads whose structure
           # holds a UMI (an M segment) are used.
           case "$RS_R1" in *M*) ;; *) echo "read structure r1 '${RS_R1}' has no UMI segment" >&2; exit 1 ;; esac
-          mkfifo "$WORK/r1.fq"; FASTQS=("$WORK/r1.fq"); STRUCTS=("$RS_R1"); R2_OUT=/dev/null
-          case "$RS_R2" in *M*) mkfifo "$WORK/r2.fq"; FASTQS+=("$WORK/r2.fq"); STRUCTS+=("$RS_R2"); R2_OUT="$WORK/r2.fq" ;; esac
+          mkfifo "$WORK/r1.fq"; FASTQS=("$WORK/r1.fq"); STRUCTS=("$RS_R1"); READ_FLAGS=(0x40)
+          case "$RS_R2" in *M*) mkfifo "$WORK/r2.fq"; FASTQS+=("$WORK/r2.fq"); STRUCTS+=("$RS_R2"); READ_FLAGS+=(0x80) ;; esac
           correct_umis() {
             if [ -n "$CORR_UMIS" ]; then
               # shellcheck disable=SC2086
@@ -142,11 +142,16 @@ spec:
           echo "2/3 one stream: AnnotateBamWithUmis | ClipBam SoftWithMask (R1 5' ${MASK_R1}, R2 5' ${MASK_R2}, past mate)"
           echo "    | CorrectUmis ($( [ -n "$CORR_UMIS" ] && echo "max mismatches ${CORR_MISMATCHES}, min distance ${CORR_DISTANCE}" || echo "skipped, random UMIs"))"
           echo "    | SetMateInformation | set aside ungroupable records | GroupReadsByUmi (${STRATEGY}, ${EDITS} edits)"
-          # Every primary record is paired, so unpaired output must stay empty;
-          # --fail-fast stops on any record without a matching read.
-          samtools fastq -n -F 0x900 -1 "$WORK/r1.fq" -2 "$R2_OUT" \
-            -0 "$WORK/unpaired_0.fq" -s "$WORK/unpaired_s.fq" "$WORK/qn.bam" 2> >(tag fastq) &
-          FASTQ_PID=$!
+          # One writer per pipe: a single `samtools fastq` writing both pipes
+          # deadlocks, because fgbio waits for R1 data before it opens R2.
+          # --fail-fast stops on any record without a matching read (also a
+          # read whose mate is missing).
+          FASTQ_PIDS=()
+          for i in "${!FASTQS[@]}"; do
+            samtools fastq -n -F 0x900 -f "${READ_FLAGS[$i]}" "$WORK/qn.bam" \
+              > "${FASTQS[$i]}" 2> >(tag "fastq-r$((i + 1))") &
+            FASTQ_PIDS+=($!)
+          done
           fg 2g --compression=0 AnnotateBamWithUmis -i "$WORK/qn.bam" -f "${FASTQS[@]}" -r "${STRUCTS[@]}" \
               --sorted=true --fail-fast=true -o /dev/stdout 2> >(tag annotate) \
             | fg 4g --compression=0 ClipBam -i /dev/stdin -o /dev/stdout -r "$REF" \
@@ -162,11 +167,9 @@ spec:
                 --strategy="$STRATEGY" --edits="$EDITS" --mark-duplicates=true \
                 --family-size-histogram="$METRICS/family_sizes.txt" \
                 --grouping-metrics="$METRICS/grouping_metrics.txt" 2> >(tag group)
-          wait "$FASTQ_PID" || { echo "samtools fastq failed" >&2; exit 1; }
-          if [ -s "$WORK/unpaired_0.fq" ] || [ -s "$WORK/unpaired_s.fq" ]; then
-            echo "name-sorted BAM has unpaired primary records; refusing to continue" >&2
-            exit 1
-          fi
+          for pid in "${FASTQ_PIDS[@]}"; do
+            wait "$pid" || { echo "samtools fastq failed" >&2; exit 1; }
+          done
           rm -f "$WORK/qn.bam"
 
           echo "3/3 duplicate flag to set-aside supplementary/secondary records, merge, coordinate sort, index"
