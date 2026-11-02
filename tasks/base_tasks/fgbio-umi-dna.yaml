@@ -63,7 +63,8 @@ spec:
         image: docker.io/bergun/fgbio-mark-duplicates:0.1.0
         command: [bash]
         resources:
-          requests: {cpu: "8", memory: 32Gi}
+          # Java heaps in step 2 add up to 18 GB (22 GB with CorrectUmis).
+          requests: {cpu: "8", memory: 24Gi}
         source: |
           set -euo pipefail
           IN_HOST="{{inputs.parameters.input-bam}}"
@@ -173,23 +174,32 @@ spec:
           rm -f "$WORK/qn.bam"
 
           echo "3/3 duplicate flag to set-aside supplementary/secondary records, merge, coordinate sort, index"
-          samtools view -f 0x400 -@ "$THREADS" "$WORK/grouped.bam" | cut -f1 > "$WORK/dup_names.txt"
-          python3 - "$WORK/dup_names.txt" "$WORK/aside.bam" "$WORK/aside_marked.bam" <<'PY'
+          # Only the names of the set-aside supplementary/secondary records are
+          # held in memory; the duplicate primary names stream past them (holding
+          # every duplicate name took ~20 GB at 200 M records).
+          cat > "$WORK/mark_aside.py" <<'PY'
           import sys, pysam
-          dups = set(line.rstrip("\n") for line in open(sys.argv[1]))
-          inp = pysam.AlignmentFile(sys.argv[2], "rb")
-          out = pysam.AlignmentFile(sys.argv[3], "wb", template=inp)
+          aside, marked_out = sys.argv[1], sys.argv[2]
+          with pysam.AlignmentFile(aside, "rb") as inp:
+              wanted = {r.query_name for r in inp if r.is_supplementary or r.is_secondary}
+          dups, n_dup = set(), 0
+          for line in sys.stdin:
+              n_dup += 1
+              name = line.rstrip("\n")
+              if name in wanted:
+                  dups.add(name)
           marked = 0
-          for r in inp:
-              if (r.is_supplementary or r.is_secondary) and r.query_name in dups:
-                  r.flag |= 0x400
-                  marked += 1
-              out.write(r)
-          out.close(); inp.close()
-          print(f"duplicate flag propagated to {marked} supplementary/secondary records ({len(dups)} duplicate primary records)")
+          with pysam.AlignmentFile(aside, "rb") as inp, pysam.AlignmentFile(marked_out, "wb", template=inp) as out:
+              for r in inp:
+                  if (r.is_supplementary or r.is_secondary) and r.query_name in dups:
+                      r.flag |= 0x400
+                      marked += 1
+                  out.write(r)
+          print(f"duplicate flag propagated to {marked} supplementary/secondary records ({n_dup} duplicate primary records)")
           PY
+          samtools view -f 0x400 -@ "$THREADS" "$WORK/grouped.bam" | cut -f1 \
+            | python3 "$WORK/mark_aside.py" "$WORK/aside.bam" "$WORK/aside_marked.bam"
           mv "$WORK/aside_marked.bam" "$WORK/aside.bam"
-          rm -f "$WORK/dup_names.txt"
           PARTS=("$WORK/grouped.bam" "$WORK/aside.bam")
           [ -s "$WORK/rejects.bam" ] && PARTS+=("$WORK/rejects.bam")
           samtools cat -o "$WORK/merged.bam" "${PARTS[@]}"
