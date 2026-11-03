@@ -356,6 +356,8 @@ spec:
 
           regions = somtest[design].get("regions", {})
           cnv_bed = regions.get("sv-cnv", "")
+          # A pooled reference can be built with a design-specific refFlat.
+          # Match that file when present; other kits keep the global hg38 default.
           ref_flat = (
               somtest[design].get("ref-flat")
               or ref_paths.get("regions", {}).get("ref-flat", "")
@@ -365,9 +367,9 @@ spec:
           if not ref_flat:
               raise RuntimeError(f"No refFlat configured for CNV design {design}")
 
-          # The validator writes the assay BED in the sample temp directory.
-          # When the canonical CNV BED names that same validated file, use
-          # the real output path; otherwise retain the design's CNV BED.
+          # The validator writes the assay BED in the sample temp directory. When
+          # the canonical CNV BED names that same file, use its actual output path.
+          # Other designs retain their configured CNV BED.
           if Path(cnv_bed).name == Path(assay_regions).name:
               cnv_bed = assay_regions
 

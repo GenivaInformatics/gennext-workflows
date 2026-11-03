@@ -1,0 +1,175 @@
+# Isolated end-to-end test of UMI handling for somatic DNA, without the
+# backend-facing steps of the full pipeline (no sample state, no variant
+# loading, no copy to output). Everything is written under test-root.
+#
+# Runs, per sample: bed validation, fastp, read-group, umi-detect, fq2bam,
+# umi-extract, fgbio-umi-dna, BQSR, Mutect2 — with the same arguments as
+# somatic-dna-fastq-v2 — so the result can be compared with the production
+# run of the same sample.
+#
+#   argo submit -n argo tests/umi/umi-dna-pipeline-test.yaml \
+#     -p samples='[{"id":"106801","uuid":"...","fq1":"...","fq2":"..."}]'
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: umi-dna-test-
+  namespace: argo
+  labels:
+    purpose: umi-dna-test
+spec:
+  entrypoint: main
+  serviceAccountName: gennext-workflows
+  nodeSelector:
+    kubernetes.io/hostname: gennext-03
+  tolerations:
+    - {key: gennext.bio/workload, operator: Equal, value: pipeline, effect: NoSchedule}
+  podGC:
+    strategy: OnPodSuccess
+  arguments:
+    parameters:
+      - name: samples
+        description: JSON list of {id, uuid, fq1, fq2}
+      - name: test-root
+        value: /runspace/gennext/data/scratch/umi-test-20261025/
+      - name: regions-file
+        value: /runspace/gennext/data/ref/hg38/regions/0200958659_primary_targets.hg38.bed
+      - name: ref-base-dir
+        value: /runspace/gennext/data/ref
+      - name: genome
+        value: /runspace/gennext/data/ref/hg38/genome/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set.fa
+      - name: dbsnp
+        value: /runspace/gennext/data/ref/hg38/dbSNP/GRCh38.dbSNP157.vcf.gz
+      - name: gnomad-common
+        value: /runspace/gennext/data/ref/hg38/other/common_variants/gnomad4/gnomad4_1pct.vcf.gz
+      - name: parabricksImage
+        value: nvcr.io/nvidia/clara/clara-parabricks:4.7.1-1
+      - name: thread-count
+        value: "18"
+  templates:
+    - name: main
+      steps:
+        - - name: sample
+            template: sample
+            arguments:
+              parameters:
+                - {name: id, value: "{{item.id}}"}
+                - {name: uuid, value: "{{item.uuid}}"}
+                - {name: fq1, value: "{{item.fq1}}"}
+                - {name: fq2, value: "{{item.fq2}}"}
+            withParam: "{{workflow.parameters.samples}}"
+
+    - name: sample
+      inputs:
+        parameters:
+          - name: id
+          - name: uuid
+          - name: fq1
+          - name: fq2
+      dag:
+        tasks:
+          - name: validate-bed-file
+            templateRef: {name: bed-validator-template, template: validate-bed-file}
+            arguments:
+              parameters:
+                - {name: input-bed-file, value: "{{workflow.parameters.regions-file}}"}
+                - {name: gtf-file, value: "{{workflow.parameters.ref-base-dir}}/hg38/gene_annots/gencode.v49.basic.annotation.MANE_Select.gtf.gz"}
+                - {name: reference-fai-file, value: "{{workflow.parameters.genome}}.fai"}
+                - {name: chains-dir, value: "{{workflow.parameters.ref-base-dir}}/hg38/other/chains/"}
+                - {name: output-dir, value: "{{workflow.parameters.test-root}}{{inputs.parameters.uuid}}/temp/metrics/bed_validation/"}
+                - {name: padding, value: "100"}
+                - {name: generate-padded-artifacts, value: "true"}
+          - name: fastp
+            templateRef: {name: fastp-template, template: fastp}
+            arguments:
+              parameters:
+                - {name: sample-name, value: "{{inputs.parameters.id}}"}
+                - {name: fq-r1, value: "{{inputs.parameters.fq1}}"}
+                - {name: fq-r2, value: "{{inputs.parameters.fq2}}"}
+                - {name: output-dir, value: "{{workflow.parameters.test-root}}{{inputs.parameters.uuid}}/scratch/trimmed_reads/"}
+                - {name: metrics-dir, value: "{{workflow.parameters.test-root}}{{inputs.parameters.uuid}}/temp/metrics/fastp/"}
+                - {name: thread-count, value: "{{workflow.parameters.thread-count}}"}
+                - {name: umi-length, value: "0"}
+                - {name: detect-adapter-for-pe, value: "true"}
+                - {name: quality-trim, value: "true"}
+                - {name: cut-mean-quality, value: "20"}
+                - {name: length-required, value: "20"}
+          - name: compose-read-group-str
+            templateRef: {name: compose-read-group-str, template: compose-read-group-str-from-fq}
+            arguments:
+              parameters:
+                - {name: fq-r1, value: "{{inputs.parameters.fq1}}"}
+                - {name: sample-name, value: "{{inputs.parameters.id}}"}
+          - name: umi-detect
+            templateRef: {name: umi-detect-template, template: umi-profile}
+            arguments:
+              parameters:
+                - {name: fq-r1, value: "{{inputs.parameters.fq1}}"}
+                - {name: fq-r2, value: "{{inputs.parameters.fq2}}"}
+                - {name: metrics-dir, value: "{{workflow.parameters.test-root}}{{inputs.parameters.uuid}}/temp/metrics/umi/"}
+                - {name: sample-uuid, value: "{{inputs.parameters.uuid}}"}
+          - name: pb-fq2bam
+            depends: "fastp && compose-read-group-str"
+            templateRef: {name: parabricks-fq2bam-template, template: parabricks-fq2bam-no-bqsr}
+            arguments:
+              parameters:
+                - {name: input-fq-r1, value: "{{tasks.fastp.outputs.parameters.fq-r1}}"}
+                - {name: input-fq-r2, value: "{{tasks.fastp.outputs.parameters.fq-r2}}"}
+                - {name: genome-ref, value: "{{workflow.parameters.genome}}"}
+                - {name: scratch-dir, value: "{{workflow.parameters.test-root}}{{inputs.parameters.uuid}}/scratch/"}
+                - {name: read-group-str, value: "{{tasks.compose-read-group-str.outputs.parameters.read-group-str}}"}
+                - {name: output-bam, value: "{{workflow.parameters.test-root}}{{inputs.parameters.uuid}}/scratch/bam/{{inputs.parameters.id}}.bam"}
+                - {name: output-dupes, value: "{{workflow.parameters.test-root}}{{inputs.parameters.uuid}}/temp/metrics/{{inputs.parameters.id}}.dupes"}
+          - name: umi-extract
+            depends: "umi-detect"
+            when: "{{tasks.umi-detect.outputs.parameters.use-umi}} == true"
+            templateRef: {name: umi-detect-template, template: umi-extract}
+            arguments:
+              parameters:
+                - {name: fq-r1, value: "{{inputs.parameters.fq1}}"}
+                - {name: fq-r2, value: "{{inputs.parameters.fq2}}"}
+                - {name: detection-json, value: "{{tasks.umi-detect.outputs.parameters.detection-json}}"}
+                - {name: umi-dir, value: "{{workflow.parameters.test-root}}{{inputs.parameters.uuid}}/scratch/umi/"}
+                - {name: thread-count, value: "8"}
+          - name: fgbio-umi-dna
+            depends: "pb-fq2bam && umi-detect && (umi-extract.Succeeded || umi-extract.Skipped)"
+            templateRef: {name: fgbio-umi-dna-template, template: fgbio-umi-dna}
+            arguments:
+              parameters:
+                - {name: sample-id, value: "{{inputs.parameters.id}}"}
+                - {name: input-bam, value: "{{tasks.pb-fq2bam.outputs.parameters.output-bam}}"}
+                - {name: metrics-dir, value: "{{workflow.parameters.test-root}}{{inputs.parameters.uuid}}/temp/metrics/umi/"}
+                - {name: umi-dir, value: "{{workflow.parameters.test-root}}{{inputs.parameters.uuid}}/scratch/umi/"}
+                - {name: genome-ref, value: "{{workflow.parameters.genome}}"}
+                - {name: output-bam, value: "{{workflow.parameters.test-root}}{{inputs.parameters.uuid}}/scratch/bam/{{inputs.parameters.id}}.umi.bam"}
+                - {name: thread-count, value: "{{workflow.parameters.thread-count}}"}
+          - name: pb-bqsr
+            depends: "fgbio-umi-dna && validate-bed-file"
+            templateRef: {name: parabricks-bqsr-template, template: parabricks-bqsr}
+            arguments:
+              parameters:
+                - {name: input-bam, value: "{{tasks.fgbio-umi-dna.outputs.parameters.output-bam}}"}
+                - {name: regions-file, value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-file}}"}
+                - {name: genome-ref, value: "{{workflow.parameters.genome}}"}
+                - {name: known-sites, value: "{{workflow.parameters.dbsnp}}"}
+                - {name: known-sites-gnomad, value: "{{workflow.parameters.gnomad-common}}"}
+                - {name: output-recal-file, value: "{{workflow.parameters.test-root}}{{inputs.parameters.uuid}}/temp/metrics/bqsr/{{inputs.parameters.id}}.recal"}
+          - name: pb-applybqsr
+            depends: "pb-bqsr"
+            templateRef: {name: parabricks-bqsr-template, template: parabricks-applybqsr}
+            arguments:
+              parameters:
+                - {name: input-bam, value: "{{tasks.fgbio-umi-dna.outputs.parameters.output-bam}}"}
+                - {name: input-recal-file, value: "{{tasks.pb-bqsr.outputs.parameters.output-recal-file}}"}
+                - {name: output-bam, value: "{{workflow.parameters.test-root}}{{inputs.parameters.uuid}}/temp/bam/{{inputs.parameters.id}}_recal.bam"}
+                - {name: genome-ref, value: "{{workflow.parameters.genome}}"}
+          - name: mutect2
+            depends: "pb-applybqsr && validate-bed-file"
+            templateRef: {name: mutect2-sharded-template, template: mutect2-tumor-only-sharded}
+            arguments:
+              parameters:
+                - {name: input-bam, value: "{{tasks.pb-applybqsr.outputs.parameters.output-bam}}"}
+                - {name: sample-id, value: "{{inputs.parameters.id}}"}
+                - {name: genome-ref, value: "{{workflow.parameters.genome}}"}
+                - {name: regions-file, value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-analysis-file}}"}
+                - {name: sample-scratch-dir, value: "{{workflow.parameters.test-root}}{{inputs.parameters.uuid}}/scratch/"}
+                - {name: output-vcf, value: "{{workflow.parameters.test-root}}{{inputs.parameters.uuid}}/temp/results/snv/vcf/{{inputs.parameters.id}}_mutect2_marked.vcf.gz"}

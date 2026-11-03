@@ -1,0 +1,104 @@
+# Checks that a change to fgbio-umi-dna-template leaves its output unchanged:
+# runs the current template on a BAM that an earlier run already processed,
+# into a separate folder, then compares every record (all fields and tags,
+# @PG header lines excluded) and the fgbio metric files with the earlier output.
+#
+#   argo submit -n argo tests/umi/fgbio-umi-dna-equivalence-test.yaml \
+#     -p sample-dir=/runspace/gennext/data/scratch/umi-test-20261025/<uuid>/ -p sample-id=<id>
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: fgbio-umi-dna-equivalence-
+  namespace: argo
+  labels:
+    purpose: umi-dna-test
+spec:
+  entrypoint: main
+  serviceAccountName: gennext-workflows
+  nodeSelector:
+    kubernetes.io/hostname: gennext-03
+  tolerations:
+    - {key: gennext.bio/workload, operator: Equal, value: pipeline, effect: NoSchedule}
+  podGC:
+    strategy: OnPodSuccess
+  arguments:
+    parameters:
+      - name: sample-dir
+        description: Test folder of one sample from umi-dna-pipeline-test (ends with /)
+      - name: sample-id
+      - name: genome
+        value: /runspace/gennext/data/ref/hg38/genome/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set.fa
+      - name: thread-count
+        value: "18"
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: prepare
+            template: prepare
+          - name: rerun
+            depends: prepare
+            templateRef: {name: fgbio-umi-dna-template, template: fgbio-umi-dna}
+            arguments:
+              parameters:
+                - {name: sample-id, value: "{{workflow.parameters.sample-id}}"}
+                - {name: input-bam, value: "{{workflow.parameters.sample-dir}}scratch/bam/{{workflow.parameters.sample-id}}.bam"}
+                - {name: metrics-dir, value: "{{workflow.parameters.sample-dir}}equivalence/metrics/umi/"}
+                - {name: umi-dir, value: "{{workflow.parameters.sample-dir}}scratch/umi/"}
+                - {name: genome-ref, value: "{{workflow.parameters.genome}}"}
+                - {name: output-bam, value: "{{workflow.parameters.sample-dir}}equivalence/bam/{{workflow.parameters.sample-id}}.umi.bam"}
+                - {name: thread-count, value: "{{workflow.parameters.thread-count}}"}
+          - name: compare
+            depends: rerun
+            template: compare
+
+    - name: prepare
+      script:
+        image: docker.io/bergun/gennext-umi-detect:0.1.2
+        command: [sh]
+        source: |
+          set -eu
+          rm -rf /mnt/sample/equivalence
+          mkdir -p /mnt/sample/equivalence/metrics/umi /mnt/sample/equivalence/bam
+          cp /mnt/sample/temp/metrics/umi/detection.json /mnt/sample/equivalence/metrics/umi/
+        volumeMounts:
+          - {name: sample, mountPath: /mnt/sample/}
+      volumes:
+        - name: sample
+          hostPath: {path: "{{workflow.parameters.sample-dir}}", type: Directory}
+
+    - name: compare
+      script:
+        image: docker.io/bergun/fgbio-mark-duplicates:0.1.0
+        command: [bash]
+        resources:
+          requests: {cpu: "8", memory: 4Gi}
+        source: |
+          set -euo pipefail
+          S=/mnt/sample; ID="{{workflow.parameters.sample-id}}"
+          A="$S/scratch/bam/${ID}.umi.bam"; B="$S/equivalence/bam/${ID}.umi.bam"
+          digest() { samtools view -@ 8 "$1" | md5sum | cut -d' ' -f1; }
+          da=$(digest "$A")
+          db=$(digest "$B")
+          echo "records: $(samtools view -c -@ 8 "$A") vs $(samtools view -c -@ 8 "$B")"
+          echo "record digest: earlier ${da}  rerun ${db}"
+          diff <(samtools view -H "$A" | grep -v '^@PG') <(samtools view -H "$B" | grep -v '^@PG') && echo "headers (without @PG): identical"
+          fail=0
+          for f in clip_metrics.txt umi_correction_metrics.txt family_sizes.txt grouping_metrics.txt umi_dedup_summary.tsv; do
+            if [ -e "$S/temp/metrics/umi/$f" ] || [ -e "$S/equivalence/metrics/umi/$f" ]; then
+              if diff -q <(grep -v '^#' "$S/temp/metrics/umi/$f") <(grep -v '^#' "$S/equivalence/metrics/umi/$f") >/dev/null; then
+                echo "metrics ${f}: identical"
+              else
+                echo "metrics ${f}: DIFFERENT"; fail=1
+                diff <(grep -v '^#' "$S/temp/metrics/umi/$f") <(grep -v '^#' "$S/equivalence/metrics/umi/$f") | head -10
+              fi
+            fi
+          done
+          if [ "$da" != "$db" ]; then echo "RECORDS DIFFER"; exit 1; fi
+          [ "$fail" = 0 ] || exit 1
+          echo "EQUIVALENT"
+        volumeMounts:
+          - {name: sample, mountPath: /mnt/sample/, readOnly: true}
+      volumes:
+        - name: sample
+          hostPath: {path: "{{workflow.parameters.sample-dir}}", type: Directory}
