@@ -356,11 +356,16 @@ spec:
 
           regions = somtest[design].get("regions", {})
           cnv_bed = regions.get("sv-cnv", "")
-          ref_flat = ref_paths.get("regions", {}).get("ref-flat", "")
+          # A pooled reference can be built with a design-specific refFlat.
+          # Match that file when present; other kits keep the global hg38 default.
+          ref_flat = (
+              somtest[design].get("ref-flat")
+              or ref_paths.get("regions", {}).get("ref-flat", "")
+          )
           if not cnv_bed:
               raise RuntimeError(f"No CNV BED configured for design {design}")
           if not ref_flat:
-              raise RuntimeError("No regions.ref-flat entry in ref-paths")
+              raise RuntimeError(f"No refFlat configured for CNV design {design}")
 
           Path("/tmp/cnv_regions_file.txt").write_text(cnv_bed)
           Path("/tmp/cnv_ref_flat.txt").write_text(ref_flat)
