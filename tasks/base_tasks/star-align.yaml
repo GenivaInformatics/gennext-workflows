@@ -70,6 +70,11 @@ spec:
       script:
         name: "star-align-arriba"
         image: quay.io/biocontainers/star:2.7.11b--h43eeafb_3
+        # STAR holds the whole genome index in memory (~30 GB for the CTAT
+        # GRCh38 index). Without a request the scheduler reserves nothing, and
+        # the pod is the first one the node kills when memory runs short.
+        resources:
+          requests: {cpu: "8", memory: 32Gi}
         command: [sh]
         source: |
           set -euo pipefail
