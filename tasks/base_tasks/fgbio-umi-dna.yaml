@@ -2,15 +2,21 @@
 #
 # Input: the full-length-read BAM from Parabricks fq2bam (UMI and spacer bases
 # still in the reads, position-based duplicate flags set), the detection
-# record from umi-detect-template/umi-profile, and the UMI-only FASTQs from
-# umi-detect-template/umi-extract.
+# record from umi-detect-template/umi-profile. The UMI is read from the BAM's
+# own reads (the UMI and spacer bases are still at each read's 5' end), using
+# the scheme's read structure.
 #
 # When the sample has no detected UMI scheme the step is a pass-through: it
 # returns the input BAM path untouched.
 #
 # Otherwise:
 #   1. clear the position-based duplicate flags, queryname-sort
-#   2. AnnotateBamWithUmis   UMI from the UMI-only FASTQs -> RX tag
+#   2. AnnotateBamWithUmis   UMI -> RX tag. `samtools fastq` turns the
+#                            name-sorted BAM back into reads in their original
+#                            orientation, so the reads match the BAM one to one
+#                            and in the same order; --sorted then streams them
+#                            in constant memory (without it fgbio holds every
+#                            UMI in memory: >16 GB at 110 M read pairs)
 #   3. ClipBam SoftWithMask  mask UMI + spacer bases (5') and read-through
 #                            past the mate (the mate's UMI in short inserts);
 #                            masked bases become N / minimum quality, read
@@ -42,7 +48,7 @@ spec:
           - name: metrics-dir
             description: Directory holding detection.json; fgbio metrics are written here too
           - name: umi-dir
-            description: Directory with umi_r1.fastq.gz / umi_r2.fastq.gz from umi-extract
+            description: Unused since the UMI is read from the BAM; kept so existing callers stay valid
           - name: genome-ref
           - name: output-bam
           - name: thread-count
@@ -57,7 +63,8 @@ spec:
         image: docker.io/bergun/fgbio-mark-duplicates:0.1.0
         command: [bash]
         resources:
-          requests: {cpu: "8", memory: 32Gi}
+          # Java heaps in step 2 add up to 18 GB (22 GB with CorrectUmis).
+          requests: {cpu: "8", memory: 24Gi}
         source: |
           set -euo pipefail
           IN_HOST="{{inputs.parameters.input-bam}}"
@@ -66,7 +73,6 @@ spec:
           OUT="/mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}"
           REF="/mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}}"
           METRICS=/mnt/metrics
-          UMI_DIR=/mnt/umi
           SAMPLE="{{inputs.parameters.sample-id}}"
           THREADS="{{inputs.parameters.thread-count}}"
           SORT_THREADS=$(( THREADS / 2 < 2 ? 2 : THREADS / 2 ))
@@ -84,6 +90,8 @@ spec:
               "MASK_R1": s.get("mask", {}).get("r1", 0),
               "MASK_R2": s.get("mask", {}).get("r2", 0),
               "STRATEGY": s.get("grouping", {}).get("strategy", "").capitalize(),
+              "RS_R1": s.get("readStructure", {}).get("r1", ""),
+              "RS_R2": s.get("readStructure", {}).get("r2", ""),
               "EDITS": s.get("grouping", {}).get("edits", 0),
               "CORR_UMIS": " ".join(corr.get("umis", [])),
               "CORR_MISMATCHES": corr.get("maxMismatches", 1),
@@ -115,8 +123,12 @@ spec:
           samtools view -u --remove-flags 0x400 -@ "$THREADS" "$IN" \
             | samtools sort -n -l 1 -@ "$SORT_THREADS" -m 1G -T "$WORK/sortn" -o "$WORK/qn.bam" -
 
-          FASTQS=("$UMI_DIR/umi_r1.fastq.gz"); STRUCTS=("+M")
-          if [ -s "$UMI_DIR/umi_r2.fastq.gz" ]; then FASTQS+=("$UMI_DIR/umi_r2.fastq.gz"); STRUCTS+=("+M"); fi
+          # Reads for AnnotateBamWithUmis, streamed from the name-sorted BAM
+          # through named pipes (no copy on disk). Only reads whose structure
+          # holds a UMI (an M segment) are used.
+          case "$RS_R1" in *M*) ;; *) echo "read structure r1 '${RS_R1}' has no UMI segment" >&2; exit 1 ;; esac
+          mkfifo "$WORK/r1.fq"; FASTQS=("$WORK/r1.fq"); STRUCTS=("$RS_R1"); READ_FLAGS=(0x40)
+          case "$RS_R2" in *M*) mkfifo "$WORK/r2.fq"; FASTQS+=("$WORK/r2.fq"); STRUCTS+=("$RS_R2"); READ_FLAGS+=(0x80) ;; esac
           correct_umis() {
             if [ -n "$CORR_UMIS" ]; then
               # shellcheck disable=SC2086
@@ -131,8 +143,26 @@ spec:
           echo "2/3 one stream: AnnotateBamWithUmis | ClipBam SoftWithMask (R1 5' ${MASK_R1}, R2 5' ${MASK_R2}, past mate)"
           echo "    | CorrectUmis ($( [ -n "$CORR_UMIS" ] && echo "max mismatches ${CORR_MISMATCHES}, min distance ${CORR_DISTANCE}" || echo "skipped, random UMIs"))"
           echo "    | SetMateInformation | set aside ungroupable records | GroupReadsByUmi (${STRATEGY}, ${EDITS} edits)"
-          fg 16g --compression=0 AnnotateBamWithUmis -i "$WORK/qn.bam" -f "${FASTQS[@]}" -r "${STRUCTS[@]}" \
-              -o /dev/stdout 2> >(tag annotate) \
+          # One writer per pipe: a single `samtools fastq` writing both pipes
+          # deadlocks, because fgbio waits for R1 data before it opens R2.
+          # --fail-fast stops on any record without a matching read (also a
+          # read whose mate is missing).
+          # fastp keeps reads down to 20 bases, shorter than some structures'
+          # fixed part (Archer 8M13S+T needs 22). Such reads are padded with N /
+          # '!' so fgbio can parse them; a UMI that reaches the padding holds N
+          # and the record is set aside below, as before.
+          min_len() { python3 -c 'import re, sys; s = sys.argv[1]; print(sum(int(n) for n in re.findall(r"(\d+)[A-Z]", s)) + ("+" in s))' "$1"; }
+          FASTQ_PIDS=()
+          for i in "${!FASTQS[@]}"; do
+            ( set -o pipefail
+              samtools fastq -n -F 0x900 -f "${READ_FLAGS[$i]}" "$WORK/qn.bam" 2> >(tag "fastq-r$((i + 1))") \
+                | awk -v L="$(min_len "${STRUCTS[$i]}")" \
+                    'NR % 4 == 2 || NR % 4 == 0 { while (length($0) < L) $0 = $0 (NR % 4 == 2 ? "N" : "!") } 1' \
+                > "${FASTQS[$i]}" ) &
+            FASTQ_PIDS+=($!)
+          done
+          fg 2g --compression=0 AnnotateBamWithUmis -i "$WORK/qn.bam" -f "${FASTQS[@]}" -r "${STRUCTS[@]}" \
+              --sorted=true --fail-fast=true -o /dev/stdout 2> >(tag annotate) \
             | fg 4g --compression=0 ClipBam -i /dev/stdin -o /dev/stdout -r "$REF" \
                 --clipping-mode=SoftWithMask \
                 --read-one-five-prime="$MASK_R1" --read-two-five-prime="$MASK_R2" \
@@ -146,26 +176,38 @@ spec:
                 --strategy="$STRATEGY" --edits="$EDITS" --mark-duplicates=true \
                 --family-size-histogram="$METRICS/family_sizes.txt" \
                 --grouping-metrics="$METRICS/grouping_metrics.txt" 2> >(tag group)
+          for pid in "${FASTQ_PIDS[@]}"; do
+            wait "$pid" || { echo "samtools fastq failed" >&2; exit 1; }
+          done
           rm -f "$WORK/qn.bam"
 
           echo "3/3 duplicate flag to set-aside supplementary/secondary records, merge, coordinate sort, index"
-          samtools view -f 0x400 -@ "$THREADS" "$WORK/grouped.bam" | cut -f1 > "$WORK/dup_names.txt"
-          python3 - "$WORK/dup_names.txt" "$WORK/aside.bam" "$WORK/aside_marked.bam" <<'PY'
+          # Only the names of the set-aside supplementary/secondary records are
+          # held in memory; the duplicate primary names stream past them (holding
+          # every duplicate name took ~20 GB at 200 M records).
+          cat > "$WORK/mark_aside.py" <<'PY'
           import sys, pysam
-          dups = set(line.rstrip("\n") for line in open(sys.argv[1]))
-          inp = pysam.AlignmentFile(sys.argv[2], "rb")
-          out = pysam.AlignmentFile(sys.argv[3], "wb", template=inp)
+          aside, marked_out = sys.argv[1], sys.argv[2]
+          with pysam.AlignmentFile(aside, "rb") as inp:
+              wanted = {r.query_name for r in inp if r.is_supplementary or r.is_secondary}
+          dups, n_dup = set(), 0
+          for line in sys.stdin:
+              n_dup += 1
+              name = line.rstrip("\n")
+              if name in wanted:
+                  dups.add(name)
           marked = 0
-          for r in inp:
-              if (r.is_supplementary or r.is_secondary) and r.query_name in dups:
-                  r.flag |= 0x400
-                  marked += 1
-              out.write(r)
-          out.close(); inp.close()
-          print(f"duplicate flag propagated to {marked} supplementary/secondary records ({len(dups)} duplicate primary records)")
+          with pysam.AlignmentFile(aside, "rb") as inp, pysam.AlignmentFile(marked_out, "wb", template=inp) as out:
+              for r in inp:
+                  if (r.is_supplementary or r.is_secondary) and r.query_name in dups:
+                      r.flag |= 0x400
+                      marked += 1
+                  out.write(r)
+          print(f"duplicate flag propagated to {marked} supplementary/secondary records ({n_dup} duplicate primary records)")
           PY
+          samtools view -f 0x400 -@ "$THREADS" "$WORK/grouped.bam" | cut -f1 \
+            | python3 "$WORK/mark_aside.py" "$WORK/aside.bam" "$WORK/aside_marked.bam"
           mv "$WORK/aside_marked.bam" "$WORK/aside.bam"
-          rm -f "$WORK/dup_names.txt"
           PARTS=("$WORK/grouped.bam" "$WORK/aside.bam")
           [ -s "$WORK/rejects.bam" ] && PARTS+=("$WORK/rejects.bam")
           samtools cat -o "$WORK/merged.bam" "${PARTS[@]}"
@@ -199,7 +241,6 @@ spec:
           - {name: input-bam, mountPath: /mnt/input/bam/}
           - {name: output-bam, mountPath: /mnt/output/bam/}
           - {name: metrics, mountPath: /mnt/metrics/}
-          - {name: umi-dir, mountPath: /mnt/umi/, readOnly: true}
           - {name: genome-ref, mountPath: /mnt/ref/genome/, readOnly: true}
       volumes:
         - name: input-bam
@@ -208,7 +249,5 @@ spec:
           hostPath: {path: "{{=sprig.osDir(inputs.parameters['output-bam'])}}", type: DirectoryOrCreate}
         - name: metrics
           hostPath: {path: "{{inputs.parameters.metrics-dir}}", type: Directory}
-        - name: umi-dir
-          hostPath: {path: "{{inputs.parameters.umi-dir}}", type: DirectoryOrCreate}
         - name: genome-ref
           hostPath: {path: "{{=sprig.osDir(inputs.parameters['genome-ref'])}}", type: Directory}
