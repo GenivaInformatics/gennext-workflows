@@ -147,10 +147,18 @@ spec:
           # deadlocks, because fgbio waits for R1 data before it opens R2.
           # --fail-fast stops on any record without a matching read (also a
           # read whose mate is missing).
+          # fastp keeps reads down to 20 bases, shorter than some structures'
+          # fixed part (Archer 8M13S+T needs 22). Such reads are padded with N /
+          # '!' so fgbio can parse them; a UMI that reaches the padding holds N
+          # and the record is set aside below, as before.
+          min_len() { python3 -c 'import re, sys; s = sys.argv[1]; print(sum(int(n) for n in re.findall(r"(\d+)[A-Z]", s)) + ("+" in s))' "$1"; }
           FASTQ_PIDS=()
           for i in "${!FASTQS[@]}"; do
-            samtools fastq -n -F 0x900 -f "${READ_FLAGS[$i]}" "$WORK/qn.bam" \
-              > "${FASTQS[$i]}" 2> >(tag "fastq-r$((i + 1))") &
+            ( set -o pipefail
+              samtools fastq -n -F 0x900 -f "${READ_FLAGS[$i]}" "$WORK/qn.bam" 2> >(tag "fastq-r$((i + 1))") \
+                | awk -v L="$(min_len "${STRUCTS[$i]}")" \
+                    'NR % 4 == 2 || NR % 4 == 0 { while (length($0) < L) $0 = $0 (NR % 4 == 2 ? "N" : "!") } 1' \
+                > "${FASTQS[$i]}" ) &
             FASTQ_PIDS+=($!)
           done
           fg 2g --compression=0 AnnotateBamWithUmis -i "$WORK/qn.bam" -f "${FASTQS[@]}" -r "${STRUCTS[@]}" \
