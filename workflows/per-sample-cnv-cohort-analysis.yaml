@@ -367,6 +367,12 @@ spec:
           if not ref_flat:
               raise RuntimeError(f"No refFlat configured for CNV design {design}")
 
+          # The validator writes the assay BED in the sample temp directory. When
+          # the canonical CNV BED names that same file, use its actual output path.
+          # Other designs retain their configured CNV BED.
+          if Path(cnv_bed).name == Path(assay_regions).name:
+              cnv_bed = assay_regions
+
           Path("/tmp/cnv_regions_file.txt").write_text(cnv_bed)
           Path("/tmp/cnv_ref_flat.txt").write_text(ref_flat)
           Path("/tmp/cnv_design_id.txt").write_text(design)

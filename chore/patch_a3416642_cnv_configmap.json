@@ -1,0 +1,6 @@
+{
+  "data": {
+    "hg38.somtest.A3416642.regions.sv-cnv": "hg38/regions/A3416642_Regions.valid.bed",
+    "hg38.somtest.A3416642.ref-flat": "hg38/gene_annots/refFlat_mane.txt"
+  }
+}

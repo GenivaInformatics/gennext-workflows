@@ -370,6 +370,8 @@ spec:
           - name: thread-count
           - name: user-id
           - name: post-process-steps
+          - name: configmap-dir
+            default: /mnt/configmap
       outputs:
         parameters:
           - name: sample-list
@@ -397,7 +399,7 @@ spec:
             valueFrom:
               path: /tmp/run_hrd.txt
       container:
-        image: bergun/gennext-load-and-prepare:0.6.0
+        image: bergun/gennext-load-and-prepare:0.6.1-cnv-mane-20261005
         args:
           - "batch"
           - "--run-id={{inputs.parameters.run-id}}"
@@ -409,7 +411,7 @@ spec:
           - "--thread-count={{inputs.parameters.thread-count}}"
           - "--user-id={{inputs.parameters.user-id}}"
           - "--post-process-steps={{inputs.parameters.post-process-steps}}"
-          - "--configmap-dir=/mnt/configmap"
+          - "--configmap-dir={{inputs.parameters.configmap-dir}}"
         env:
           - name: GENNEXT_CLUSTER_TOKEN
             valueFrom:
