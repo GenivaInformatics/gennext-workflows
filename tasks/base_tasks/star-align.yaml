@@ -2,6 +2,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
   name: star-align-template
+  namespace: argo
 spec:
   templates:
     # STAR alignment for RNA fusion calling. Chimeric params follow the
