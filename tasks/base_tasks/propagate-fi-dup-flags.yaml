@@ -2,6 +2,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
   name: propagate-fi-dup-flags-template
+  namespace: argo
 spec:
   templates:
     # Propagate the BAM_FDUP (0x400) flag from a genome-coord MarkDuplicates
@@ -49,11 +50,22 @@ spec:
       container:
         name: propagate-fi-dup-flags
         image: bergun/extract-fusion-reads:0.3.2
-        command: ["propagate-fi-dup-flags"]
+        # FusionInspector skips (exit 0, no BAM) when the filtered fusion list
+        # is empty, so a sample without fusion candidates has no BAM to update.
+        # Nothing downstream reads one: the app offers IGV only for contigs in
+        # the FusionInspector FASTA index, which is absent too.
+        command: ["sh", "-c"]
         args:
-          - "--upstream-bam=/mnt/upstream/{{=sprig.osBase(inputs.parameters['upstream-bam'])}}"
-          - "--fi-bam=/mnt/fi/{{=sprig.osBase(inputs.parameters['fi-bam'])}}"
-          - "--out-bam=/mnt/out/{{=sprig.osBase(inputs.parameters['out-bam'])}}"
+          - |
+            FI_BAM="/mnt/fi/{{=sprig.osBase(inputs.parameters['fi-bam'])}}"
+            if [ ! -f "$FI_BAM" ]; then
+              echo "No FusionInspector BAM at $FI_BAM (no fusion candidates); nothing to propagate."
+              exit 0
+            fi
+            exec propagate-fi-dup-flags \
+              "--upstream-bam=/mnt/upstream/{{=sprig.osBase(inputs.parameters['upstream-bam'])}}" \
+              "--fi-bam=$FI_BAM" \
+              "--out-bam=/mnt/out/{{=sprig.osBase(inputs.parameters['out-bam'])}}"
         volumeMounts:
           - name: upstream-bam
             mountPath: "/mnt/upstream/"
