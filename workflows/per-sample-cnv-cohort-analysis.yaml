@@ -72,6 +72,8 @@ spec:
                   value: "{{inputs.parameters.ref-paths}}"
                 - name: assay-regions-file
                   value: "{{inputs.parameters.regions-file}}"
+                - name: fallback-ref-flat
+                  value: "{{inputs.parameters.ref-base-dir}}{{inputs.parameters.ref-version}}/gene_annots/refFlat_mane.txt"
 
           # --- Lazily build the per-kit pooled reference if missing ---
           - name: ensure-kit-reference
@@ -284,6 +286,9 @@ spec:
           - name: sample-run-data
           - name: ref-paths
           - name: assay-regions-file
+          # Used when the kit has no CNV design in the ConfigMap (e.g. a run
+          # with an uploaded BED and no enrichment kit).
+          - name: fallback-ref-flat
       outputs:
         parameters:
           - name: regions-file
@@ -305,6 +310,8 @@ spec:
             value: "{{inputs.parameters.ref-paths}}"
           - name: ASSAY_REGIONS_FILE
             value: "{{inputs.parameters.assay-regions-file}}"
+          - name: FALLBACK_REF_FLAT
+            value: "{{inputs.parameters.fallback-ref-flat}}"
         source: |
           import json
           import os
@@ -348,20 +355,29 @@ spec:
                   ),
                   "",
               )
-          if not design:
-              raise RuntimeError(
-                  "No canonical somtest CNV design mapping for enrichment kit "
-                  f"candidates {candidates!r}"
+          if design:
+              regions = somtest[design].get("regions", {})
+              cnv_bed = regions.get("sv-cnv", "")
+              # A pooled reference can be built with a design-specific refFlat.
+              # Match that file when present; other kits keep the global hg38 default.
+              ref_flat = (
+                  somtest[design].get("ref-flat")
+                  or ref_paths.get("regions", {}).get("ref-flat", "")
               )
-
-          regions = somtest[design].get("regions", {})
-          cnv_bed = regions.get("sv-cnv", "")
-          # A pooled reference can be built with a design-specific refFlat.
-          # Match that file when present; other kits keep the global hg38 default.
-          ref_flat = (
-              somtest[design].get("ref-flat")
-              or ref_paths.get("regions", {}).get("ref-flat", "")
-          )
+          else:
+              # No CNV design for this kit (e.g. an uploaded BED without an
+              # enrichment kit): run CNV on the sample's own validated BED with
+              # the MANE refFlat. ensure-kit-reference builds the pooled
+              # reference from the WGS cohort, and validate-kit-reference
+              # rejects a cached reference built from a different BED.
+              cnv_bed = assay_regions
+              ref_flat = os.environ["FALLBACK_REF_FLAT"]
+              design = Path(assay_regions).name.split(".")[0]
+              print(
+                  "No canonical somtest CNV design mapping for enrichment kit "
+                  f"candidates {candidates!r}; using the sample BED {cnv_bed} "
+                  f"and refFlat {ref_flat}"
+              )
           if not cnv_bed:
               raise RuntimeError(f"No CNV BED configured for design {design}")
           if not ref_flat:
