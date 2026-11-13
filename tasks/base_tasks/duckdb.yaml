@@ -197,6 +197,20 @@ spec:
           DROP TABLE IF EXISTS oncokb_snv;
           DROP TABLE IF EXISTS cancervar_snv;
           CREATE TABLE oncokb_snv AS FROM read_csv_auto('/mnt/input/oncokb_snv.tsv', header=True, sep='\t', sample_size=20000);
+          -- OncoKB columns read by the views below; an older MAF without one gets it as NULL.
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "VARIANT_IN_ONCOKB" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "MUTATION_EFFECT" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "MUTATION_EFFECT_CITATIONS" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "LEVEL_Dx1" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "LEVEL_Dx2" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "LEVEL_Dx3" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "HIGHEST_DX_LEVEL" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "DX_CITATIONS" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "LEVEL_Px1" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "LEVEL_Px2" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "LEVEL_Px3" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "HIGHEST_PX_LEVEL" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "PX_CITATIONS" VARCHAR;
           CREATE TABLE cancervar_snv AS SELECT * REPLACE (TRY_CAST("Start" AS BIGINT) AS "Start", TRY_CAST("End" AS BIGINT) AS "End") FROM read_csv_auto('/mnt/input/cancervar_snv.tsv', header=True, sep='\t', sample_size=20000, all_varchar=true);
           CREATE OR REPLACE VIEW combined_snv AS
           SELECT
@@ -309,7 +323,20 @@ spec:
               oncokb_snv."HIGHEST_LEVEL",
               oncokb_snv."HIGHEST_SENSITIVE_LEVEL",
               oncokb_snv."HIGHEST_RESISTANCE_LEVEL",
-              CAST(oncokb_snv."TX_CITATIONS" AS VARCHAR) AS TX_CITATIONS
+              CAST(oncokb_snv."TX_CITATIONS" AS VARCHAR) AS TX_CITATIONS,
+              oncokb_snv."VARIANT_IN_ONCOKB",
+              oncokb_snv."MUTATION_EFFECT",
+              CAST(oncokb_snv."MUTATION_EFFECT_CITATIONS" AS VARCHAR) AS MUTATION_EFFECT_CITATIONS,
+              oncokb_snv."LEVEL_Dx1",
+              oncokb_snv."LEVEL_Dx2",
+              oncokb_snv."LEVEL_Dx3",
+              oncokb_snv."HIGHEST_DX_LEVEL",
+              CAST(oncokb_snv."DX_CITATIONS" AS VARCHAR) AS DX_CITATIONS,
+              oncokb_snv."LEVEL_Px1",
+              oncokb_snv."LEVEL_Px2",
+              oncokb_snv."LEVEL_Px3",
+              oncokb_snv."HIGHEST_PX_LEVEL",
+              CAST(oncokb_snv."PX_CITATIONS" AS VARCHAR) AS PX_CITATIONS
           FROM
               (SELECT ROW_NUMBER() OVER () AS "row_id", * FROM cancervar_snv) AS cancervar_snv_with_row_ids
           INNER JOIN oncokb_snv ON cancervar_snv_with_row_ids."#Chr" = SUBSTRING(oncokb_snv."Chromosome" FROM 4)
@@ -515,6 +542,11 @@ spec:
             oncokb_snv."LEVEL_Dx3",
             oncokb_snv."HIGHEST_DX_LEVEL",
             CAST(oncokb_snv."PX_CITATIONS" AS VARCHAR) AS PX_CITATIONS,
+            CAST(oncokb_snv."DX_CITATIONS" AS VARCHAR) AS DX_CITATIONS,
+            oncokb_snv."LEVEL_Px1",
+            oncokb_snv."LEVEL_Px2",
+            oncokb_snv."LEVEL_Px3",
+            oncokb_snv."HIGHEST_PX_LEVEL",
           FROM
             (SELECT ROW_NUMBER() OVER () AS "row_id", * FROM cancervar_snv) AS cancervar_snv_with_row_ids
           INNER JOIN oncokb_snv ON cancervar_snv_with_row_ids."#Chr" = SUBSTRING(oncokb_snv."Chromosome" FROM 4)
@@ -1424,6 +1456,20 @@ spec:
           DROP TABLE IF EXISTS oncokb_snv;
           DROP TABLE IF EXISTS cancervar_snv;
           CREATE TABLE oncokb_snv AS FROM read_csv_auto('/mnt/input/oncokb_snv.tsv', header=True, sep='\t', sample_size=-1);
+          -- OncoKB columns read by the views below; an older MAF without one gets it as NULL.
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "VARIANT_IN_ONCOKB" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "MUTATION_EFFECT" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "MUTATION_EFFECT_CITATIONS" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "LEVEL_Dx1" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "LEVEL_Dx2" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "LEVEL_Dx3" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "HIGHEST_DX_LEVEL" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "DX_CITATIONS" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "LEVEL_Px1" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "LEVEL_Px2" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "LEVEL_Px3" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "HIGHEST_PX_LEVEL" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "PX_CITATIONS" VARCHAR;
           CREATE TABLE cancervar_snv AS FROM read_csv_auto('/mnt/input/cancervar_snv.tsv', header=True, sep='\t', sample_size=-1);
           CREATE OR REPLACE VIEW combined_snv AS
           SELECT
@@ -1533,7 +1579,20 @@ spec:
               oncokb_snv."HIGHEST_LEVEL",
               oncokb_snv."HIGHEST_SENSITIVE_LEVEL",
               oncokb_snv."HIGHEST_RESISTANCE_LEVEL",
-              CAST(oncokb_snv."TX_CITATIONS" AS VARCHAR) AS TX_CITATIONS
+              CAST(oncokb_snv."TX_CITATIONS" AS VARCHAR) AS TX_CITATIONS,
+              oncokb_snv."VARIANT_IN_ONCOKB",
+              oncokb_snv."MUTATION_EFFECT",
+              CAST(oncokb_snv."MUTATION_EFFECT_CITATIONS" AS VARCHAR) AS MUTATION_EFFECT_CITATIONS,
+              oncokb_snv."LEVEL_Dx1",
+              oncokb_snv."LEVEL_Dx2",
+              oncokb_snv."LEVEL_Dx3",
+              oncokb_snv."HIGHEST_DX_LEVEL",
+              CAST(oncokb_snv."DX_CITATIONS" AS VARCHAR) AS DX_CITATIONS,
+              oncokb_snv."LEVEL_Px1",
+              oncokb_snv."LEVEL_Px2",
+              oncokb_snv."LEVEL_Px3",
+              oncokb_snv."HIGHEST_PX_LEVEL",
+              CAST(oncokb_snv."PX_CITATIONS" AS VARCHAR) AS PX_CITATIONS
           FROM
               (SELECT ROW_NUMBER() OVER () AS "row_id", * FROM cancervar_snv) AS cancervar_snv_with_row_ids
           INNER JOIN oncokb_snv ON cancervar_snv_with_row_ids."#Chr" = SUBSTRING(oncokb_snv."Chromosome" FROM 4)
@@ -1736,6 +1795,11 @@ spec:
             oncokb_snv."LEVEL_Dx3",
             oncokb_snv."HIGHEST_DX_LEVEL",
             CAST(oncokb_snv."PX_CITATIONS" AS VARCHAR) AS PX_CITATIONS,
+            CAST(oncokb_snv."DX_CITATIONS" AS VARCHAR) AS DX_CITATIONS,
+            oncokb_snv."LEVEL_Px1",
+            oncokb_snv."LEVEL_Px2",
+            oncokb_snv."LEVEL_Px3",
+            oncokb_snv."HIGHEST_PX_LEVEL",
           FROM
             (SELECT ROW_NUMBER() OVER () AS "row_id", * FROM cancervar_snv) AS cancervar_snv_with_row_ids
           INNER JOIN oncokb_snv ON cancervar_snv_with_row_ids."#Chr" = SUBSTRING(oncokb_snv."Chromosome" FROM 4)
