@@ -1,0 +1,113 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: bpview-template
+  namespace: argo
+spec:
+  templates:
+    # Per-breakpoint fusion contigs for IGV, built by projecting the STAR
+    # genome alignments onto [5' partner up to bp1] + [3' partner from bp2].
+    # No realignment: the reads drawn are the reads the callers counted.
+    # See images/gennext-bpview/bpview.py for the read classes and tags.
+    #
+    # Runs next to FusionInspector (does not replace it). Inputs are the
+    # same files FusionInspector's extract step reads: the fgbio-marked
+    # STAR BAM, the Arriba and STAR-Fusion TSVs, and the filtered
+    # (non-artifact) fusion list from filter-artifact-fusions.
+    #
+    # Outputs in output-dir, prefix {sample}_bpview:
+    #   .fa/.fa.fai, .bam/.bam.bai, .bed, .events.json
+    # Older samples have no bpview outputs; readers must fall back to the
+    # {sample}_finspector files.
+    - name: bpview
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: input-bam
+          - name: ref-genome-fa
+          - name: gene-annotation-gtf
+          - name: arriba-tsv
+          - name: starfusion-tsv
+          - name: fusion-list-tsv
+          - name: output-dir
+          - name: max-events
+            default: "300"
+          - name: max-context
+            default: "40"
+      outputs:
+        parameters:
+          - name: output-prefix
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_bpview"
+          - name: events-json
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_bpview.events.json"
+      volumes:
+        - name: input-bam
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}"
+            type: Directory
+        - name: ref-genome-fa
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['ref-genome-fa'])}}"
+            type: Directory
+        - name: gene-annotation-gtf
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['gene-annotation-gtf'])}}"
+            type: Directory
+        - name: arriba-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['arriba-tsv'])}}"
+            type: Directory
+        - name: starfusion-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['starfusion-tsv'])}}"
+            type: Directory
+        - name: fusion-list-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['fusion-list-tsv'])}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: bpview
+        # Pin by digest when the tag is pushed.
+        image: bergun/gennext-bpview:0.1.0
+        command: [bash]
+        resources:
+          requests:
+            cpu: "1"
+            memory: 2Gi
+          limits:
+            memory: 8Gi
+        volumeMounts:
+          - name: input-bam
+            mountPath: /mnt/input/bam
+          - name: ref-genome-fa
+            mountPath: /mnt/ref/genome
+          - name: gene-annotation-gtf
+            mountPath: /mnt/ref/gtf
+          - name: arriba-tsv
+            mountPath: /mnt/input/arriba
+          - name: starfusion-tsv
+            mountPath: /mnt/input/starfusion
+          - name: fusion-list-tsv
+            mountPath: /mnt/input/fusion-list
+          - name: output-dir
+            mountPath: /mnt/output
+        source: |
+          set -euo pipefail
+          SAMPLE_ID="{{inputs.parameters.sample-id}}"
+          bpview --version
+          bpview \
+            --sample-id "${SAMPLE_ID}" \
+            --bam "/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}" \
+            --fasta "/mnt/ref/genome/{{=sprig.osBase(inputs.parameters['ref-genome-fa'])}}" \
+            --gtf "/mnt/ref/gtf/{{=sprig.osBase(inputs.parameters['gene-annotation-gtf'])}}" \
+            --arriba-tsv "/mnt/input/arriba/{{=sprig.osBase(inputs.parameters['arriba-tsv'])}}" \
+            --starfusion-tsv "/mnt/input/starfusion/{{=sprig.osBase(inputs.parameters['starfusion-tsv'])}}" \
+            --fusion-list "/mnt/input/fusion-list/{{=sprig.osBase(inputs.parameters['fusion-list-tsv'])}}" \
+            --max-events "{{inputs.parameters.max-events}}" \
+            --max-context "{{inputs.parameters.max-context}}" \
+            --out-prefix "/mnt/output/${SAMPLE_ID}_bpview"
+          ls -la /mnt/output/ | grep "${SAMPLE_ID}_bpview"
