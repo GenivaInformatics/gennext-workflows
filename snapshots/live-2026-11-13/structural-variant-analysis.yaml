@@ -1,0 +1,124 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: structural-variant-analysis
+  namespace: argo
+spec:
+  arguments: {}
+  entrypoint: dag-workflow
+  templates:
+  - dag:
+      tasks:
+      - arguments:
+          parameters:
+          - name: input-bam
+            value: sample.bam
+          - name: input-bed
+            value: regions.bed
+        name: gridss-filter
+        template: gridss-filter
+      - arguments:
+          parameters:
+          - name: input-bam
+            value: sample.bam
+        dependencies:
+        - gridss-filter
+        name: gridss
+        template: gridss
+      - arguments:
+          parameters:
+          - name: input-bam
+            value: sample.bam
+          - name: input-ref
+            value: reference.fasta
+        dependencies:
+        - gridss-filter
+        name: tiddit
+        template: tiddit
+      - arguments:
+          parameters:
+          - name: input-manta-vcf
+            value: manta.vcf.gz
+          - name: input-gridss-vcf
+            value: gridss.vcf
+          - name: input-tiddit-vcf
+            value: tiddit.vcf
+        dependencies:
+        - gridss
+        - tiddit
+        name: survivor
+        template: survivor
+    inputs: {}
+    metadata: {}
+    name: dag-workflow
+    outputs: {}
+  - inputs:
+      parameters:
+      - name: input-bam
+      - name: input-bed
+    metadata: {}
+    name: gridss-filter
+    outputs: {}
+    script:
+      command:
+      - sh
+      image: quay.io/biocontainers/gridss:2.13.2--h96c455f_5
+      name: ''
+      resources: {}
+      source: 'gridss_extract_overlapping_fragments --targetbed /mnt/input/bed/{{=sprig.osBase(inputs.parameters[''input-bed''])}} --threads 20 -j /usr/local/share/gridss-2.13.2-5/gridss.jar   -o /mnt/output/targeted_bam/{{=sprig.osBase(inputs.parameters[''input-bam''])}}
+        /mnt/input/bam/{{=sprig.osBase(inputs.parameters[''input-bam''])}}
+
+        '
+  - inputs:
+      parameters:
+      - name: input-bam
+    metadata: {}
+    name: gridss
+    outputs: {}
+    script:
+      command:
+      - sh
+      image: quay.io/biocontainers/gridss:2.13.2--h96c455f_5
+      name: ''
+      resources: {}
+      source: '# Replace with the actual GRIDSS command echo "Running GRIDSS on /mnt/output/targeted_bam/{{=sprig.osBase(inputs.parameters[''input-bam''])}}"
+
+        '
+  - inputs:
+      parameters:
+      - name: input-bam
+      - name: input-ref
+    metadata: {}
+    name: tiddit
+    outputs: {}
+    script:
+      command:
+      - sh
+      image: quay.io/biocontainers/tiddit:3.9.2--py312hc9302aa_0
+      name: ''
+      resources: {}
+      source: 'tiddit --sv --threads 20 --bam /mnt/input/bam/{{=sprig.osBase(inputs.parameters[''input-bam''])}} --ref /mnt/input/ref/{{=sprig.osBase(inputs.parameters[''input-ref''])}} -o /mnt/output/tiddit_targeted_result/{{=sprig.osBase(inputs.parameters[''input-bam''])}}.vcf
+
+        '
+  - inputs:
+      parameters:
+      - name: input-manta-vcf
+      - name: input-gridss-vcf
+      - name: input-tiddit-vcf
+    metadata: {}
+    name: survivor
+    outputs: {}
+    script:
+      command:
+      - sh
+      image: quay.io/biocontainers/survivor:1.0.7--h077b44d_6
+      name: ''
+      resources: {}
+      source: 'gunzip -d -c /mnt/input/manta_targeted_vcf/{{=sprig.osBase(inputs.parameters[''input-manta-vcf''])}} > /mnt/input/manta_targeted_vcf/{{=sprig.osBase(inputs.parameters[''input-manta-vcf''])}}.decompressed
+
+        cat <<EOF > instructions.txt /mnt/input/manta_targeted_vcf/{{=sprig.osBase(inputs.parameters[''input-manta-vcf''])}}.decompressed /mnt/input/gridss_targeted_vcf/{{=sprig.osBase(inputs.parameters[''input-gridss-vcf''])}}
+        /mnt/input/tiddit_targeted_vcf/{{=sprig.osBase(inputs.parameters[''input-tiddit-vcf''])}} EOF
+
+        SURVIVOR merge instructions.txt 1000 2 1 1 0 30 /mnt/output/merged_vcf/merged_results.vcf
+
+        '

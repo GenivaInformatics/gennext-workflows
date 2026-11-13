@@ -1,0 +1,68 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: filter-chimeric-junction-by-bam-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: bam-file
+      - name: chimeric-junction-file
+      - name: output-file
+      - default: '4'
+        name: thread-count
+    name: filter-chimeric-junction-by-bam
+    outputs:
+      parameters:
+      - name: output-file
+        value: '{{inputs.parameters.output-file}}'
+    script:
+      command:
+      - bash
+      image: quay.io/biocontainers/samtools:1.21--h50ea8bc_0
+      name: filter-chimeric-junction-by-bam
+      resources:
+        requests:
+          cpu: '4'
+          memory: 4Gi
+      source: "set -euo pipefail\n\nBAM_IN=\"/mnt/input/bam/{{=sprig.osBase(inputs.parameters['bam-file'])}}\"\nJUNCTION_IN=\"/mnt/input/junction/{{=sprig.osBase(inputs.parameters['chimeric-junction-file'])}}\"\
+        \nJUNCTION_OUT=\"/mnt/output/{{=sprig.osBase(inputs.parameters['output-file'])}}\"\nTHREADS=\"{{inputs.parameters.thread-count}}\"\nQNAMES_FILE=\"/tmp/surviving_qnames.txt\"\n\necho \"Extracting\
+        \ non-dup QNAMEs from ${BAM_IN}\"\n# -F 1024 drops 0x400-flagged (PCR duplicate) reads. With an\n# UMI-aware mark-duplicates upstream (fgbio GroupReadsByUmi), the\n# surviving reads are the UMI-distinct\
+        \ molecules.\nsamtools view -@ \"${THREADS}\" -F 1024 \"${BAM_IN}\" | cut -f1 | sort -u > \"${QNAMES_FILE}\"\necho \"Non-dup QNAMEs: $(wc -l < \"${QNAMES_FILE}\")\"\n\necho \"Filtering ${JUNCTION_IN}\
+        \ by surviving QNAMEs\"\n# Chimeric.out.junction is tab-separated; column 10 is the read\n# name. STAR's standard format has no header row, but with\n# --chimOutJunctionFormat 1 the file has a `chr_donorA...`\n\
+        # column header at the top and `# 2.7.x ... STAR command` +\n# `# Nreads N NreadsUnique N NreadsMulti N` lines at the\n# bottom (the latter is what STAR-Fusion uses to compute the\n# FFPM denominator).\
+        \ Pass all such lines through unchanged.\n#\n# QNAME-suffix mismatch: STAR ran on fastp-tagged FASTQ where\n# fastp appended `:UMI_<R1>_<R2>` to every read name (see\n# tasks/base_tasks/fastp.yaml's\
+        \ --umi --umi_prefix=UMI). So\n# column 10 here is `<orig_qname>:UMI_<R1>_<R2>`. The dedup\n# BAM upstream went through fgbio CopyUmiFromReadName\n# --remove-umi=true (see fgbio-mark-duplicates.yaml),\
+        \ which\n# strips the entire `:UMI_<R1>_<R2>` suffix before writing.\n# So K (built from the BAM) contains the un-suffixed QNAME\n# while column 10 still has the suffix \u2014 we strip it here\n\
+        # before checking membership. The sub() is a no-op for\n# libraries without the UMI suffix, so this is\n# backwards-compatible with non-UMI inputs.\n# NF=21 truncates each data row to the canonical\n\
+        # chimOutJunctionFormat-1 column count. STAR's\n# `--outSAMattrRGline` (a tab-separated string of @RG fields)\n# leaks the SM:/PL:/LB:/PU: fields as extra columns 22\u201326,\n# which makes STAR-Fusion\
+        \ silently reject every data row and\n# emit an empty TSV. Same root cause as the BAM\n# bogus-aux-tag fix in fgbio-mark-duplicates.yaml's python\n# prep \u2014 different file, same junk source.\n\
+        #\n# File-membership is keyed on FILENAME, NOT the usual\n# `NR==FNR` idiom, to survive an EMPTY QNAMES_FILE. When a\n# sample has zero surviving (non-dup) reads \u2014 e.g. a\n# degenerate/empty\
+        \ library where the dedup BAM has no\n# alignments \u2014 QNAMES_FILE is 0 bytes. With `NR==FNR`, awk's\n# record counter never advances on the empty first file, so\n# NR==FNR stays true into the\
+        \ *second* file and the entire\n# junction is consumed as key-building input \u2192 0-byte output.\n# STAR-Fusion then can't find the `# Nreads` footer and dies\n# with \"doesn't have expected formatting\"\
+        \ (exit 255). Keying\n# on FILENAME instead means the empty QNAMES_FILE contributes\n# no keys and the junction's header + `#` comment lines\n# (incl. the `# Nreads 0` footer) still pass through,\
+        \ so\n# STAR-Fusion gets a parseable file and emits an empty\n# (header-only) prediction set. mawk in the samtools\n# biocontainer supports FILENAME.\nawk -v qf=\"${QNAMES_FILE}\" 'BEGIN{FS=OFS=\"\
+        \\t\"}\n     FILENAME == qf { K[$1] = 1; next }\n     /^#/ { print; next }\n     /^chr_donorA/ { NF = 21; print; next }\n     { qn = $10; sub(/:UMI_[ACGTN]+_[ACGTN]+$/, \"\", qn); if (qn in K) {\
+        \ NF = 21; print } }' \\\n  \"${QNAMES_FILE}\" \"${JUNCTION_IN}\" > \"${JUNCTION_OUT}\"\n\necho \"Junction line counts (raw -> filtered):\"\nwc -l \"${JUNCTION_IN}\" \"${JUNCTION_OUT}\"\nrm -f \"\
+        ${QNAMES_FILE}\"\n"
+      volumeMounts:
+      - mountPath: /mnt/input/bam/
+        name: bam-file
+      - mountPath: /mnt/input/junction/{{=sprig.osBase(inputs.parameters['chimeric-junction-file'])}}
+        name: chimeric-junction-file
+      - mountPath: /mnt/output/
+        name: output-file
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''bam-file''])}}'
+        type: Directory
+      name: bam-file
+    - hostPath:
+        path: '{{inputs.parameters.chimeric-junction-file}}'
+        type: File
+      name: chimeric-junction-file
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-file''])}}'
+        type: DirectoryOrCreate
+      name: output-file

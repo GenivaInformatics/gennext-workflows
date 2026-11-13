@@ -1,0 +1,59 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: seqkit-bedtools-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: input-bam
+      - name: output-fq-r1
+      - name: output-fq-r2
+    name: seqkit-bedtools-bam-to-fq-rm-dup
+    outputs:
+      parameters:
+      - name: output-fq-r1
+        value: '{{inputs.parameters.output-fq-r1}}'
+      - name: output-fq-r2
+        value: '{{inputs.parameters.output-fq-r2}}'
+    script:
+      command:
+      - bash
+      image: bergun/seqkit_bedtools:v0.0.1
+      name: seqkit-bedtools-bam-to-fq-script
+      source: 'mkfifo aln.end1.fifo;
+
+        mkfifo aln.end2.fifo;
+
+        bedtools bamtofastq \
+
+        -i /mnt/input/bam/{{=sprig.osBase(inputs.parameters[''input-bam''])}} \
+
+        -fq aln.end1.fifo -fq2 aln.end2.fifo & cat aln.end1.fifo | /tools/seqkit \
+
+        rmdup --ignore-case | gzip > /mnt/output/r1/{{=sprig.osBase(inputs.parameters[''output-fq-r1''])}} & cat aln.end2.fifo | /tools/seqkit \
+
+        rmdup --ignore-case | gzip > /mnt/output/r2/{{=sprig.osBase(inputs.parameters[''output-fq-r2''])}} & wait; rm aln.end1.fifo aln.end2.fifo
+
+        '
+      volumeMounts:
+      - mountPath: /mnt/output/r1/
+        name: output-fq-r1
+      - mountPath: /mnt/output/r2/
+        name: output-fq-r2
+      - mountPath: /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}
+        name: input-bam
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-fq-r1''])}}'
+        type: DirectoryOrCreate
+      name: output-fq-r1
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-fq-r1''])}}'
+        type: DirectoryOrCreate
+      name: output-fq-r2
+    - hostPath:
+        path: '{{inputs.parameters.input-bam}}'
+        type: File
+      name: input-bam

@@ -1,0 +1,297 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: oncokb-templates
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: annovar-maf-f
+      - name: annovar-oncokb-maf-f
+      - name: ref-version
+      - name: regions-file
+        value: .
+      - name: tumor-type
+        value: .
+      - name: max-attempts
+        value: '3'
+      - name: retry-delay-seconds
+        value: '5'
+    name: oncokb-snv
+    outputs:
+      parameters:
+      - name: annovar-oncokb-maf-f
+        value: '{{inputs.parameters.annovar-oncokb-maf-f}}'
+    script:
+      command:
+      - sh
+      env:
+      - name: ONCOKB_API_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: oncokb_api_token
+            name: oncokb-secrets
+      image: bergun/oncokb-annotator:0.1.7-unfiltered
+      name: oncokb-snv-script
+      source: "ref_version=\"{{inputs.parameters.ref-version}}\"\nif [ \"$ref_version\" = \"hg38\" ]; then\n    grch_ref_version=\"GRCh38\"\nelif [ \"$ref_version\" = \"hg19\" ]; then\n    grch_ref_version=\"\
+        GRCh37\"\nelse\n    grch_ref_version=$ref_version\nfi;\n\ntumor_type=\"{{inputs.parameters.tumor-type}}\"\necho \"OncoKB SNV: Using tumor type: '$tumor_type'\"\n\ninput_file=\"/mnt/input/{{=sprig.osBase(inputs.parameters['annovar-maf-f'])}}\"\
+        \noutput_file=\"/mnt/output/{{=sprig.osBase(inputs.parameters['annovar-oncokb-maf-f'])}}\"\n\n# Function to run annotation\nrun_annotation() {\n    echo \"Running OncoKB annotation (attempt $1)...\"\
+        \n    if [ \"$tumor_type\" != \".\" ]; then\n        echo \"Using tumor type parameter: $tumor_type\"\n        python ./filtered_maf_annotator.py --input \"$input_file\" --output \"$output_file\"\
+        \ --reference \"$grch_ref_version\" --regions-file \"{{inputs.parameters.regions-file}}\" --tumor-type \"$tumor_type\"\n    else\n        echo \"No tumor type specified (using default)\"\n     \
+        \   python ./filtered_maf_annotator.py --input \"$input_file\" --output \"$output_file\" --reference \"$grch_ref_version\" --regions-file \"{{inputs.parameters.regions-file}}\"\n    fi\n    return\
+        \ $?\n}\n\n# Function to validate output\nvalidate_output() {\n    echo \"Waiting 10 seconds for output file creation...\"\n    sleep 10\n    \n    if [ -f \"$output_file\" ] && [ -s \"$output_file\"\
+        \ ]; then\n        echo \"Output file validated successfully: $output_file\"\n        return 0\n    else\n        echo \"Output file validation failed or file is empty: $output_file\"\n        return\
+        \ 1\n    fi\n}\n\n# Main execution with retry logic\nmax_attempts=\"{{inputs.parameters.max-attempts}}\"\nretry_delay_seconds=\"{{inputs.parameters.retry-delay-seconds}}\"\ncase \"$max_attempts\"\
+        \ in\n    ''|*[!0-9]*)\n        echo \"max-attempts must be a positive integer: $max_attempts\" >&2\n        exit 2\n        ;;\nesac\nif [ \"$max_attempts\" -lt 1 ]; then\n    echo \"max-attempts\
+        \ must be at least 1\" >&2\n    exit 2\nfi\ncase \"$retry_delay_seconds\" in\n    ''|*[!0-9]*)\n        echo \"retry-delay-seconds must be a non-negative integer: $retry_delay_seconds\" >&2\n  \
+        \      exit 2\n        ;;\nesac\nattempt=1\n\nwhile [ $attempt -le $max_attempts ]; do\n    echo \"=== Attempt $attempt of $max_attempts ===\"\n    \n    if run_annotation $attempt; then\n     \
+        \   echo \"Annotation completed successfully\"\n        \n        if validate_output; then\n            echo \"Task completed successfully\"\n            exit 0\n        else\n            echo \"\
+        Output validation failed on attempt $attempt\"\n        fi\n    else\n        echo \"Annotation failed on attempt $attempt\"\n    fi\n    \n    if [ $attempt -lt $max_attempts ]; then\n        echo\
+        \ \"Retrying in $retry_delay_seconds seconds...\"\n        sleep \"$retry_delay_seconds\"\n    fi\n    \n    attempt=$((attempt + 1))\ndone\n\necho \"All attempts failed. Task failed.\"\nexit 1\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: annovar-maf-f
+      - mountPath: /mnt/output/
+        name: annovar-oncokb-maf-f
+      workingDir: /app/oncokb/
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''annovar-maf-f''])}}'
+        type: Directory
+      name: annovar-maf-f
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''annovar-oncokb-maf-f''])}}'
+        type: DirectoryOrCreate
+      name: annovar-oncokb-maf-f
+  - inputs:
+      parameters:
+      - name: oncokb-sv-in-f
+      - name: oncokb-sv-out-f
+      - name: regions-file
+        value: .
+      - name: tumor-type
+        value: .
+      - name: max-attempts
+        value: '3'
+      - name: retry-delay-seconds
+        value: '5'
+    name: oncokb-sv
+    outputs:
+      parameters:
+      - name: oncokb-sv-out-f
+        value: '{{inputs.parameters.oncokb-sv-out-f}}'
+    script:
+      command:
+      - sh
+      env:
+      - name: ONCOKB_API_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: oncokb_api_token
+            name: oncokb-secrets
+      image: bergun/oncokb-annotator:0.1.7-unfiltered
+      name: oncokb-sv-script
+      source: "input_file=\"/mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-sv-in-f'])}}\"\noutput_file=\"/mnt/output/{{=sprig.osBase(inputs.parameters['oncokb-sv-out-f'])}}\"\ntumor_type=\"{{inputs.parameters.tumor-type}}\"\
+        \necho \"OncoKB SV: Using tumor type: '$tumor_type'\"\n\n# Function to run annotation\nrun_annotation() {\n    echo \"Running OncoKB SV annotation (attempt $1)...\"\n    if [ \"$tumor_type\" !=\
+        \ \".\" ]; then\n        echo \"Using tumor type parameter: $tumor_type\"\n        python ./filtered_sv_annotator.py --input \"$input_file\" --output \"$output_file\" --regions-file \"{{inputs.parameters.regions-file}}\"\
+        \ --tumor-type \"$tumor_type\"\n    else\n        echo \"No tumor type specified (using default)\"\n        python ./filtered_sv_annotator.py --input \"$input_file\" --output \"$output_file\" --regions-file\
+        \ \"{{inputs.parameters.regions-file}}\"\n    fi\n    return $?\n}\n\n# Function to validate output\nvalidate_output() {\n    echo \"Waiting 10 seconds for output file creation...\"\n    sleep 10\n\
+        \    \n    if [ -f \"$output_file\" ] && [ -s \"$output_file\" ]; then\n        echo \"Output file validated successfully: $output_file\"\n        return 0\n    else\n        echo \"Output file\
+        \ validation failed or file is empty: $output_file\"\n        return 1\n    fi\n}\n\n# Main execution with retry logic\nmax_attempts=\"{{inputs.parameters.max-attempts}}\"\nretry_delay_seconds=\"\
+        {{inputs.parameters.retry-delay-seconds}}\"\ncase \"$max_attempts\" in\n    ''|*[!0-9]*)\n        echo \"max-attempts must be a positive integer: $max_attempts\" >&2\n        exit 2\n        ;;\n\
+        esac\nif [ \"$max_attempts\" -lt 1 ]; then\n    echo \"max-attempts must be at least 1\" >&2\n    exit 2\nfi\ncase \"$retry_delay_seconds\" in\n    ''|*[!0-9]*)\n        echo \"retry-delay-seconds\
+        \ must be a non-negative integer: $retry_delay_seconds\" >&2\n        exit 2\n        ;;\nesac\nattempt=1\n\nwhile [ $attempt -le $max_attempts ]; do\n    echo \"=== Attempt $attempt of $max_attempts\
+        \ ===\"\n    \n    if run_annotation $attempt; then\n        echo \"Annotation completed successfully\"\n        \n        if validate_output; then\n            echo \"Task completed successfully\"\
+        \n            exit 0\n        else\n            echo \"Output validation failed on attempt $attempt\"\n        fi\n    else\n        echo \"Annotation failed on attempt $attempt\"\n    fi\n    \n\
+        \    if [ $attempt -lt $max_attempts ]; then\n        echo \"Retrying in $retry_delay_seconds seconds...\"\n        sleep \"$retry_delay_seconds\"\n    fi\n    \n    attempt=$((attempt + 1))\ndone\n\
+        \necho \"All attempts failed. Task failed.\"\nexit 1\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: oncokb-sv-in-f
+      - mountPath: /mnt/output/
+        name: oncokb-sv-out-f
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''oncokb-sv-in-f''])}}'
+        type: Directory
+      name: oncokb-sv-in-f
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''oncokb-sv-out-f''])}}'
+        type: DirectoryOrCreate
+      name: oncokb-sv-out-f
+  - inputs:
+      parameters:
+      - name: oncokb-fusions-in-f
+      - name: oncokb-fusions-out-f
+      - name: tumor-type
+        value: .
+      - name: max-attempts
+        value: '3'
+      - name: retry-delay-seconds
+        value: '5'
+    name: oncokb-fusions
+    outputs:
+      parameters:
+      - name: oncokb-fusions-out-f
+        value: '{{inputs.parameters.oncokb-fusions-out-f}}'
+    script:
+      command:
+      - sh
+      env:
+      - name: ONCOKB_API_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: oncokb_api_token
+            name: oncokb-secrets
+      image: bergun/oncokb-annotator:v0.1.2
+      name: oncokb-fusions-script
+      source: "input_file=\"/mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-fusions-in-f'])}}\"\noutput_file=\"/mnt/output/{{=sprig.osBase(inputs.parameters['oncokb-fusions-out-f'])}}\"\ntumor_type=\"\
+        {{inputs.parameters.tumor-type}}\"\necho \"OncoKB Fusions: Using tumor type: '$tumor_type'\"\n\n# Function to run annotation\nrun_annotation() {\n    echo \"Running OncoKB Fusion annotation (attempt\
+        \ $1)...\"\n    if [ \"$tumor_type\" != \".\" ]; then\n        echo \"Using tumor type parameter: $tumor_type\"\n        python ./FusionAnnotator.py -i \"$input_file\" -o \"$output_file\" -b ${ONCOKB_API_TOKEN}\
+        \ -t \"$tumor_type\"\n    else\n        echo \"No tumor type specified (using default)\"\n        python ./FusionAnnotator.py -i \"$input_file\" -o \"$output_file\" -b ${ONCOKB_API_TOKEN}\n    fi\n\
+        \    return $?\n}\n\n# Function to validate output\nvalidate_output() {\n    echo \"Waiting 10 seconds for output file creation...\"\n    sleep 10\n    \n    if [ -f \"$output_file\" ] && [ -s \"\
+        $output_file\" ]; then\n        echo \"Output file validated successfully: $output_file\"\n        return 0\n    else\n        echo \"Output file validation failed or file is empty: $output_file\"\
+        \n        return 1\n    fi\n}\n\n# Main execution with retry logic\nmax_attempts=\"{{inputs.parameters.max-attempts}}\"\nretry_delay_seconds=\"{{inputs.parameters.retry-delay-seconds}}\"\ncase \"\
+        $max_attempts\" in\n    ''|*[!0-9]*)\n        echo \"max-attempts must be a positive integer: $max_attempts\" >&2\n        exit 2\n        ;;\nesac\nif [ \"$max_attempts\" -lt 1 ]; then\n    echo\
+        \ \"max-attempts must be at least 1\" >&2\n    exit 2\nfi\ncase \"$retry_delay_seconds\" in\n    ''|*[!0-9]*)\n        echo \"retry-delay-seconds must be a non-negative integer: $retry_delay_seconds\"\
+        \ >&2\n        exit 2\n        ;;\nesac\nattempt=1\n\nwhile [ $attempt -le $max_attempts ]; do\n    echo \"=== Attempt $attempt of $max_attempts ===\"\n    \n    if run_annotation $attempt; then\n\
+        \        echo \"Annotation completed successfully\"\n        \n        if validate_output; then\n            echo \"Task completed successfully\"\n            exit 0\n        else\n            echo\
+        \ \"Output validation failed on attempt $attempt\"\n        fi\n    else\n        echo \"Annotation failed on attempt $attempt\"\n    fi\n    \n    if [ $attempt -lt $max_attempts ]; then\n    \
+        \    echo \"Retrying in $retry_delay_seconds seconds...\"\n        sleep \"$retry_delay_seconds\"\n    fi\n    \n    attempt=$((attempt + 1))\ndone\n\necho \"All attempts failed. Task failed.\"\n\
+        exit 1\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: oncokb-fusions-in-f
+      - mountPath: /mnt/output/
+        name: oncokb-fusions-out-f
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''oncokb-fusions-in-f''])}}'
+        type: Directory
+      name: oncokb-fusions-in-f
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''oncokb-fusions-out-f''])}}'
+        type: DirectoryOrCreate
+      name: oncokb-fusions-out-f
+  - inputs:
+      parameters:
+      - name: annovar-maf-f
+      - name: annovar-oncokb-maf-f
+      - name: ref-version
+      - name: node-name
+      - name: regions-file
+        value: .
+      - name: tumor-type
+        value: .
+      - name: max-attempts
+        value: '3'
+      - name: retry-delay-seconds
+        value: '5'
+    name: oncokb-snv-on-node
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.node-name}}'
+    outputs:
+      parameters:
+      - name: annovar-oncokb-maf-f
+        value: '{{inputs.parameters.annovar-oncokb-maf-f}}'
+    script:
+      command:
+      - sh
+      env:
+      - name: ONCOKB_API_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: oncokb_api_token
+            name: oncokb-secrets
+      image: bergun/oncokb-annotator:0.1.7-unfiltered
+      name: oncokb-snv-script
+      source: "ref_version=\"{{inputs.parameters.ref-version}}\"\nif [ \"$ref_version\" = \"hg38\" ]; then\n    grch_ref_version=\"GRCh38\"\nelif [ \"$ref_version\" = \"hg19\" ]; then\n    grch_ref_version=\"\
+        GRCh37\"\nelse\n    grch_ref_version=$ref_version\nfi;\n\ntumor_type=\"{{inputs.parameters.tumor-type}}\"\necho \"OncoKB SNV (on-node): Using tumor type: '$tumor_type'\"\n\ninput_file=\"/mnt/input/{{=sprig.osBase(inputs.parameters['annovar-maf-f'])}}\"\
+        \noutput_file=\"/mnt/output/{{=sprig.osBase(inputs.parameters['annovar-oncokb-maf-f'])}}\"\n\n# Function to run annotation\nrun_annotation() {\n    echo \"Running OncoKB annotation on node (attempt\
+        \ $1)...\"\n    if [ \"$tumor_type\" != \".\" ]; then\n        echo \"Using tumor type parameter: $tumor_type\"\n        python ./filtered_maf_annotator.py --input \"$input_file\" --output \"$output_file\"\
+        \ --reference \"$grch_ref_version\" --regions-file \"{{inputs.parameters.regions-file}}\" --tumor-type \"$tumor_type\"\n    else\n        echo \"No tumor type specified (using default)\"\n     \
+        \   python ./filtered_maf_annotator.py --input \"$input_file\" --output \"$output_file\" --reference \"$grch_ref_version\" --regions-file \"{{inputs.parameters.regions-file}}\"\n    fi\n    return\
+        \ $?\n}\n\n# Function to validate output\nvalidate_output() {\n    echo \"Waiting 10 seconds for output file creation...\"\n    sleep 10\n    \n    if [ -f \"$output_file\" ] && [ -s \"$output_file\"\
+        \ ]; then\n        echo \"Output file validated successfully: $output_file\"\n        return 0\n    else\n        echo \"Output file validation failed or file is empty: $output_file\"\n        return\
+        \ 1\n    fi\n}\n\n# Main execution with retry logic\nmax_attempts=\"{{inputs.parameters.max-attempts}}\"\nretry_delay_seconds=\"{{inputs.parameters.retry-delay-seconds}}\"\ncase \"$max_attempts\"\
+        \ in\n    ''|*[!0-9]*)\n        echo \"max-attempts must be a positive integer: $max_attempts\" >&2\n        exit 2\n        ;;\nesac\nif [ \"$max_attempts\" -lt 1 ]; then\n    echo \"max-attempts\
+        \ must be at least 1\" >&2\n    exit 2\nfi\ncase \"$retry_delay_seconds\" in\n    ''|*[!0-9]*)\n        echo \"retry-delay-seconds must be a non-negative integer: $retry_delay_seconds\" >&2\n  \
+        \      exit 2\n        ;;\nesac\nattempt=1\n\nwhile [ $attempt -le $max_attempts ]; do\n    echo \"=== Attempt $attempt of $max_attempts ===\"\n    \n    if run_annotation $attempt; then\n     \
+        \   echo \"Annotation completed successfully\"\n        \n        if validate_output; then\n            echo \"Task completed successfully\"\n            exit 0\n        else\n            echo \"\
+        Output validation failed on attempt $attempt\"\n        fi\n    else\n        echo \"Annotation failed on attempt $attempt\"\n    fi\n    \n    if [ $attempt -lt $max_attempts ]; then\n        echo\
+        \ \"Retrying in $retry_delay_seconds seconds...\"\n        sleep \"$retry_delay_seconds\"\n    fi\n    \n    attempt=$((attempt + 1))\ndone\n\necho \"All attempts failed. Task failed.\"\nexit 1\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: annovar-maf-f
+      - mountPath: /mnt/output/
+        name: annovar-oncokb-maf-f
+      workingDir: /app/oncokb/
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''annovar-maf-f''])}}'
+        type: Directory
+      name: annovar-maf-f
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''annovar-oncokb-maf-f''])}}'
+        type: DirectoryOrCreate
+      name: annovar-oncokb-maf-f
+  - inputs:
+      parameters:
+      - name: oncokb-sv-in-f
+      - name: oncokb-sv-out-f
+      - name: node-name
+      - name: regions-file
+        value: .
+      - name: tumor-type
+        value: .
+      - name: max-attempts
+        value: '3'
+      - name: retry-delay-seconds
+        value: '5'
+    name: oncokb-sv-on-node
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.node-name}}'
+    outputs:
+      parameters:
+      - name: oncokb-sv-out-f
+        value: '{{inputs.parameters.oncokb-sv-out-f}}'
+    script:
+      command:
+      - sh
+      env:
+      - name: ONCOKB_API_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: oncokb_api_token
+            name: oncokb-secrets
+      image: bergun/oncokb-annotator:0.1.7-unfiltered
+      name: oncokb-sv-script
+      source: "input_file=\"/mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-sv-in-f'])}}\"\noutput_file=\"/mnt/output/{{=sprig.osBase(inputs.parameters['oncokb-sv-out-f'])}}\"\ntumor_type=\"{{inputs.parameters.tumor-type}}\"\
+        \necho \"OncoKB SV (on-node): Using tumor type: '$tumor_type'\"\n\n# Function to run annotation\nrun_annotation() {\n    echo \"Running OncoKB SV annotation on node (attempt $1)...\"\n    if [ \"\
+        $tumor_type\" != \".\" ]; then\n        echo \"Using tumor type parameter: $tumor_type\"\n        python ./filtered_sv_annotator.py --input \"$input_file\" --output \"$output_file\" --regions-file\
+        \ \"{{inputs.parameters.regions-file}}\" --tumor-type \"$tumor_type\"\n    else\n        echo \"No tumor type specified (using default)\"\n        python ./filtered_sv_annotator.py --input \"$input_file\"\
+        \ --output \"$output_file\" --regions-file \"{{inputs.parameters.regions-file}}\"\n    fi\n    return $?\n}\n\n# Function to validate output\nvalidate_output() {\n    echo \"Waiting 10 seconds for\
+        \ output file creation...\"\n    sleep 10\n    \n    if [ -f \"$output_file\" ] && [ -s \"$output_file\" ]; then\n        echo \"Output file validated successfully: $output_file\"\n        return\
+        \ 0\n    else\n        echo \"Output file validation failed or file is empty: $output_file\"\n        return 1\n    fi\n}\n\n# Main execution with retry logic\nmax_attempts=\"{{inputs.parameters.max-attempts}}\"\
+        \nretry_delay_seconds=\"{{inputs.parameters.retry-delay-seconds}}\"\ncase \"$max_attempts\" in\n    ''|*[!0-9]*)\n        echo \"max-attempts must be a positive integer: $max_attempts\" >&2\n  \
+        \      exit 2\n        ;;\nesac\nif [ \"$max_attempts\" -lt 1 ]; then\n    echo \"max-attempts must be at least 1\" >&2\n    exit 2\nfi\ncase \"$retry_delay_seconds\" in\n    ''|*[!0-9]*)\n    \
+        \    echo \"retry-delay-seconds must be a non-negative integer: $retry_delay_seconds\" >&2\n        exit 2\n        ;;\nesac\nattempt=1\n\nwhile [ $attempt -le $max_attempts ]; do\n    echo \"===\
+        \ Attempt $attempt of $max_attempts ===\"\n    \n    if run_annotation $attempt; then\n        echo \"Annotation completed successfully\"\n        \n        if validate_output; then\n          \
+        \  echo \"Task completed successfully\"\n            exit 0\n        else\n            echo \"Output validation failed on attempt $attempt\"\n        fi\n    else\n        echo \"Annotation failed\
+        \ on attempt $attempt\"\n    fi\n    \n    if [ $attempt -lt $max_attempts ]; then\n        echo \"Retrying in $retry_delay_seconds seconds...\"\n        sleep \"$retry_delay_seconds\"\n    fi\n\
+        \    \n    attempt=$((attempt + 1))\ndone\n\necho \"All attempts failed. Task failed.\"\nexit 1\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: oncokb-sv-in-f
+      - mountPath: /mnt/output/
+        name: oncokb-sv-out-f
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''oncokb-sv-in-f''])}}'
+        type: Directory
+      name: oncokb-sv-in-f
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''oncokb-sv-out-f''])}}'
+        type: DirectoryOrCreate
+      name: oncokb-sv-out-f

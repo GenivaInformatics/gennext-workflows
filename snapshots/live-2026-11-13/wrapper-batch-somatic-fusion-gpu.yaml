@@ -1,0 +1,200 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: wrapper-batch-somatic-fusion-gpu
+  namespace: argo
+spec:
+  arguments:
+    parameters:
+    - name: node-name
+    - name: user-id
+    - name: job-id
+    - name: process-type
+  entrypoint: main
+  nodeSelector:
+    kubernetes.io/hostname: '{{workflow.parameters.node-name}}'
+  podGC:
+    strategy: OnPodSuccess
+  serviceAccountName: gennext-workflows
+  templates:
+  - dag:
+      tasks:
+      - arguments:
+          parameters:
+          - name: node-name
+            value: '{{workflow.parameters.node-name}}'
+          - name: user-id
+            value: '{{workflow.parameters.user-id}}'
+          - name: job-id
+            value: '{{workflow.parameters.job-id}}'
+        name: get-node-config
+        templateRef:
+          name: get-node-config
+          template: get-node-config
+      - arguments:
+          parameters:
+          - name: job-id
+            value: '{{workflow.parameters.job-id}}'
+          - name: input-rel-dir
+            value: '{{tasks.get-node-config.outputs.parameters.input-rel-dir}}'
+        depends: get-node-config
+        name: get-run-data
+        templateRef:
+          name: get-run-data
+          template: get-run-data
+      - arguments:
+          parameters:
+          - name: max-concurrent
+            value: '{{tasks.get-node-config.outputs.parameters.max-concurrent-samples}}'
+        depends: get-node-config
+        name: update-semaphore
+        template: update-semaphore
+      - arguments:
+          parameters:
+          - name: run-data
+            value: '{{tasks.get-run-data.outputs.parameters.run-data}}'
+        depends: get-run-data
+        name: extract-samples
+        template: extract-samples
+      - arguments:
+          parameters:
+          - name: samples
+            value: '{{tasks.extract-samples.outputs.parameters.samples-json-array}}'
+          - name: input-rel-dir
+            value: '{{tasks.get-node-config.outputs.parameters.input-rel-dir}}'
+          - name: output-rel-dir
+            value: '{{tasks.get-node-config.outputs.parameters.output-rel-dir}}'
+          - name: temp-rel-dir
+            value: '{{tasks.get-node-config.outputs.parameters.temp-rel-dir}}'
+          - name: scratch-rel-dir
+            value: '{{tasks.get-node-config.outputs.parameters.scratch-rel-dir}}'
+          - name: ref-base-dir
+            value: '{{tasks.get-node-config.outputs.parameters.ref-base-dir}}'
+          - name: thread-count
+            value: '{{tasks.get-node-config.outputs.parameters.thread-count}}'
+        depends: extract-samples && update-semaphore
+        name: fan-out-samples
+        template: fan-out-samples
+      - arguments:
+          parameters:
+          - name: run-id
+            value: '{{workflow.parameters.job-id}}'
+        depends: fan-out-samples
+        name: determine-run-status
+        template: determine-run-status
+    name: main
+  - inputs:
+      parameters:
+      - name: max-concurrent
+    name: update-semaphore
+    script:
+      command:
+      - sh
+      image: alpine/kubectl
+      source: "MAX=\"{{inputs.parameters.max-concurrent}}\"\nkubectl create configmap batch-sample-semaphore \\\n  --from-literal=max-concurrent=\"$MAX\" \\\n  --dry-run=client -o yaml | kubectl apply -f\
+        \ -\n"
+  - inputs:
+      parameters:
+      - name: run-data
+    name: extract-samples
+    outputs:
+      parameters:
+      - name: samples-json-array
+        valueFrom:
+          path: /tmp/samples.json
+    script:
+      command:
+      - python
+      image: python:3.11-alpine3.18
+      source: "import json\nrun_data = json.loads('''{{inputs.parameters.run-data}}''')\nsamples = [{\"id\": s.get(\"sampleUuid\", s[\"id\"]), \"sampleId\": s[\"sampleId\"]} for s in run_data.get(\"samples\"\
+        , [])]\nwith open(\"/tmp/samples.json\", \"w\") as f:\n  json.dump(samples, f)\n"
+  - inputs:
+      parameters:
+      - name: samples
+      - name: input-rel-dir
+      - name: output-rel-dir
+      - name: temp-rel-dir
+      - name: scratch-rel-dir
+      - name: ref-base-dir
+      - name: thread-count
+    name: fan-out-samples
+    steps:
+    - - arguments:
+          parameters:
+          - name: sample-uuid
+            value: '{{item.id}}'
+          - name: sample-id
+            value: '{{item.sampleId}}'
+          - name: input-rel-dir
+            value: '{{inputs.parameters.input-rel-dir}}'
+          - name: output-rel-dir
+            value: '{{inputs.parameters.output-rel-dir}}'
+          - name: temp-rel-dir
+            value: '{{inputs.parameters.temp-rel-dir}}'
+          - name: scratch-rel-dir
+            value: '{{inputs.parameters.scratch-rel-dir}}'
+          - name: ref-base-dir
+            value: '{{inputs.parameters.ref-base-dir}}'
+          - name: thread-count
+            value: '{{inputs.parameters.thread-count}}'
+        continueOn:
+          failed: true
+        name: submit-sample
+        template: submit-sample-workflow
+        withParam: '{{inputs.parameters.samples}}'
+  - inputs:
+      parameters:
+      - name: sample-uuid
+      - name: sample-id
+      - name: input-rel-dir
+      - name: output-rel-dir
+      - name: temp-rel-dir
+      - name: scratch-rel-dir
+      - name: ref-base-dir
+      - name: thread-count
+    name: submit-sample-workflow
+    resource:
+      action: create
+      failureCondition: status.phase in (Failed, Error)
+      manifest: "apiVersion: argoproj.io/v1alpha1\nkind: Workflow\nmetadata:\n  generateName: \"sample-fusion-gpu-{{inputs.parameters.sample-uuid}}-\"\n  labels:\n    gennext.bio/orchestrator: \"{{workflow.name}}\"\
+        \n    gennext.bio/sample-id: \"{{inputs.parameters.sample-id}}\"\n    gennext.bio/run-id: \"{{workflow.parameters.job-id}}\"\n  annotations:\n    gennext.bio/sample-uuid: \"{{inputs.parameters.sample-uuid}}\"\
+        \n    gennext.bio/sample-id: \"{{inputs.parameters.sample-id}}\"\nspec:\n  serviceAccountName: gennext-workflows\n  tolerations:\n    - key: \"nvidia.com/gpu\"\n      operator: \"Exists\"\n    \
+        \  effect: \"NoSchedule\"\n  podGC:\n    strategy: OnPodSuccess\n  entrypoint: main\n  arguments:\n    parameters:\n      - name: sample-uuid\n        value: \"{{inputs.parameters.sample-uuid}}\"\
+        \n      - name: sample-id\n        value: \"{{inputs.parameters.sample-id}}\"\n      - name: run-id\n        value: \"{{workflow.parameters.job-id}}\"\n      - name: user-id\n        value: \"{{workflow.parameters.user-id}}\"\
+        \n      - name: input-rel-dir\n        value: \"{{inputs.parameters.input-rel-dir}}\"\n      - name: output-rel-dir\n        value: \"{{inputs.parameters.output-rel-dir}}\"\n      - name: temp-rel-dir\n\
+        \        value: \"{{inputs.parameters.temp-rel-dir}}\"\n      - name: scratch-rel-dir\n        value: \"{{inputs.parameters.scratch-rel-dir}}\"\n      - name: ref-base-dir\n        value: \"{{inputs.parameters.ref-base-dir}}\"\
+        \n      - name: thread-count\n        value: \"{{inputs.parameters.thread-count}}\"\n  workflowTemplateRef:\n    name: per-sample-somatic-fusion-gpu\n"
+      successCondition: status.phase == Succeeded
+    synchronization:
+      semaphore:
+        configMapKeyRef:
+          key: max-concurrent
+          name: batch-sample-semaphore
+  - inputs:
+      parameters:
+      - name: run-id
+    name: determine-run-status
+    script:
+      command:
+      - python
+      image: blairy/requests
+      source: 'print("Run status is managed by backend aggregate logic.")
+
+        print("Run ID: {{inputs.parameters.run-id}}")
+
+        '
+  tolerations:
+  - effect: NoSchedule
+    key: nvidia.com/gpu
+    operator: Exists
+  workflowMetadata:
+    annotations:
+      gennext.bio/job-id: '{{workflow.parameters.job-id}}'
+      gennext.bio/node-name: '{{workflow.parameters.node-name}}'
+      gennext.bio/process-type: '{{workflow.parameters.process-type}}'
+      gennext.bio/user-id: '{{workflow.parameters.user-id}}'
+    generateName: batch-somatic-fusion-gpu-{{workflow.parameters.job-id}}-
+    labels:
+      gennext.bio/node: '{{workflow.parameters.node-name}}'
+      gennext.bio/process-type: '{{workflow.parameters.process-type}}'
+      gennext.bio/user-id: '{{workflow.parameters.user-id}}'

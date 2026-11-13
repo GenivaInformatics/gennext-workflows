@@ -1,0 +1,52 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: generate-run-info
+  namespace: argo
+spec:
+  entrypoint: generate-run-info
+  podGC:
+    strategy: OnPodSuccess
+  serviceAccountName: gennext-workflows
+  templates:
+  - inputs:
+      parameters:
+      - name: output-dir
+      - name: node-name
+      - name: user-id
+      - name: run-id
+      - name: sample-uuid
+      - name: sample-id
+      - name: sample-name
+      - name: sample-files
+      - name: process-type
+      - name: file-type
+      - name: tumor-type
+        value: .
+    name: generate-run-info
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.node-name}}'
+    script:
+      command:
+      - python
+      image: demisto/pandas:1.0.0.80782
+      source: "import json\nfrom datetime import datetime, timezone\n\n\ndef get_current_time():\n    # Get the current date and time in UTC\n    now = datetime.now(timezone.utc)\n\n    # Format the datetime\
+        \ with milliseconds and 'Z' at the end\n    return now.isoformat(timespec=\"milliseconds\").replace(\"+00:00\", \"Z\")\n\ndef generate_run_info(\n    user_id, run_id, sample_uuid, sample_name, sample_id,\
+        \ sample_files, process_type, file_type, node_id, tumor_type\n):\n    sample_files = json.loads(sample_files)\n    \n    # Build sample object\n    sample = {\n        \"sampleName\": f\"{sample_name}\"\
+        ,\n        \"sampleId\": f\"{sample_id}\",\n        \"id\": f\"{sample_uuid}\",\n        \"files\": sample_files,\n    }\n    \n    # Add somaticInfo if process_type is somatic\n    if process_type\
+        \ in [\"som-test-tumor\", \"som-test-rna\", \"som-test-tumor-rna\"]:\n        sample[\"somaticInfo\"] = {\n            \"tumorType\": tumor_type\n        }\n    \n    run_info = {\n        \"samples\"\
+        : [sample],\n        \"processType\": f\"{process_type}\",\n        \"refVersion\": \"hg38\",\n        \"dataType\": f\"{file_type}\",\n        \"genomeBuild\": \"hg38\",\n        \"type\": \"clientTransferInfoReq\"\
+        ,\n        \"enrichmentKit\": {\"company\": None, \"filename\": None, \"name\": None, \"title\": None},\n        \"jobId\": f\"{run_id}\",\n        \"runId\": f\"{run_id}\",\n        \"userId\"\
+        : f\"{user_id}\",\n        \"userHash\": f\"{user_id}\",\n        \"transferStartTime\": f\"{get_current_time()}\",\n    }\n\n    return run_info\n\nrun_info = generate_run_info(\n    user_id=\"\
+        {{inputs.parameters.user-id}}\",\n    run_id=\"{{inputs.parameters.run-id}}\",\n    sample_uuid=\"{{inputs.parameters.sample-uuid}}\",\n    sample_name=\"{{inputs.parameters.sample-name}}\",\n \
+        \   sample_id=\"{{inputs.parameters.sample-id}}\",\n    sample_files='{{inputs.parameters.sample-files}}', # Single-quoted! (JSON input.)\n    process_type=\"{{inputs.parameters.process-type}}\"\
+        ,\n    file_type=\"{{inputs.parameters.file-type}}\",\n    node_id=\"{{inputs.parameters.node-name}}\",\n    tumor_type=\"{{inputs.parameters.tumor-type}}\",\n)\n\njson.dump(run_info, open(\"/mnt/output/{{inputs.parameters.run-id}}.json\"\
+        , \"w\"))\n"
+      volumeMounts:
+      - mountPath: /mnt/output
+        name: output-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.output-dir}}'
+        type: DirectoryOrCreate
+      name: output-dir

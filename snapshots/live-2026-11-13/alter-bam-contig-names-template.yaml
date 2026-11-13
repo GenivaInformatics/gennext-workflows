@@ -1,0 +1,82 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: alter-bam-contig-names-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: input-file
+      - name: output-file
+      - name: node-name
+    name: alter-bam-contig-names-on-node
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.node-name}}'
+    outputs:
+      parameters:
+      - name: output-file
+        valueFrom:
+          path: /tmp/output_dir_path
+    script:
+      command:
+      - python
+      image: quay.io/biocontainers/pysam:0.22.0--py310h41dec4a_1
+      name: alter-bam-contig-names-script
+      source: "# updates canonical chrom contig names to chr prefixed versions\n# if no update is needed, returns input file\n# else, returns the newly created altered output file given with input parameters\n\
+        from pysam import AlignmentFile\nfrom pathlib import Path\n\ninput_bam_dir = Path('/mnt/input/') / Path(\"{{=sprig.osBase(inputs.parameters['input-file'])}}\")\noutput_bam_dir = Path('/mnt/output/')\
+        \ / Path(\"{{=sprig.osBase(inputs.parameters['output-file'])}}\")\n\nwith AlignmentFile(input_bam_dir, \"rb\") as input_bam_obj:\n  input_contigs = [contig['SN'] for contig in input_bam_obj.header['SQ']]\n\
+        \  hg19_contigs = list(map(str,range(1,23))) + ['X','Y','M','MT']\n\n  if any(map(lambda input_contig: input_contig in hg19_contigs, input_contigs)):\n    output_bam_header = dict(input_bam_obj.header)\n\
+        \    for i, c in enumerate(output_bam_header['SQ']):\n      if c['SN'] in hg19_contigs:\n        output_bam_header['SQ'][i] = {'SN':'chr'+c['SN'],'LN':c['LN']}\n    with AlignmentFile(output_bam_dir,\
+        \ 'wb', header=output_bam_header) as f:\n      for read in input_bam_obj.fetch(until_eof=True):\n        f.write(read)\n    with open(\"/tmp/output_dir_path\", 'wt') as f:\n      f.write(\"{{inputs.parameters.output-file}}\"\
+        )\n  else:\n    with open(\"/tmp/output_dir_path\", 'wt') as f:\n      f.write(\"{{inputs.parameters.input-file}}\")\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-file
+      - mountPath: /mnt/output/
+        name: output-file
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-file''])}}'
+        type: Directory
+      name: input-file
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-file''])}}'
+        type: DirectoryOrCreate
+      name: output-file
+  - inputs:
+      parameters:
+      - name: input-file
+      - name: output-file
+    name: alter-bam-contig-names
+    outputs:
+      parameters:
+      - name: output-file
+        valueFrom:
+          path: /tmp/output_dir_path
+    script:
+      command:
+      - python
+      image: quay.io/biocontainers/pysam:0.22.0--py310h41dec4a_1
+      name: alter-bam-contig-names-script
+      source: "# updates canonical chrom contig names to chr prefixed versions\n# if no update is needed, returns input file\n# else, returns the newly created altered output file given with input parameters\n\
+        from pysam import AlignmentFile\nfrom pathlib import Path\n\ninput_bam_dir = Path('/mnt/input/') / Path(\"{{=sprig.osBase(inputs.parameters['input-file'])}}\")\noutput_bam_dir = Path('/mnt/output/')\
+        \ / Path(\"{{=sprig.osBase(inputs.parameters['output-file'])}}\")\n\nwith AlignmentFile(input_bam_dir, \"rb\") as input_bam_obj:\n  input_contigs = [contig['SN'] for contig in input_bam_obj.header['SQ']]\n\
+        \  hg19_contigs = list(map(str,range(1,23))) + ['X','Y','M','MT']\n\n  if any(map(lambda input_contig: input_contig in hg19_contigs, input_contigs)):\n    output_bam_header = dict(input_bam_obj.header)\n\
+        \    for i, c in enumerate(output_bam_header['SQ']):\n      if c['SN'] in hg19_contigs:\n        output_bam_header['SQ'][i] = {'SN':'chr'+c['SN'],'LN':c['LN']}\n    with AlignmentFile(output_bam_dir,\
+        \ 'wb', header=output_bam_header) as f:\n      for read in input_bam_obj.fetch(until_eof=True):\n        f.write(read)\n    with open(\"/tmp/output_dir_path\", 'wt') as f:\n      f.write(\"{{inputs.parameters.output-file}}\"\
+        )\n  else:\n    with open(\"/tmp/output_dir_path\", 'wt') as f:\n      f.write(\"{{inputs.parameters.input-file}}\")\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-file
+      - mountPath: /mnt/output/
+        name: output-file
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-file''])}}'
+        type: Directory
+      name: input-file
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-file''])}}'
+        type: DirectoryOrCreate
+      name: output-file

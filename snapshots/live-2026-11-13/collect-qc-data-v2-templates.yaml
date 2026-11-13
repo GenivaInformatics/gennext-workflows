@@ -1,0 +1,207 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: collect-qc-data-v2-templates
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: run-id
+      - name: metrics-dir
+      - default: dna
+        name: data-source-type
+    name: collect-qc-data-v2-bam
+    script:
+      command:
+      - python
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: demisto/pandas:1.0.0.80782
+      name: collect-qc-data-bam
+      source: "import os\nimport json\nimport requests\n\n# cluster info\ntoken = os.environ[\"GENNEXT_CLUSTER_TOKEN\"]\naddr = \"gennext-backend.gennext-prod.svc.cluster.local:3030\"\nurl = f\"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/quality\"\
+        \n\n# collect input data\nsample_id = \"{{inputs.parameters.sample-id}}\"\n\n# Load MultiQC JSON data\nwith open(\"multiqc_data/multiqc_data.json\", 'r') as f:\n    multiqc_data = json.load(f)\n\
+        \n# Extract data from report_saved_raw_data.multiqc_general_stats\ngeneral_stats = multiqc_data.get('report_saved_raw_data', {}).get('multiqc_general_stats', {})\n\nif sample_id not in general_stats:\n\
+        \    raise ValueError(f\"Sample ID '{sample_id}' not found in MultiQC data\")\n\nsample_data = general_stats[sample_id]\n\n# Extract all mosdepth coverage metrics\ncoverage_metrics = {\n    \"1x_coverage\"\
+        : sample_data.get('mosdepth-1_x_pc', 0.0),\n    \"5x_coverage\": sample_data.get('mosdepth-5_x_pc', 0.0),\n    \"10x_coverage\": sample_data.get('mosdepth-10_x_pc', 0.0),\n    \"30x_coverage\":\
+        \ sample_data.get('mosdepth-30_x_pc', 0.0),\n    \"50x_coverage\": sample_data.get('mosdepth-50_x_pc', 0.0),\n    \"100x_coverage\": sample_data.get('mosdepth-100_x_pc', 0.0),\n    \"500x_coverage\"\
+        : sample_data.get('mosdepth-500_x_pc', 0.0),\n    \"1000x_coverage\": sample_data.get('mosdepth-1000_x_pc', 0.0),\n    \"2000x_coverage\": sample_data.get('mosdepth-2000_x_pc', 0.0),\n    \"mean_coverage\"\
+        : sample_data.get('mosdepth-mean_coverage', 0.0),\n    \"median_coverage\": sample_data.get('mosdepth-median_coverage', 0),\n    \"min_coverage\": sample_data.get('mosdepth-min_coverage', 0.0),\n\
+        \    \"max_coverage\": sample_data.get('mosdepth-max_coverage', 0.0),\n    \"coverage_bases_mb\": sample_data.get('mosdepth-coverage_bases', 0.0),  # In megabases\n    \"genome_length\": sample_data.get('mosdepth-length',\
+        \ 0),\n}\n\n# MultiQC reports 0 for a threshold whose exact depth has no row in mosdepth's\n# cumulative distribution (rows exist only for depths that occur, so deep\n# panels often lack e.g. 500).\
+        \ Recompute the thresholds from the distribution\n# itself: the share of bases at depth >= T is the value at the smallest\n# listed depth >= T, and 0 above the maximum depth.\ndef _mosdepth_dist(sample):\n\
+        \    for name in (f\"mosdepth/{sample}.mosdepth.region.dist.txt\",\n                 f\"mosdepth/{sample}.mosdepth.global.dist.txt\"):\n        if os.path.exists(name):\n            rows = {}\n\
+        \            with open(name) as fh:\n                for line in fh:\n                    parts = line.rstrip(\"\\n\").split(\"\\t\")\n                    if len(parts) == 3 and parts[0] == \"total\"\
+        :\n                        rows[int(parts[1])] = float(parts[2]) * 100\n            if rows:\n                return name, rows\n    return None, None\n\n_dist_file, _dist_rows = _mosdepth_dist(sample_id)\n\
+        if _dist_rows:\n    import bisect\n    _depths = sorted(_dist_rows)\n    for _t in (1, 5, 10, 30, 50, 100, 500, 1000, 2000):\n        _i = bisect.bisect_left(_depths, _t)\n        _pct = round(_dist_rows[_depths[_i]],\
+        \ 2) if _i < len(_depths) else 0.0\n        if _pct != coverage_metrics.get(f\"{_t}x_coverage\"):\n            print(f\"coverage {_t}x: MultiQC {coverage_metrics.get(f'{_t}x_coverage')} -> {_pct}\
+        \ from {_dist_file}\")\n        coverage_metrics[f\"{_t}x_coverage\"] = _pct\n\n# Extract VerifyBAMID contamination\ncontamination = sample_data.get('verifybamid-FREEMIX', 0.0)\n\n# Build comprehensive\
+        \ QC data dictionary\nqc_data_dict = {\n    \"dataSourceType\": \"{{inputs.parameters.data-source-type}}\",\n    # Coverage thresholds\n    \"1X\": str(f'{coverage_metrics[\"1x_coverage\"]:.2f}'),\n\
+        \    \"5X\": str(f'{coverage_metrics[\"5x_coverage\"]:.2f}'),\n    \"10X\": str(f'{coverage_metrics[\"10x_coverage\"]:.2f}'),\n    \"30X\": str(f'{coverage_metrics[\"30x_coverage\"]:.2f}'),\n  \
+        \  \"50X\": str(f'{coverage_metrics[\"50x_coverage\"]:.2f}'),\n    \"100X\": str(f'{coverage_metrics[\"100x_coverage\"]:.2f}'),\n    \"500X\": str(f'{coverage_metrics[\"500x_coverage\"]:.2f}'),\n\
+        \    \"1000X\": str(f'{coverage_metrics[\"1000x_coverage\"]:.2f}'),\n    \"2000X\": str(f'{coverage_metrics[\"2000x_coverage\"]:.2f}'),\n    # Statistical metrics\n    \"meanCoverage\": str(f'{coverage_metrics[\"\
+        mean_coverage\"]:.2f}'),\n    \"medianCoverage\": str(coverage_metrics[\"median_coverage\"]),\n    \"minCoverage\": str(f'{coverage_metrics[\"min_coverage\"]:.2f}'),\n    \"maxCoverage\": str(f'{coverage_metrics[\"\
+        max_coverage\"]:.2f}'),\n    \"coverageBasesMb\": str(f'{coverage_metrics[\"coverage_bases_mb\"]:.2f}'),\n    \"genomeLength\": str(coverage_metrics[\"genome_length\"]),\n    # Contamination\n \
+        \   \"contamination\": str(f'{contamination:.5f}'),\n    # FastQC data (will be filled if available)\n    \"totalReads\": None,\n    \"avgReadLength\": None,\n    \"gender\": None,  # TODO\n   \
+        \ \"roh\": None  # TODO\n}\n\n# Extract FastQC data directly from JSON (simple approach)\nfastqc_data = multiqc_data.get('report_saved_raw_data', {}).get('multiqc_fastqc', {})\n\ntotal_sequences_list\
+        \ = []\navg_lengths_list = []\n\n# Simply iterate through all FastQC entries\nfor fastqc_key, fq_stats in fastqc_data.items():\n    if 'Total Sequences' in fq_stats:\n        total_sequences_list.append(int(fq_stats['Total\
+        \ Sequences']))\n    if 'avg_sequence_length' in fq_stats:\n        avg_lengths_list.append(float(fq_stats['avg_sequence_length']))\n\n# Calculate averages and update qc_data_dict\nif total_sequences_list:\n\
+        \    qc_data_dict['totalReads'] = int(sum(total_sequences_list) / len(total_sequences_list))\nif avg_lengths_list:\n    qc_data_dict['avgReadLength'] = str(f'{sum(avg_lengths_list) / len(avg_lengths_list):.2f}')\n\
+        \nprint(json.dumps({\"runId\": \"{{inputs.parameters.run-id}}\", \"sampleId\": \"{{inputs.parameters.sample-id}}\", \"qcData\": qc_data_dict, \"token\": token }))\n\nres = requests.post(url, json={\"\
+        runId\": \"{{inputs.parameters.run-id}}\", \"sampleId\": \"{{inputs.parameters.sample-id}}\", \"qcData\": qc_data_dict, \"token\": token })\nif res.status_code != 200:\n    raise Exception(res.text)\n"
+      volumeMounts:
+      - mountPath: /mnt/metrics/
+        name: metrics-dir
+      workingDir: /mnt/metrics/
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.metrics-dir}}'
+        type: Directory
+      name: metrics-dir
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: run-id
+      - name: sample-fqs-fnames
+      - name: metrics-dir
+      - default: dna
+        name: data-source-type
+    name: collect-qc-data-v2
+    script:
+      command:
+      - python
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: demisto/pandas:1.0.0.80782
+      name: collect-qc-data
+      source: "import os\nimport json\nimport requests\nimport zipfile\nimport re  # For regex parsing of FastQC ZIP files if needed\n\n# cluster info\ntoken = os.environ[\"GENNEXT_CLUSTER_TOKEN\"]\naddr\
+        \ = \"gennext-backend.gennext-prod.svc.cluster.local:3030\"\nurl = f\"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/quality\"\n\n# collect input data\nsample_id = \"{{inputs.parameters.sample-id}}\"\
+        \nfqs_fnames_str = '{{inputs.parameters.sample-fqs-fnames}}'\n\n# Load MultiQC JSON data\nwith open(\"multiqc_data/multiqc_data.json\", 'r') as f:\n    multiqc_data = json.load(f)\n\ndef parse_fastqc_stats(fq):\n\
+        \    try:  # Added error handling for file access\n        with zipfile.ZipFile(f'fastqc/pre-trim/{fq}_fastqc.zip', 'r') as zip_ref:\n            with zip_ref.open(f'{fq}_fastqc/fastqc_data.txt')\
+        \ as file:\n                content = file.read().decode('utf-8')\n\n        # Find the Basic Statistics section\n        match = re.search(r'>>Basic Statistics.*?>>END_MODULE', content, re.DOTALL)\n\
+        \        if not match:\n            return {}\n\n        # Parse only relevant lines into a dictionary\n        result = {}\n        for line in match.group(0).split('\\n'):\n            if line\
+        \ and not line.startswith('>>') and not line.startswith('#'):\n                parts = line.split('\\t')\n                if len(parts) >= 2:\n                    key = parts[0].strip()\n      \
+        \              if key == 'Total Sequences':\n                        result[key] = int(parts[1])\n                    elif key == 'Total Bases':\n                        result[key] = float(parts[1].split()[0])\n\
+        \                    elif key == '%GC':\n                        result[key] = int(parts[1])\n                    else:\n                        result[key] = parts[1].strip()\n        return result\n\
+        \    except Exception as e:\n        print(f\"Error parsing FastQC stats for {fq}: {str(e)}\")\n        return {}\n\n# Extract data from report_saved_raw_data.multiqc_general_stats\ngeneral_stats\
+        \ = multiqc_data.get('report_saved_raw_data', {}).get('multiqc_general_stats', {})\n\nif sample_id not in general_stats:\n    raise ValueError(f\"Sample ID '{sample_id}' not found in MultiQC data\"\
+        )\n\nsample_data = general_stats[sample_id]\n\n# Extract all mosdepth coverage metrics\ncoverage_metrics = {\n    \"1x_coverage\": sample_data.get('mosdepth-1_x_pc', 0.0),\n    \"5x_coverage\":\
+        \ sample_data.get('mosdepth-5_x_pc', 0.0),\n    \"10x_coverage\": sample_data.get('mosdepth-10_x_pc', 0.0),\n    \"30x_coverage\": sample_data.get('mosdepth-30_x_pc', 0.0),\n    \"50x_coverage\"\
+        : sample_data.get('mosdepth-50_x_pc', 0.0),\n    \"100x_coverage\": sample_data.get('mosdepth-100_x_pc', 0.0),\n    \"500x_coverage\": sample_data.get('mosdepth-500_x_pc', 0.0),\n    \"1000x_coverage\"\
+        : sample_data.get('mosdepth-1000_x_pc', 0.0),\n    \"2000x_coverage\": sample_data.get('mosdepth-2000_x_pc', 0.0),\n    \"mean_coverage\": sample_data.get('mosdepth-mean_coverage', 0.0),\n    \"\
+        median_coverage\": sample_data.get('mosdepth-median_coverage', 0),\n    \"min_coverage\": sample_data.get('mosdepth-min_coverage', 0.0),\n    \"max_coverage\": sample_data.get('mosdepth-max_coverage',\
+        \ 0.0),\n    \"coverage_bases_mb\": sample_data.get('mosdepth-coverage_bases', 0.0),  # In megabases\n    \"genome_length\": sample_data.get('mosdepth-length', 0),\n}\n\n# MultiQC reports 0 for\
+        \ a threshold whose exact depth has no row in mosdepth's\n# cumulative distribution (rows exist only for depths that occur, so deep\n# panels often lack e.g. 500). Recompute the thresholds from\
+        \ the distribution\n# itself: the share of bases at depth >= T is the value at the smallest\n# listed depth >= T, and 0 above the maximum depth.\ndef _mosdepth_dist(sample):\n    for name in (f\"\
+        mosdepth/{sample}.mosdepth.region.dist.txt\",\n                 f\"mosdepth/{sample}.mosdepth.global.dist.txt\"):\n        if os.path.exists(name):\n            rows = {}\n            with open(name)\
+        \ as fh:\n                for line in fh:\n                    parts = line.rstrip(\"\\n\").split(\"\\t\")\n                    if len(parts) == 3 and parts[0] == \"total\":\n                  \
+        \      rows[int(parts[1])] = float(parts[2]) * 100\n            if rows:\n                return name, rows\n    return None, None\n\n_dist_file, _dist_rows = _mosdepth_dist(sample_id)\nif _dist_rows:\n\
+        \    import bisect\n    _depths = sorted(_dist_rows)\n    for _t in (1, 5, 10, 30, 50, 100, 500, 1000, 2000):\n        _i = bisect.bisect_left(_depths, _t)\n        _pct = round(_dist_rows[_depths[_i]],\
+        \ 2) if _i < len(_depths) else 0.0\n        if _pct != coverage_metrics.get(f\"{_t}x_coverage\"):\n            print(f\"coverage {_t}x: MultiQC {coverage_metrics.get(f'{_t}x_coverage')} -> {_pct}\
+        \ from {_dist_file}\")\n        coverage_metrics[f\"{_t}x_coverage\"] = _pct\n\n# Extract VerifyBAMID contamination\ncontamination = sample_data.get('verifybamid-FREEMIX', 0.0)\n\n# Build comprehensive\
+        \ QC data dictionary\nqc_data_dict = {\n    \"dataSourceType\": \"{{inputs.parameters.data-source-type}}\",\n    # Coverage thresholds\n    \"1X\": str(f'{coverage_metrics[\"1x_coverage\"]:.2f}'),\n\
+        \    \"5X\": str(f'{coverage_metrics[\"5x_coverage\"]:.2f}'),\n    \"10X\": str(f'{coverage_metrics[\"10x_coverage\"]:.2f}'),\n    \"30X\": str(f'{coverage_metrics[\"30x_coverage\"]:.2f}'),\n  \
+        \  \"50X\": str(f'{coverage_metrics[\"50x_coverage\"]:.2f}'),\n    \"100X\": str(f'{coverage_metrics[\"100x_coverage\"]:.2f}'),\n    \"500X\": str(f'{coverage_metrics[\"500x_coverage\"]:.2f}'),\n\
+        \    \"1000X\": str(f'{coverage_metrics[\"1000x_coverage\"]:.2f}'),\n    \"2000X\": str(f'{coverage_metrics[\"2000x_coverage\"]:.2f}'),\n    # Statistical metrics\n    \"meanCoverage\": str(f'{coverage_metrics[\"\
+        mean_coverage\"]:.2f}'),\n    \"medianCoverage\": str(coverage_metrics[\"median_coverage\"]),\n    \"minCoverage\": str(f'{coverage_metrics[\"min_coverage\"]:.2f}'),\n    \"maxCoverage\": str(f'{coverage_metrics[\"\
+        max_coverage\"]:.2f}'),\n    \"coverageBasesMb\": str(f'{coverage_metrics[\"coverage_bases_mb\"]:.2f}'),\n    \"genomeLength\": str(coverage_metrics[\"genome_length\"]),\n    # Contamination\n \
+        \   \"contamination\": str(f'{contamination:.5f}'),\n    # These will be filled from FastQC data if available\n    \"totalReads\": None,\n    \"avgReadLength\": None,\n    \"gender\": None,  # TODO\n\
+        \    \"roh\": None  # TODO\n}\n\n# Extract FastQC data directly from JSON (simple approach)\nfastqc_data = multiqc_data.get('report_saved_raw_data', {}).get('multiqc_fastqc', {})\n\ntotal_sequences_list\
+        \ = []\navg_lengths_list = []\n\n# Simply iterate through all FastQC entries\nfor fastqc_key, fq_stats in fastqc_data.items():\n    if 'Total Sequences' in fq_stats:\n        total_sequences_list.append(int(fq_stats['Total\
+        \ Sequences']))\n    if 'avg_sequence_length' in fq_stats:\n        avg_lengths_list.append(float(fq_stats['avg_sequence_length']))\n\n# Calculate averages and update qc_data_dict\nif total_sequences_list:\n\
+        \    qc_data_dict['totalReads'] = int(sum(total_sequences_list) / len(total_sequences_list))\nif avg_lengths_list:\n    qc_data_dict['avgReadLength'] = str(f'{sum(avg_lengths_list) / len(avg_lengths_list):.2f}')\n\
+        \n# Fix URL template parameter\nurl = f\"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/quality\".replace(\"{{inputs.parameters.run-id}}\", \"{{inputs.parameters.run-id}}\")\n\n# Send request\
+        \ with properly formatted data\ntry:\n    res = requests.post(\n        url,\n        json={\n            \"runId\": \"{{inputs.parameters.run-id}}\",\n            \"sampleId\": \"{{inputs.parameters.sample-id}}\"\
+        ,\n            \"qcData\": qc_data_dict,\n            \"token\": token\n        },\n        timeout=30  # Add timeout to prevent hanging\n    )\n    if res.status_code != 200:\n        raise Exception(f\"\
+        API request failed: {res.status_code} - {res.text}\")\n    print(f\"Successfully uploaded QC data for sample {sample_id}\")\n    print(qc_data_dict)\nexcept requests.exceptions.RequestException\
+        \ as e:\n    raise Exception(f\"API connection error: {str(e)}\")\n"
+      volumeMounts:
+      - mountPath: /mnt/metrics/
+        name: metrics-dir
+      workingDir: /mnt/metrics/
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.metrics-dir}}'
+        type: Directory
+      name: metrics-dir
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: run-id
+      - name: sample-fqs-fnames
+      - name: metrics-dir
+      - default: dna
+        name: data-source-type
+      - name: node-name
+    name: collect-qc-data-v2-on-node
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.node-name}}'
+    script:
+      command:
+      - python
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: demisto/pandas:1.0.0.80782
+      name: collect-qc-data
+      source: "import os\nimport json\nimport requests\nimport zipfile\nimport re  # For regex parsing of FastQC ZIP files if needed\n\n# cluster info\ntoken = os.environ[\"GENNEXT_CLUSTER_TOKEN\"]\naddr\
+        \ = \"gennext-backend.gennext-prod.svc.cluster.local:3030\"\nurl = f\"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/quality\"\n\n# collect input data\nsample_id = \"{{inputs.parameters.sample-id}}\"\
+        \nfqs_fnames_str = '{{inputs.parameters.sample-fqs-fnames}}'\n\n# Load MultiQC JSON data\nwith open(\"multiqc_data/multiqc_data.json\", 'r') as f:\n    multiqc_data = json.load(f)\n\ndef parse_fastqc_stats(fq):\n\
+        \  # check if fastqc prefix folder exists\n  fatqc_prefix = \"fastqc/pre-trim/\"\n  if not os.path.exists(fatqc_prefix):\n    fatqc_prefix = \"fastqc/\"\n  try:  # Added error handling for file\
+        \ access\n    with zipfile.ZipFile(f'{fatqc_prefix}{fq}_fastqc.zip', 'r') as zip_ref:\n      with zip_ref.open(f'{fq}_fastqc/fastqc_data.txt') as file:\n        content = file.read().decode('utf-8')\n\
+        \n    # Find the Basic Statistics section\n    match = re.search(r'>>Basic Statistics.*?>>END_MODULE', content, re.DOTALL)\n    if not match:\n      return {}\n\n    # Parse only relevant lines\
+        \ into a dictionary\n    result = {}\n    for line in match.group(0).split('\\n'):\n      if line and not line.startswith('>>') and not line.startswith('#'):\n        parts = line.split('\\t')\n\
+        \        if len(parts) >= 2:\n          key = parts[0].strip()\n          if key == 'Total Sequences':\n            result[key] = int(parts[1])\n          elif key == 'Total Bases':\n          \
+        \  result[key] = float(parts[1].split()[0])\n          elif key == '%GC':\n            result[key] = int(parts[1])\n          else:\n            result[key] = parts[1].strip()\n    return result\n\
+        \  except Exception as e:\n    print(f\"Error parsing FastQC stats for {fq}: {str(e)}\")\n    return {}\n\n# Extract data from report_saved_raw_data.multiqc_general_stats\ngeneral_stats = multiqc_data.get('report_saved_raw_data',\
+        \ {}).get('multiqc_general_stats', {})\n\nif sample_id not in general_stats:\n  raise ValueError(f\"Sample ID '{sample_id}' not found in MultiQC data\")\n\nsample_data = general_stats[sample_id]\n\
+        \n# Extract all mosdepth coverage metrics\ncoverage_metrics = {\n  \"1x_coverage\": sample_data.get('mosdepth-1_x_pc', 0.0),\n  \"5x_coverage\": sample_data.get('mosdepth-5_x_pc', 0.0),\n  \"10x_coverage\"\
+        : sample_data.get('mosdepth-10_x_pc', 0.0),\n  \"30x_coverage\": sample_data.get('mosdepth-30_x_pc', 0.0),\n  \"50x_coverage\": sample_data.get('mosdepth-50_x_pc', 0.0),\n  \"100x_coverage\": sample_data.get('mosdepth-100_x_pc',\
+        \ 0.0),\n  \"500x_coverage\": sample_data.get('mosdepth-500_x_pc', 0.0),\n  \"1000x_coverage\": sample_data.get('mosdepth-1000_x_pc', 0.0),\n  \"2000x_coverage\": sample_data.get('mosdepth-2000_x_pc',\
+        \ 0.0),\n  \"mean_coverage\": sample_data.get('mosdepth-mean_coverage', 0.0),\n  \"median_coverage\": sample_data.get('mosdepth-median_coverage', 0),\n  \"min_coverage\": sample_data.get('mosdepth-min_coverage',\
+        \ 0.0),\n  \"max_coverage\": sample_data.get('mosdepth-max_coverage', 0.0),\n  \"coverage_bases_mb\": sample_data.get('mosdepth-coverage_bases', 0.0),  # In megabases\n  \"genome_length\": sample_data.get('mosdepth-length',\
+        \ 0),\n}\n\n# MultiQC reports 0 for a threshold whose exact depth has no row in mosdepth's\n# cumulative distribution (rows exist only for depths that occur, so deep\n# panels often lack e.g. 500).\
+        \ Recompute the thresholds from the distribution\n# itself: the share of bases at depth >= T is the value at the smallest\n# listed depth >= T, and 0 above the maximum depth.\ndef _mosdepth_dist(sample):\n\
+        \    for name in (f\"mosdepth/{sample}.mosdepth.region.dist.txt\",\n                 f\"mosdepth/{sample}.mosdepth.global.dist.txt\"):\n        if os.path.exists(name):\n            rows = {}\n\
+        \            with open(name) as fh:\n                for line in fh:\n                    parts = line.rstrip(\"\\n\").split(\"\\t\")\n                    if len(parts) == 3 and parts[0] == \"total\"\
+        :\n                        rows[int(parts[1])] = float(parts[2]) * 100\n            if rows:\n                return name, rows\n    return None, None\n\n_dist_file, _dist_rows = _mosdepth_dist(sample_id)\n\
+        if _dist_rows:\n    import bisect\n    _depths = sorted(_dist_rows)\n    for _t in (1, 5, 10, 30, 50, 100, 500, 1000, 2000):\n        _i = bisect.bisect_left(_depths, _t)\n        _pct = round(_dist_rows[_depths[_i]],\
+        \ 2) if _i < len(_depths) else 0.0\n        if _pct != coverage_metrics.get(f\"{_t}x_coverage\"):\n            print(f\"coverage {_t}x: MultiQC {coverage_metrics.get(f'{_t}x_coverage')} -> {_pct}\
+        \ from {_dist_file}\")\n        coverage_metrics[f\"{_t}x_coverage\"] = _pct\n\n# Extract VerifyBAMID contamination\ncontamination = sample_data.get('verifybamid-FREEMIX', 0.0)\n\n# Build comprehensive\
+        \ QC data dictionary\nqc_data_dict = {\n    \"dataSourceType\": \"{{inputs.parameters.data-source-type}}\",\n    # Coverage thresholds\n    \"1X\": str(f'{coverage_metrics[\"1x_coverage\"]:.2f}'),\n\
+        \    \"5X\": str(f'{coverage_metrics[\"5x_coverage\"]:.2f}'),\n    \"10X\": str(f'{coverage_metrics[\"10x_coverage\"]:.2f}'),\n    \"30X\": str(f'{coverage_metrics[\"30x_coverage\"]:.2f}'),\n  \
+        \  \"50X\": str(f'{coverage_metrics[\"50x_coverage\"]:.2f}'),\n    \"100X\": str(f'{coverage_metrics[\"100x_coverage\"]:.2f}'),\n    \"500X\": str(f'{coverage_metrics[\"500x_coverage\"]:.2f}'),\n\
+        \    \"1000X\": str(f'{coverage_metrics[\"1000x_coverage\"]:.2f}'),\n    \"2000X\": str(f'{coverage_metrics[\"2000x_coverage\"]:.2f}'),\n    # Statistical metrics\n    \"meanCoverage\": str(f'{coverage_metrics[\"\
+        mean_coverage\"]:.2f}'),\n    \"medianCoverage\": str(coverage_metrics[\"median_coverage\"]),\n    \"minCoverage\": str(f'{coverage_metrics[\"min_coverage\"]:.2f}'),\n    \"maxCoverage\": str(f'{coverage_metrics[\"\
+        max_coverage\"]:.2f}'),\n    \"coverageBasesMb\": str(f'{coverage_metrics[\"coverage_bases_mb\"]:.2f}'),\n    \"genomeLength\": str(coverage_metrics[\"genome_length\"]),\n    # Contamination\n \
+        \   \"contamination\": str(f'{contamination:.5f}'),\n    # These will be filled from FastQC data if available\n    \"totalReads\": None,\n    \"avgReadLength\": None,\n    \"gender\": None,  # TODO\n\
+        \    \"roh\": None  # TODO\n}\n\n# Extract FastQC data directly from JSON (simple approach)\nfastqc_data = multiqc_data.get('report_saved_raw_data', {}).get('multiqc_fastqc', {})\n\ntotal_sequences_list\
+        \ = []\navg_lengths_list = []\n\n# Simply iterate through all FastQC entries\nfor fastqc_key, fq_stats in fastqc_data.items():\n  if 'Total Sequences' in fq_stats:\n    total_sequences_list.append(int(fq_stats['Total\
+        \ Sequences']))\n  if 'avg_sequence_length' in fq_stats:\n    avg_lengths_list.append(float(fq_stats['avg_sequence_length']))\n\n# Calculate averages and update qc_data_dict\nif total_sequences_list:\n\
+        \  qc_data_dict['totalReads'] = int(sum(total_sequences_list) / len(total_sequences_list))\nif avg_lengths_list:\n  qc_data_dict['avgReadLength'] = str(f'{sum(avg_lengths_list) / len(avg_lengths_list):.2f}')\n\
+        \n# Fix URL template parameter\nurl = f\"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/quality\".replace(\"{{inputs.parameters.run-id}}\", \"{{inputs.parameters.run-id}}\")\n\n# Send request\
+        \ with properly formatted data\ntry:\n  res = requests.post(\n    url,\n    json={\n      \"runId\": \"{{inputs.parameters.run-id}}\",\n      \"sampleId\": \"{{inputs.parameters.sample-id}}\",\n\
+        \      \"qcData\": qc_data_dict,\n      \"token\": token\n    },\n    timeout=30  # Add timeout to prevent hanging\n  )\n  if res.status_code != 200:\n    raise Exception(f\"API request failed:\
+        \ {res.status_code} - {res.text}\")\n  print(f\"Successfully uploaded QC data for sample {sample_id}\")\n  print(qc_data_dict)\nexcept requests.exceptions.RequestException as e:\n  raise Exception(f\"\
+        API connection error: {str(e)}\")\n"
+      volumeMounts:
+      - mountPath: /mnt/metrics/
+        name: metrics-dir
+      workingDir: /mnt/metrics/
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.metrics-dir}}'
+        type: Directory
+      name: metrics-dir

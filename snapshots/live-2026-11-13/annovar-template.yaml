@@ -1,0 +1,53 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: annovar-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: input-vcf-f
+      - name: output-dir
+      - name: ref-version
+        value: hg38
+      - name: annotators
+        value: refGene,ensGene,esp6500siv2_all,1000g2015aug_all,exac03,avsnp150,dbnsfp42c,dbscsnv11,dbnsfp31a_interpro,clinvar_20221231,cosmic91,icgc28,gnomad_genome
+      - name: annotator-opts
+        value: '''-hgvs'',''-hgvs'',,,,,,,,,,,'
+      - name: annovardb-dir
+    name: annovar
+    outputs:
+      parameters:
+      - name: annovar-out-f
+        value: '{{inputs.parameters.output-dir}}/{{inputs.parameters.sample-id}}.hg38_multianno.txt'
+    script:
+      command:
+      - sh
+      image: bergun/cancervar:v0.0.1
+      name: annovar-script
+      source: "annotators=\"{{inputs.parameters.annotators}}\"\n\n# Split the string by commas and set them as 'g' or 'f'\noperations=$(echo $annotators | tr ',' '\\n' | while read -r part; do\n    if echo\
+        \ \"$part\" | grep -q \"Gene$\"; then\n        echo -n \"g,\"\n    else\n        echo -n \"f,\"\n    fi\ndone)\n\n# Remove the trailing comma\noperations=${operations%,}\n\nperl ./table_annovar.pl\
+        \ \\\n/mnt/input/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}} \\\n/mnt/annovardb -buildver hg38 \\\n--out \"/mnt/output/{{inputs.parameters.sample-id}}\" \\\n--protocol $annotators  --operation\
+        \  $operations \\\n--nastring . --vcfinput --remove \\\n--arg {{inputs.parameters.annotator-opts}} \\\n--intronhgvs 20 --polish\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-vcf-f
+      - mountPath: /mnt/output/
+        name: output-dir
+      - mountPath: /mnt/annovardb/
+        name: annovardb-dir
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-vcf-f''])}}'
+        type: Directory
+      name: input-vcf-f
+    - hostPath:
+        path: '{{inputs.parameters.output-dir}}'
+        type: DirectoryOrCreate
+      name: output-dir
+    - hostPath:
+        path: '{{inputs.parameters.annovardb-dir}}'
+        type: Directory
+      name: annovardb-dir

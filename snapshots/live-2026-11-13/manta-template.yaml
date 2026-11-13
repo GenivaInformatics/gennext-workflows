@@ -1,0 +1,173 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: manta-template
+  namespace: argo
+spec:
+  entrypoint: manta
+  templates:
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: normal-bam
+        value: .
+      - name: tumor-bam
+        value: .
+      - name: regions-file
+        value: .
+      - name: ref-genome-f
+      - name: output-dir
+      - name: scratch-dir
+      - name: thread-count
+        value: '10'
+    name: manta
+    outputs:
+      parameters:
+      - name: output-dir
+        value: '{{inputs.parameters.output-dir}}'
+      - name: output-tumor-vcf-f
+        value: '{{inputs.parameters.output-dir}}/{{inputs.parameters.sample-id}}_tumorSV.vcf.gz'
+      - name: output-diploid-vcf-f
+        value: '{{inputs.parameters.output-dir}}/{{inputs.parameters.sample-id}}_diploidSV.vcf.gz'
+    script:
+      command:
+      - bash
+      image: quay.io/biocontainers/manta:1.6.0--h9ee0642_2
+      name: manta
+      source: "set -e  # Exit on error\n\n# Function to create empty VCF file\ncreate_empty_vcf() {\n  local output_file=\"$1\"\n  {\n    echo \"##fileformat=VCFv4.2\"\n    echo \"##source=Manta_empty_placeholder\"\
+        \n    echo \"##reference=file:///ref/genome/$refGenomeFile\"\n    echo \"##SAMPLE=<ID=$sampleId>\"\n    echo \"##contig=<ID=chr1>\"\n    echo \"##INFO=<ID=SVTYPE,Number=1,Type=String,Description=\\\
+        \"Type of structural variant\\\">\"\n    echo \"##FORMAT=<ID=GT,Number=1,Type=String,Description=\\\"Genotype\\\">\"\n    echo -e \"#CHROM\\tPOS\\tID\\tREF\\tALT\\tQUAL\\tFILTER\\tINFO\\tFORMAT\\\
+        t$sampleId\"\n  } | /usr/local/share/manta-1.6.0-2/libexec/bgzip > \"$output_file\"\n}\n\nsampleId=\"{{inputs.parameters.sample-id}}\"\nnormalBam=\"{{=sprig.osBase(inputs.parameters['normal-bam'])}}\"\
+        \ntumorBam=\"{{=sprig.osBase(inputs.parameters['tumor-bam'])}}\"\nregionsFile=\"{{=sprig.osBase(inputs.parameters['regions-file'])}}\"\nrefGenomeFile=\"{{=sprig.osBase(inputs.parameters['ref-genome-f'])}}\"\
+        \n\noptions=\"\"\n\n# sprig.osBase returns \".\" if the path is empty\n# mind the whitespace before '--'\nif [ ! \".\" = \"$normalBam\" ]; then options+=\" --normalBam=/mnt/input/normal_bam/$normalBam\"\
+        ; fi\nif [ ! \".\" = \"$tumorBam\" ]; then options+=\" --tumorBam=/mnt/input/tumor_bam/$tumorBam\"; fi\nif [ ! \".\" = \"$regionsFile\" ]; then options+=\" --exome\"; fi\nif [ ! \".\" = \"$regionsFile\"\
+        \ ]; then options+=\" --callRegions=/mnt/ref/regions/$regionsFile.gz\"; fi\n\necho \"Sample ID: $sampleId\"\necho \"Manta options: $options\"\n\nMANTA_TMP_DIR=$(mktemp -p /mnt/scratch/ -d manta.XXXXXXXX)\n\
+        \n# Try to run Manta\nif configManta.py \\\n  --referenceFasta=/ref/genome/$refGenomeFile \\\n  $options --runDir=$MANTA_TMP_DIR && \\\n  $MANTA_TMP_DIR/runWorkflow.py -m local -j {{inputs.parameters.thread-count}};\
+        \ then\n\n  # Manta succeeded - process outputs normally\n  for f in $MANTA_TMP_DIR/results/variants/*; do\n    mv \"$MANTA_TMP_DIR/results/variants/$(basename ${f})\" \"$MANTA_TMP_DIR/results/variants/${sampleId}_$(basename\
+        \ ${f})\"\n  done\n\n  for f in $MANTA_TMP_DIR/results/stats/*; do\n    mv \"$MANTA_TMP_DIR/results/stats/$(basename ${f})\" \"$MANTA_TMP_DIR/results/stats/${sampleId}_$(basename ${f})\"\n  done\n\
+        \n  cp $MANTA_TMP_DIR/results/variants/* /mnt/output/\n  mkdir -p /mnt/output/stats\n  cp $MANTA_TMP_DIR/results/stats/* /mnt/output/stats/\nelse\n  # Manta failed - create empty VCF files\n  echo\
+        \ \"Manta failed. Creating empty VCF files as placeholders...\"\n\n  # Create empty tumor and diploid VCF files\n  create_empty_vcf \"/mnt/output/${sampleId}_tumorSV.vcf.gz\"\n  create_empty_vcf\
+        \ \"/mnt/output/${sampleId}_diploidSV.vcf.gz\"\n\n  # Create empty stats directory\n  mkdir -p /mnt/output/stats\n  echo \"Manta run failed - empty output files created\" > \"/mnt/output/stats/${sampleId}_manta_failed.txt\"\
+        \nfi\n\n# Cleanup\nrm -rf \"$MANTA_TMP_DIR\"\n"
+      volumeMounts:
+      - mountPath: /mnt/input/normal_bam/
+        name: normal-bam
+      - mountPath: /mnt/input/tumor_bam/
+        name: tumor-bam
+      - mountPath: /ref/genome/
+        name: ref-genome-f
+      - mountPath: /mnt/ref/regions/
+        name: regions-file
+      - mountPath: /mnt/output/
+        name: output-dir
+      - mountPath: /mnt/scratch/
+        name: scratch-dir
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''normal-bam''])}}'
+        type: Directory
+      name: normal-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''tumor-bam''])}}'
+        type: Directory
+      name: tumor-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''ref-genome-f''])}}'
+        type: Directory
+      name: ref-genome-f
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''regions-file''])}}'
+        type: Directory
+      name: regions-file
+    - hostPath:
+        path: '{{inputs.parameters.output-dir}}'
+        type: DirectoryOrCreate
+      name: output-dir
+    - hostPath:
+        path: '{{inputs.parameters.scratch-dir}}'
+        type: DirectoryOrCreate
+      name: scratch-dir
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: normal-bam
+        value: .
+      - name: tumor-bam
+        value: .
+      - name: regions-file
+        value: .
+      - name: ref-genome-f
+      - name: output-dir
+      - name: scratch-dir
+      - name: thread-count
+        value: '10'
+      - name: node-name
+    name: manta-with-nodeSelector
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.node-name}}'
+    outputs:
+      parameters:
+      - name: output-dir
+        value: '{{inputs.parameters.output-dir}}'
+      - name: output-tumor-vcf-f
+        value: '{{inputs.parameters.output-dir}}/{{inputs.parameters.sample-id}}_tumorSV.vcf.gz'
+      - name: output-diploid-vcf-f
+        value: '{{inputs.parameters.output-dir}}/{{inputs.parameters.sample-id}}_diploidSV.vcf.gz'
+    script:
+      command:
+      - bash
+      image: quay.io/biocontainers/manta:1.6.0--h9ee0642_2
+      name: manta
+      source: "set -e  # Exit on error\n\n# Function to create empty VCF file\ncreate_empty_vcf() {\n  local output_file=\"$1\"\n  {\n    echo \"##fileformat=VCFv4.2\"\n    echo \"##source=Manta_empty_placeholder\"\
+        \n    echo \"##reference=file:///ref/genome/$refGenomeFile\"\n    echo \"##SAMPLE=<ID=$sampleId>\"\n    echo \"##contig=<ID=chr1>\"\n    echo \"##INFO=<ID=SVTYPE,Number=1,Type=String,Description=\\\
+        \"Type of structural variant\\\">\"\n    echo \"##FORMAT=<ID=GT,Number=1,Type=String,Description=\\\"Genotype\\\">\"\n    echo -e \"#CHROM\\tPOS\\tID\\tREF\\tALT\\tQUAL\\tFILTER\\tINFO\\tFORMAT\\\
+        t$sampleId\"\n  } | gzip > \"$output_file\"\n}\n\nsampleId=\"{{inputs.parameters.sample-id}}\"\nnormalBam=\"{{=sprig.osBase(inputs.parameters['normal-bam'])}}\"\ntumorBam=\"{{=sprig.osBase(inputs.parameters['tumor-bam'])}}\"\
+        \nregionsFile=\"{{=sprig.osBase(inputs.parameters['regions-file'])}}\"\nrefGenomeFile=\"{{=sprig.osBase(inputs.parameters['ref-genome-f'])}}\"\n\noptions=\"\"\n\n# sprig.osBase returns \".\" if\
+        \ the path is empty\n# mind the whitespace before '--'\nif [ ! \".\" = \"$normalBam\" ]; then options+=\" --normalBam=/mnt/input/normal_bam/$normalBam\"; fi\nif [ ! \".\" = \"$tumorBam\" ]; then\
+        \ options+=\" --tumorBam=/mnt/input/tumor_bam/$tumorBam\"; fi\nif [ ! \".\" = \"$regionsFile\" ]; then options+=\" --exome\"; fi\nif [ ! \".\" = \"$regionsFile\" ]; then options+=\" --callRegions=/mnt/ref/regions/$regionsFile.gz\"\
+        ; fi\n\necho \"Sample ID: $sampleId\"\necho \"Manta options: $options\"\n\nMANTA_TMP_DIR=$(mktemp -p /mnt/scratch/ -d manta.XXXXXXXX)\n\n# Try to run Manta\nif configManta.py \\\n  --referenceFasta=/ref/genome/$refGenomeFile\
+        \ \\\n  $options --runDir=$MANTA_TMP_DIR && \\\n  $MANTA_TMP_DIR/runWorkflow.py -m local -j {{inputs.parameters.thread-count}}; then\n  \n  # Manta succeeded - process outputs normally\n  for f\
+        \ in $MANTA_TMP_DIR/results/variants/*; do\n    mv \"$MANTA_TMP_DIR/results/variants/$(basename ${f})\" \"$MANTA_TMP_DIR/results/variants/${sampleId}_$(basename ${f})\"\n  done\n\n  for f in $MANTA_TMP_DIR/results/stats/*;\
+        \ do\n    mv \"$MANTA_TMP_DIR/results/stats/$(basename ${f})\" \"$MANTA_TMP_DIR/results/stats/${sampleId}_$(basename ${f})\"\n  done\n\n  cp $MANTA_TMP_DIR/results/variants/* /mnt/output/\n  mkdir\
+        \ -p /mnt/output/stats\n  cp $MANTA_TMP_DIR/results/stats/* /mnt/output/stats/\nelse\n  # Manta failed - create empty VCF files\n  echo \"Manta failed. Creating empty VCF files as placeholders...\"\
+        \n\n  # Create empty tumor and diploid VCF files\n  create_empty_vcf \"/mnt/output/${sampleId}_tumorSV.vcf.gz\"\n  create_empty_vcf \"/mnt/output/${sampleId}_diploidSV.vcf.gz\"\n\n  # Create empty\
+        \ stats directory\n  mkdir -p /mnt/output/stats\n  echo \"Manta run failed - empty output files created\" > \"/mnt/output/stats/${sampleId}_manta_failed.txt\"\nfi\n\n# Cleanup\nrm -rf \"$MANTA_TMP_DIR\"\
+        \n"
+      volumeMounts:
+      - mountPath: /mnt/input/normal_bam/
+        name: normal-bam
+      - mountPath: /mnt/input/tumor_bam/
+        name: tumor-bam
+      - mountPath: /ref/genome/
+        name: ref-genome-f
+      - mountPath: /mnt/ref/regions/
+        name: regions-file
+      - mountPath: /mnt/output/
+        name: output-dir
+      - mountPath: /mnt/scratch/
+        name: scratch-dir
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''normal-bam''])}}'
+        type: Directory
+      name: normal-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''tumor-bam''])}}'
+        type: Directory
+      name: tumor-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''ref-genome-f''])}}'
+        type: Directory
+      name: ref-genome-f
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''regions-file''])}}'
+        type: Directory
+      name: regions-file
+    - hostPath:
+        path: '{{inputs.parameters.output-dir}}'
+        type: DirectoryOrCreate
+      name: output-dir
+    - hostPath:
+        path: '{{inputs.parameters.scratch-dir}}'
+        type: DirectoryOrCreate
+      name: scratch-dir

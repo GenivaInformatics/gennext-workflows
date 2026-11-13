@@ -1,0 +1,94 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: filter-indelible-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: indelible-tsv
+      - name: sv-cnv-regions-bed-f
+      - name: sv-cnv-geneslist-f
+      - name: sv-translocations-bed-f
+      - name: sv-translocations-geneslist-f
+      - name: indelible-filtered-out-tsv
+      - name: indelible-oncokb-out-tsv
+    name: filter-indelible
+    outputs:
+      parameters:
+      - name: indelible-filtered-out-tsv
+        value: '{{inputs.parameters.indelible-filtered-out-tsv}}'
+      - name: indelible-oncokb-out-tsv
+        value: '{{inputs.parameters.indelible-oncokb-out-tsv}}'
+    script:
+      command:
+      - python
+      image: quay.io/biocontainers/pyranges:0.0.129--pyh7cba7a3_0
+      name: filter-indelible-script
+      source: "import pandas as pd\nimport pyranges as pr\n\ntsv_file = \"/mnt/input/indelible/{{=sprig.osBase(inputs.parameters['indelible-tsv'])}}\"\ntsv_filtered_file = \"/mnt/output/filtered/{{=sprig.osBase(inputs.parameters['indelible-filtered-out-tsv'])}}\"\
+        \ntsv_oncokb_file = \"/mnt/output/oncokb/{{=sprig.osBase(inputs.parameters['indelible-oncokb-out-tsv'])}}\"\n\nsv_cnv_ranges = pr.read_bed(\"/mnt/input/bed/cnv/{{=sprig.osBase(inputs.parameters['sv-cnv-regions-bed-f'])}}\"\
+        )\nsv_translocation_ranges = pr.read_bed(\"/mnt/input/bed/translocations/{{=sprig.osBase(inputs.parameters['sv-translocations-bed-f'])}}\")\nsv_cnv_genes_list_txt = \"/mnt/input/geneslist/cnv/{{=sprig.osBase(inputs.parameters['sv-cnv-geneslist-f'])}}\"\
+        \nsv_translocation_genes_list_txt = \"/mnt/input/geneslist/translocations/{{=sprig.osBase(inputs.parameters['sv-translocations-geneslist-f'])}}\"\n\nindelible_to_oncokb_mapping = {\n    'DUP': 'DUPLICATION',\
+        \      # Duplication\n    'DEL': 'DELETION',         # Deletion\n    'INS': 'INSERTION',        # Insertion\n    'CMPLX': 'UNKNOWN',        # Complex (no direct equivalent in OncoKB)\n    'TRANSSEGDUP':\
+        \ 'UNKNOWN',  # Segmental duplication or translocation (unclear mapping to OncoKB)\n    'SEGDUP_TRANS': 'UNKNOWN'  # Segmental duplication or translocation (unclear mapping to OncoKB)\n}\n\ndef\
+        \ line_intersects_bed(line, bed_ranges):\n  query_range = pr.PyRanges(chromosomes=[line[0]], starts=[line[1]], ends=[line[2]])\n  return bed_ranges.intersect(query_range).df.shape[0] > 0\n\n# filter\
+        \ by REALN and bed regions intersection\nwith open(tsv_file, 'r') as tsvfile:\n  with open(tsv_filtered_file, 'w') as filtered_tsvfile:\n      header = tsvfile.readline().strip().split(\"\\t\")\n\
+        \      filtered_tsvfile.write(\"\\t\".join(header) + \"\\n\")\n      chrom_idx = header.index('chrom')\n      start_idx = header.index('position')\n      otherside_idx = header.index('otherside')\n\
+        \      mode_idx = header.index('mode')\n      while line := tsvfile.readline():\n          line = line.strip().split(\"\\t\")\n          if not line[mode_idx].startswith(\"REALN\"):\n          \
+        \    continue\n          chrom = line[chrom_idx]\n          start = int(line[start_idx])\n          end = int(line[otherside_idx].split(':')[1])\n          if line_intersects_bed([chrom, start,\
+        \ end], sv_cnv_ranges) or line_intersects_bed([chrom, start, end], sv_translocation_ranges):\n              filtered_tsvfile.write(\"\\t\".join(line) + \"\\n\")\n\n# load genes lists\nwith open(sv_cnv_genes_list_txt,\
+        \ 'r') as sv_cnv_genes_list_f:\n    sv_cnv_genes_list = set(map(lambda x: x.strip(),sv_cnv_genes_list_f.readlines()))\nwith open(sv_translocation_genes_list_txt, 'r') as sv_translocation_genes_list_f:\n\
+        \    sv_translocation_genes_list = set(map(lambda x: x.strip(),sv_translocation_genes_list_f.readlines()))\nsv_genes_list = sv_cnv_genes_list.union(sv_translocation_genes_list)\n\n# select columns\
+        \ for oncokb annotation, filter by genes lists\nwith open(tsv_filtered_file, 'r') as filtered_tsvfile:\n    with open(tsv_oncokb_file, 'w') as oncokb_tsvfile:\n        header = filtered_tsvfile.readline().strip().split(\"\
+        \\t\")\n        chrom_idx = header.index('chrom')\n        start_idx = header.index('position')\n        otherside_idx = header.index('otherside')\n        ddg2p_idx = header.index('ddg2p')\n  \
+        \      hgnc_idx = header.index('hgnc')\n        hgnc_constrained_idx = header.index('hgnc_constrained')\n        svtype_idx = header.index('svtype')\n        out_header_cols = ['chrom', 'position',\
+        \ 'otherside', 'GeneA', 'GeneB', 'Sv_Type']\n        oncokb_tsvfile.write(\"\\t\".join(out_header_cols) + \"\\n\")\n        while line := filtered_tsvfile.readline():\n            values = line.strip().split('\\\
+        t')\n            genes = set(values[ddg2p_idx].split(';') + values[hgnc_idx].split(';') + values[hgnc_constrained_idx].split(';'))\n            for gene in genes.intersection(sv_genes_list):\n \
+        \               oncokb_tsvfile.write(\"\\t\".join([values[chrom_idx], values[start_idx], values[otherside_idx], gene, gene, indelible_to_oncokb_mapping.get(values[svtype_idx], \"UNKNOWN\")]) + \"\
+        \\n\")\n"
+      volumeMounts:
+      - mountPath: /mnt/input/indelible/{{=sprig.osBase(inputs.parameters['indelible-tsv'])}}
+        name: indelible-tsv
+      - mountPath: /mnt/input/bed/cnv/{{=sprig.osBase(inputs.parameters['sv-cnv-regions-bed-f'])}}
+        name: sv-cnv-regions-bed-f
+      - mountPath: /mnt/input/geneslist/cnv/{{=sprig.osBase(inputs.parameters['sv-cnv-geneslist-f'])}}
+        name: sv-cnv-geneslist-f
+      - mountPath: /mnt/input/bed/translocations/{{=sprig.osBase(inputs.parameters['sv-translocations-bed-f'])}}
+        name: sv-translocations-bed-f
+      - mountPath: /mnt/input/geneslist/translocations/{{=sprig.osBase(inputs.parameters['sv-translocations-geneslist-f'])}}
+        name: sv-translocations-geneslist-f
+      - mountPath: /mnt/output/filtered/
+        name: indelible-filtered-out-tsv
+      - mountPath: /mnt/output/oncokb/
+        name: indelible-oncokb-out-tsv
+      workingDir: /mnt/input/
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.indelible-tsv}}'
+        type: File
+      name: indelible-tsv
+    - hostPath:
+        path: '{{inputs.parameters.sv-cnv-regions-bed-f}}'
+        type: File
+      name: sv-cnv-regions-bed-f
+    - hostPath:
+        path: '{{inputs.parameters.sv-cnv-geneslist-f}}'
+        type: File
+      name: sv-cnv-geneslist-f
+    - hostPath:
+        path: '{{inputs.parameters.sv-translocations-bed-f}}'
+        type: File
+      name: sv-translocations-bed-f
+    - hostPath:
+        path: '{{inputs.parameters.sv-translocations-geneslist-f}}'
+        type: File
+      name: sv-translocations-geneslist-f
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''indelible-filtered-out-tsv''])}}'
+        type: DirectoryOrCreate
+      name: indelible-filtered-out-tsv
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''indelible-oncokb-out-tsv''])}}'
+        type: DirectoryOrCreate
+      name: indelible-oncokb-out-tsv

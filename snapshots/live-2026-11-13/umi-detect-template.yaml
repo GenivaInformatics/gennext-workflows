@@ -1,0 +1,147 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: umi-detect-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: fq-r1
+      - name: fq-r2
+      - description: Directory for detection.json, e.g. <sample-temp-dir>metrics/umi/
+        name: metrics-dir
+      - default: ''
+        name: sample-uuid
+      - default: ''
+        name: run-id
+      - default: 'false'
+        name: fail-on-review
+    name: umi-profile
+    outputs:
+      parameters:
+      - name: detection-json
+        value: '{{=sprig.osClean(inputs.parameters[''metrics-dir''])}}/detection.json'
+      - name: status
+        valueFrom:
+          path: /tmp/outputs/status
+      - name: result
+        valueFrom:
+          path: /tmp/outputs/result
+      - name: use-umi
+        valueFrom:
+          path: /tmp/outputs/use-umi
+      - name: read-structure-r1
+        valueFrom:
+          path: /tmp/outputs/read-structure-r1
+      - name: read-structure-r2
+        valueFrom:
+          path: /tmp/outputs/read-structure-r2
+      - name: mask-r1
+        valueFrom:
+          path: /tmp/outputs/mask-r1
+      - name: mask-r2
+        valueFrom:
+          path: /tmp/outputs/mask-r2
+      - name: group-strategy
+        valueFrom:
+          path: /tmp/outputs/group-strategy
+      - name: group-edits
+        valueFrom:
+          path: /tmp/outputs/group-edits
+      - name: duplex
+        valueFrom:
+          path: /tmp/outputs/duplex
+    script:
+      command:
+      - sh
+      image: docker.io/bergun/gennext-umi-detect:0.1.2
+      resources:
+        limits:
+          cpu: '4'
+          memory: 1Gi
+        requests:
+          cpu: '2'
+          memory: 256Mi
+      source: "set -eu\nset -- umi-detect --log-format json profile \\\n  --r1 \"/mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}\" \\\n  --r2 \"/mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}\"\
+        \ \\\n  --out /mnt/output/metrics/detection.json \\\n  --outputs-dir /tmp/outputs \\\n  --workflow \"{{workflow.name}}\"\n[ -n \"{{inputs.parameters.sample-uuid}}\" ] && set -- \"$@\" --sample-uuid\
+        \ \"{{inputs.parameters.sample-uuid}}\"\n[ -n \"{{inputs.parameters.run-id}}\" ] && set -- \"$@\" --run-uuid \"{{inputs.parameters.run-id}}\"\n[ \"{{inputs.parameters.fail-on-review}}\" = \"true\"\
+        \ ] && set -- \"$@\" --fail-on-review\n\"$@\"\necho \"UMI decision: $(cat /tmp/outputs/status) / $(cat /tmp/outputs/result)\"\n"
+      volumeMounts:
+      - mountPath: /mnt/input/r1/
+        name: input-r1
+        readOnly: true
+      - mountPath: /mnt/input/r2/
+        name: input-r2
+        readOnly: true
+      - mountPath: /mnt/output/metrics/
+        name: metrics
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''fq-r1''])}}'
+        type: Directory
+      name: input-r1
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''fq-r2''])}}'
+        type: Directory
+      name: input-r2
+    - hostPath:
+        path: '{{inputs.parameters.metrics-dir}}'
+        type: DirectoryOrCreate
+      name: metrics
+  - inputs:
+      parameters:
+      - name: fq-r1
+      - name: fq-r2
+      - description: detection.json written by umi-profile
+        name: detection-json
+      - description: Output directory for umi_r1.fastq.gz / umi_r2.fastq.gz (scratch)
+        name: umi-dir
+      - default: '8'
+        name: thread-count
+    name: umi-extract
+    outputs:
+      parameters:
+      - name: umi-dir
+        value: '{{inputs.parameters.umi-dir}}'
+    script:
+      command:
+      - sh
+      image: docker.io/bergun/gennext-umi-detect:0.1.2
+      resources:
+        limits:
+          memory: 2Gi
+        requests:
+          cpu: '4'
+          memory: 256Mi
+      source: "set -eu\numi-detect --log-format json extract \\\n  --r1 \"/mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}\" \\\n  --r2 \"/mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}\"\
+        \ \\\n  --detection \"/mnt/detection/{{=sprig.osBase(inputs.parameters['detection-json'])}}\" \\\n  --out-dir /mnt/output/umi \\\n  --threads \"{{inputs.parameters.thread-count}}\" \\\n  --stats\
+        \ /mnt/detection/extract.json\nls -la /mnt/output/umi\n"
+      volumeMounts:
+      - mountPath: /mnt/input/r1/
+        name: input-r1
+        readOnly: true
+      - mountPath: /mnt/input/r2/
+        name: input-r2
+        readOnly: true
+      - mountPath: /mnt/detection/
+        name: detection
+      - mountPath: /mnt/output/umi/
+        name: umi-dir
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''fq-r1''])}}'
+        type: Directory
+      name: input-r1
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''fq-r2''])}}'
+        type: Directory
+      name: input-r2
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''detection-json''])}}'
+        type: Directory
+      name: detection
+    - hostPath:
+        path: '{{inputs.parameters.umi-dir}}'
+        type: DirectoryOrCreate
+      name: umi-dir

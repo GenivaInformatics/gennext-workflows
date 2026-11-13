@@ -1,0 +1,134 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: parabricks-rnafq2bam-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: genome-ref
+      - name: genome-lib-dir
+      - name: input-fq-r1
+      - name: input-fq-r2
+      - name: scratch-dir
+      - name: output-bam
+      - name: output-dir
+      - name: thread-count
+      - name: metrics-dir
+      - default: ID:GRPundef
+        name: read-group-id-prefix
+      - default: ''
+        name: read-group-sm
+      - default: ''
+        name: read-group-lb
+      - default: ''
+        name: read-group-pl
+      - default: ''
+        name: out-chim-type
+      - default: '12'
+        name: min-chim-segment
+      - default: '8'
+        name: min-chim-overhang
+      - default: '1'
+        name: out-chim-format
+      - default: '-4'
+        name: chim-score-non-gtag
+      - default: '10'
+        name: min-non-chim-score-drop
+      - default: 5 -1 5 5
+        name: max-junction-mismatches
+      - default: '20'
+        name: max-chim-multimap
+      - default: '3'
+        name: chim-multimap-score-range
+      - default: 'false'
+        name: no-markdups
+    name: parabricks-rnafq2bam
+    outputs:
+      parameters:
+      - name: output-bam
+        value: '{{inputs.parameters.output-bam}}'
+      - name: output-dir
+        value: '{{inputs.parameters.output-dir}}'
+      - name: output-chimeric-junction-file
+        value: '{{inputs.parameters.output-dir}}/{{inputs.parameters.sample-id}}_Chimeric.out.junction'
+      - name: star-log-final
+        value: '{{inputs.parameters.metrics-dir}}Log.final.out'
+    script:
+      command:
+      - bash
+      image: '{{workflow.parameters.parabricksImage}}'
+      name: parabricks-rnafq2bam-script
+      resources:
+        limits:
+          nvidia.com/gpu: 1
+      source: "set -euo pipefail\n\n# Build optional flag block. Empty values are skipped so the same\n# template handles both STAR-Fusion and Arriba param sets.\nOPT_ARGS=\"\"\n[ -n \"{{inputs.parameters.read-group-sm}}\"\
+        \ ]            && OPT_ARGS=\"${OPT_ARGS} --read-group-sm {{inputs.parameters.read-group-sm}}\"\n[ -n \"{{inputs.parameters.read-group-lb}}\" ]            && OPT_ARGS=\"${OPT_ARGS} --read-group-lb\
+        \ {{inputs.parameters.read-group-lb}}\"\n[ -n \"{{inputs.parameters.read-group-pl}}\" ]            && OPT_ARGS=\"${OPT_ARGS} --read-group-pl {{inputs.parameters.read-group-pl}}\"\n[ -n \"{{inputs.parameters.out-chim-type}}\"\
+        \ ]            && OPT_ARGS=\"${OPT_ARGS} --out-chim-type {{inputs.parameters.out-chim-type}}\"\n[ \"{{inputs.parameters.no-markdups}}\" = \"true\" ]        && OPT_ARGS=\"${OPT_ARGS} --no-markdups\"\
+        \n\n# RTX A4000 and RTX 5080 have 16 GB VRAM; RNA alignment needs low-memory mode.\nmemory_options=\"\"\ncase \"{{workflow.parameters.parabricksImage}}\" in\n  *:4.5.1-1|*:4.7.1-1) memory_options=\"\
+        --low-memory\" ;;\nesac\n\npbrun rna_fq2bam \\\n  --ref /mnt/ref/genome-fa/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \\\n  --genome-lib-dir /mnt/ref/star-lib/ \\\n  --in-fq /mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-fq-r1'])}}\
+        \ /mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-fq-r2'])}} \\\n  --tmp-dir /mnt/scratch/ \\\n  --output-dir /mnt/output/dir/ \\\n  --out-bam /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}\
+        \ \\\n  --out-prefix {{inputs.parameters.sample-id}}_ \\\n  --out-reads-unmapped None \\\n  --two-pass-mode Basic \\\n  --read-files-command zcat \\\n  --out-sam-strand-field intronMotif \\\n  --out-sam-unmapped\
+        \ Within \\\n  --min-chim-segment {{inputs.parameters.min-chim-segment}} \\\n  --min-chim-overhang {{inputs.parameters.min-chim-overhang}} \\\n  --out-chim-format {{inputs.parameters.out-chim-format}}\
+        \ \\\n  --min-align-sjdb-overhang 10 \\\n  --max-align-mates-gap 100000 \\\n  --max-intron-size 100000 \\\n  --max-junction-mismatches {{inputs.parameters.max-junction-mismatches}} \\\n  --read-group-id-prefix\
+        \ {{inputs.parameters.read-group-id-prefix}} \\\n  --chim-multimap-score-range {{inputs.parameters.chim-multimap-score-range}} \\\n  --max-chim-multimap {{inputs.parameters.max-chim-multimap}} \\\
+        \n  --min-non-chim-score-drop {{inputs.parameters.min-non-chim-score-drop}} \\\n  --chim-score-non-gtag {{inputs.parameters.chim-score-non-gtag}} \\\n  --align-insertion-flush Right \\\n  --num-threads\
+        \ {{inputs.parameters.thread-count}} \\\n  ${OPT_ARGS} ${memory_options}\n\n# Relay STAR alignment summary into metrics-dir for MultiQC.\nfor f in Log.final.out SJ.out.tab; do\n  if [ -f \"/mnt/output/dir/$f\"\
+        \ ]; then\n    cp \"/mnt/output/dir/$f\" \"/mnt/metrics/$f\"\n  fi\ndone\n"
+      volumeMounts:
+      - mountPath: /mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-fq-r1'])}}
+        name: input-fq-r1
+      - mountPath: /mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-fq-r2'])}}
+        name: input-fq-r2
+      - mountPath: /mnt/output/bam/
+        name: output-bam
+      - mountPath: /mnt/scratch/
+        name: scratch-dir
+      - mountPath: /mnt/ref/genome-fa/
+        name: genome-ref
+      - mountPath: /mnt/ref/star-lib/
+        name: genome-lib-dir
+      - mountPath: /mnt/output/dir/
+        name: output-dir
+      - mountPath: /mnt/metrics/
+        name: metrics-dir
+    tolerations:
+    - effect: NoSchedule
+      key: nvidia.com/gpu
+      operator: Exists
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-fq-r1}}'
+        type: File
+      name: input-fq-r1
+    - hostPath:
+        path: '{{inputs.parameters.input-fq-r2}}'
+        type: File
+      name: input-fq-r2
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-bam''])}}'
+        type: DirectoryOrCreate
+      name: output-bam
+    - hostPath:
+        path: '{{inputs.parameters.output-dir}}'
+        type: DirectoryOrCreate
+      name: output-dir
+    - hostPath:
+        path: '{{inputs.parameters.scratch-dir}}'
+        type: DirectoryOrCreate
+      name: scratch-dir
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''genome-ref''])}}'
+        type: Directory
+      name: genome-ref
+    - hostPath:
+        path: '{{inputs.parameters.genome-lib-dir}}'
+        type: Directory
+      name: genome-lib-dir
+    - hostPath:
+        path: '{{inputs.parameters.metrics-dir}}'
+        type: DirectoryOrCreate
+      name: metrics-dir

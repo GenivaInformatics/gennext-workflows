@@ -1,0 +1,44 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: annotsv-to-oncokb-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: input-annotsv-tsv
+      - name: output-annotsv-oncokb-tsv
+    name: annotsv-to-oncokb
+    outputs:
+      parameters:
+      - name: output-annotsv-oncokb-tsv
+        value: '{{inputs.parameters.output-annotsv-oncokb-tsv}}'
+    script:
+      command:
+      - python
+      image: quay.io/biocontainers/pyranges:0.0.129--pyh7cba7a3_0
+      name: filter-indelible-script
+      source: "# set filename variables\ntsv_file = \"/mnt/input/annotsv/{{=sprig.osBase(inputs.parameters['input-annotsv-tsv'])}}\"\ntsv_oncokb_file = \"/mnt/output/oncokb/{{=sprig.osBase(inputs.parameters['output-annotsv-oncokb-tsv'])}}\"\
+        \n\n# annotsv to oncokb mappings\nsv_mappings = {\n        \"DEL\": \"DELETION\",\n        \"INS\": \"INSERTION\",\n        \"DUP\": \"DUPLICATION\",\n        \"INV\": \"INVERSION\",\n        \"\
+        CNV\": \"UNKNOWN\",  # or DUPLICATION, depending on the context\n        \"BND\": \"UNKNOWN\",  # or TRANSLOCATION/FUSION, depending on the context\n        \"LINE1\": \"UNKNOWN\",\n        \"SVA\"\
+        : \"UNKNOWN\",\n        \"ALU\": \"UNKNOWN\"\n}\n\n# add columns for oncokb annotation\nwith open(tsv_file, 'r') as tsv_file:\n    with open(tsv_oncokb_file, 'w') as tsv_oncokb_file:\n        header\
+        \ = tsv_file.readline().strip().split(\"\\t\")\n        gene_idx = header.index('Gene_name')\n        svtype_idx = header.index('SV_type')\n        oncokb_headers = ['GeneA', 'GeneB', 'Sv_Type']\n\
+        \        out_header_cols = header + oncokb_headers\n        tsv_oncokb_file.write(\"\\t\".join(out_header_cols) + \"\\n\")\n        while line := tsv_file.readline():\n            values = line.strip().split('\\\
+        t')\n            gene = values[gene_idx]\n            svtype = values[svtype_idx]\n            oncokb_values = [\n                gene,\n                gene,\n                sv_mappings.get(svtype,\
+        \ \"UNKNOWN\")\n            ]\n            tsv_oncokb_file.write(\"\\t\".join(values + oncokb_values) + \"\\n\")\n"
+      volumeMounts:
+      - mountPath: /mnt/input/annotsv/{{=sprig.osBase(inputs.parameters['input-annotsv-tsv'])}}
+        name: input-annotsv-tsv
+      - mountPath: /mnt/output/oncokb/
+        name: output-annotsv-oncokb-tsv
+      workingDir: /mnt/input/
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-annotsv-tsv}}'
+        type: File
+      name: input-annotsv-tsv
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-annotsv-oncokb-tsv''])}}'
+        type: DirectoryOrCreate
+      name: output-annotsv-oncokb-tsv

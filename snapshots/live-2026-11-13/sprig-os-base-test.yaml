@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: sprig-os-base-test
+  namespace: argo
+spec:
+  arguments:
+    parameters:
+    - default: /tmp/test/a.txt
+      name: path
+  entrypoint: main
+  nodeSelector:
+    kubernetes.io/hostname: gorillab-02
+  templates:
+  - inputs:
+      parameters:
+      - name: path
+    name: main
+    outputs:
+      parameters:
+      - name: result
+        value: '{{=sprig.osBase(inputs.parameters.path)}}'
+    script:
+      command:
+      - sh
+      image: alpine:latest
+      source: 'echo {{=sprig.osBase(inputs.parameters.path)}}
+
+        '

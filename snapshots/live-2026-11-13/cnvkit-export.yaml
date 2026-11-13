@@ -1,0 +1,32 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cnvkit-export
+  namespace: argo
+  labels:
+    pipeline: cnv-calling
+    tool: cnvkit
+spec:
+  templates:
+  - container:
+      args:
+      - "set -euo pipefail\n\nSAMPLE_ID=\"{{inputs.parameters.sample-id}}\"\nBAM_STEM=\"${SAMPLE_ID}_recal\"\n\necho \"=== CNVkit Export VCF ===\"\necho \"  Sample: ${SAMPLE_ID}\"\necho \"  Input:  /mnt/output/${BAM_STEM}.call.cns\"\
+        \necho \"  Output: /mnt/output/${SAMPLE_ID}.cnv.vcf\"\n\ncnvkit.py export vcf \\\n    \"/mnt/output/${BAM_STEM}.call.cns\" \\\n    -i \"$SAMPLE_ID\" \\\n    -o \"/mnt/output/${SAMPLE_ID}.cnv.vcf\"\
+        \n\necho \"=== Export complete ===\"\nls -la /mnt/output/${SAMPLE_ID}.cnv.vcf\n"
+      command:
+      - bash
+      - -euo
+      - pipefail
+      - -c
+      image: quay.io/biocontainers/cnvkit:0.9.12--pyhdfd78af_1
+      resources:
+        requests:
+          cpu: '1'
+          memory: 2Gi
+      volumeMounts:
+      - mountPath: /mnt/output
+        name: output-data
+    inputs:
+      parameters:
+      - name: sample-id
+    name: run-cnvkit-export

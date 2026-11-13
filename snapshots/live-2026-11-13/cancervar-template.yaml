@@ -1,0 +1,54 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cancervar-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: input-vcf-f
+      - name: output-dir
+      - name: ref-version
+        value: hg38
+      - name: annotators
+        value: refGene,ensGene,knownGene,esp6500siv2_all,1000g2015aug_all,exac03,avsnp147,dbnsfp30a,dbscsnv11,dbnsfp31a_interpro,clinvar_20190305,cosmic91,icgc28,gnomad_genome
+      - name: annovardb-dir
+    name: cancervar
+    outputs:
+      parameters:
+      - name: cancervar-out-f
+        value: '{{inputs.parameters.output-dir}}/{{inputs.parameters.sample-id}}.hg38_multianno.txt.cancervar'
+    script:
+      command:
+      - sh
+      image: bergun/cancervar:v0.0.1
+      name: annovar-script
+      source: 'python ./CancerVar.py -b {{inputs.parameters.ref-version}} -i /mnt/input/{{=sprig.osBase(inputs.parameters[''input-vcf-f''])}} \
+
+        --input_type=VCF -o /mnt/output/{{inputs.parameters.sample-id}} -c ./config_edit.ini \
+
+        --skip_annovar
+
+        '
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-vcf-f
+      - mountPath: /mnt/output/
+        name: output-dir
+      - mountPath: /mnt/annovardb/
+        name: annovardb-dir
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-vcf-f''])}}'
+        type: Directory
+      name: input-vcf-f
+    - hostPath:
+        path: '{{inputs.parameters.output-dir}}'
+        type: DirectoryOrCreate
+      name: output-dir
+    - hostPath:
+        path: '{{inputs.parameters.annovardb-dir}}'
+        type: Directory
+      name: annovardb-dir

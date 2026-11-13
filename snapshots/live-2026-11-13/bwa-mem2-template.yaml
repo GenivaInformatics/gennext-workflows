@@ -1,0 +1,70 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: bwa-mem2-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: fq-r1
+      - name: fq-r2
+      - name: bam
+      - name: genome-ref
+      - name: scratch-dir
+      - name: thread-count
+      - name: read-group-str
+    name: bwa-mem2
+    outputs:
+      parameters:
+      - name: bam
+        value: '{{inputs.parameters.bam}}'
+    script:
+      command:
+      - sh
+      image: bergun/bwa-mem2_samtools:0.0.1
+      name: bwa-mem2-script
+      source: 'bwa-mem2 mem -M \
+
+        -R "{{inputs.parameters.read-group-str}}" \
+
+        -t {{inputs.parameters.thread-count}} \
+
+        /mnt/ref/{{=sprig.osBase(inputs.parameters[''genome-ref''])}} \
+
+        /mnt/input/r1/{{=sprig.osBase(inputs.parameters[''fq-r1''])}} \
+
+        /mnt/input/r2/{{=sprig.osBase(inputs.parameters[''fq-r2''])}} \
+
+        | samtools sort -@{{inputs.parameters.thread-count}} \
+
+        -T /mnt/scratch/ -o /mnt/output/{{=sprig.osBase(inputs.parameters.bam)}}
+
+        '
+      volumeMounts:
+      - mountPath: /mnt/scratch/
+        name: scratch
+      - mountPath: /mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}
+        name: fq-r1
+      - mountPath: /mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}
+        name: fq-r2
+      - mountPath: /mnt/output/
+        name: output
+      - mountPath: /mnt/ref/
+        name: genome-ref
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.scratch-dir}}'
+      name: scratch
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters.bam)}}'
+      name: output
+    - hostPath:
+        path: '{{inputs.parameters.fq-r1}}'
+      name: fq-r1
+    - hostPath:
+        path: '{{inputs.parameters.fq-r2}}'
+      name: fq-r2
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''genome-ref''])}}'
+      name: genome-ref

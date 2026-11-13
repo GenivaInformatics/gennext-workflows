@@ -1,0 +1,99 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: gennext-prs-matcher-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: input-genotype-file
+      - name: ref-pgs-folder
+      - name: output-dbs-folder
+      - name: batch-workers-count
+        value: '4'
+      - name: pgs-workers-count
+        value: '8'
+      - name: batch-size
+        value: '100000'
+    name: gennext-prs-matcher
+    outputs:
+      parameters:
+      - name: output-dbs-folder
+        value: '{{inputs.parameters.output-dbs-folder}}'
+    script:
+      command:
+      - sh
+      image: bergun/gennext-prs-matcher:v0.2.5c
+      name: gennext-prs-matcher-script
+      source: "gennext-prs \\\n-g /mnt/input/{{=sprig.osBase(inputs.parameters['input-genotype-file'])}} \\\n-p /mnt/ref/pgs/ \\\n-o /mnt/output/dbs/ \\\n--batch-size {{inputs.parameters.batch-size}} \\\
+        \n--batch-workers {{inputs.parameters.batch-workers-count}} \\\n--pgs-workers {{inputs.parameters.pgs-workers-count}} \\\n--weight-type-beta;\n\necho \"Cleaning PRS data...\";\n\nfind \"/mnt/output/dbs/\"\
+        \ -type f | grep \"\\.sqlite$\" > /tmp/sqlite_files.txt\n\nwhile read db_file; do\n  echo \"Querying $db_file:\"\n\n  # Run the query and check if the result is empty\n  result=$(sqlite3 \"$db_file\"\
+        \ \"SELECT prs FROM results;\")\n\n  if [ -z \"$result\" ]; then\n    echo \"No data found. Removing $db_file.\"\n    rm \"$db_file\"\n  else\n    echo \"Result: $result\"\n  fi\ndone < /tmp/sqlite_files.txt\n"
+      volumeMounts:
+      - mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['input-genotype-file'])}}
+        name: input-genotype-file
+      - mountPath: /mnt/ref/pgs/
+        name: ref-pgs-folder
+      - mountPath: /mnt/output/dbs/
+        name: output-dbs-folder
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-genotype-file}}'
+        type: File
+      name: input-genotype-file
+    - hostPath:
+        path: '{{inputs.parameters.ref-pgs-folder}}'
+        type: Directory
+      name: ref-pgs-folder
+    - hostPath:
+        path: '{{inputs.parameters.output-dbs-folder}}'
+        type: DirectoryOrCreate
+      name: output-dbs-folder
+  - inputs:
+      parameters:
+      - name: input-genotype-file
+      - name: ref-pgs-folder
+      - name: output-dbs-folder
+      - name: batch-workers-count
+        value: '4'
+      - name: pgs-workers-count
+        value: '8'
+      - name: node-name
+    name: gennext-prs-matcher-on-node
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.node-name}}'
+    outputs:
+      parameters:
+      - name: output-dbs-folder
+        value: '{{inputs.parameters.output-dbs-folder}}'
+    script:
+      command:
+      - sh
+      image: bergun/gennext-prs-matcher:v0.2.5b
+      name: gennext-prs-script
+      source: "PRODUCT_ID=$(basename \"{{=sprig.osBase(inputs.parameters['input-genotype-file'])}}\" .tsv);\nDB_FOLDER=\"/mnt/output/dbs/$PRODUCT_ID/\";\n\nmkdir -p /mnt/output/dbs/$(basename \"{{=sprig.osBase(inputs.parameters['input-genotype-file'])}}\"\
+        \ .tsv)/ &&\ngennext-prs \\\n-g /mnt/input/{{=sprig.osBase(inputs.parameters['input-genotype-file'])}} \\\n-p /mnt/ref/pgs/ \\\n-o $DB_FOLDER \\\n--batch-size 100000 \\\n--batch-workers {{inputs.parameters.batch-workers-count}}\
+        \ \\\n--pgs-workers {{inputs.parameters.pgs-workers-count}} \\\n--weight-type-beta;\n\necho \"Cleaning PRS data...\";\n\nfind \"$DB_FOLDER\" -type f | grep \"\\.sqlite$\" > /tmp/sqlite_files.txt\n\
+        \nwhile read db_file; do\n  echo \"Querying $db_file:\"\n\n  # Run the query and check if the result is empty\n  result=$(sqlite3 \"$db_file\" \"SELECT prs FROM results;\")\n\n  if [ -z \"$result\"\
+        \ ]; then\n    echo \"No data found. Removing $db_file.\"\n    rm \"$db_file\"\n  else\n    echo \"Result: $result\"\n  fi\ndone < /tmp/sqlite_files.txt\n\nmv $DB_FOLDER/* $DB_FOLDER/../\n"
+      volumeMounts:
+      - mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['input-genotype-file'])}}
+        name: input-genotype-file
+      - mountPath: /mnt/ref/pgs/
+        name: ref-pgs-folder
+      - mountPath: /mnt/output/dbs/
+        name: output-dbs-folder
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-genotype-file}}'
+        type: File
+      name: input-genotype-file
+    - hostPath:
+        path: '{{inputs.parameters.ref-pgs-folder}}'
+        type: Directory
+      name: ref-pgs-folder
+    - hostPath:
+        path: '{{inputs.parameters.output-dbs-folder}}'
+        type: DirectoryOrCreate
+      name: output-dbs-folder

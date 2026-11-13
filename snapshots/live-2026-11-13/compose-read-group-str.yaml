@@ -1,0 +1,39 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: compose-read-group-str
+  namespace: argo
+spec:
+  entrypoint: main
+  templates:
+  - inputs:
+      parameters:
+      - name: fq-r1
+      - name: sample-name
+    name: compose-read-group-str-from-fq
+    outputs:
+      parameters:
+      - name: read-group-str
+        valueFrom:
+          path: /tmp/read_group_str.var
+      - name: read-group-str-no-rg-prefix
+        valueFrom:
+          path: /tmp/read_group_str_no_rg_prefix.var
+    script:
+      command:
+      - python
+      image: python:3.11-alpine3.18
+      source: "from pathlib import Path\nimport gzip\n\ninput_file = Path(\"/mnt/input/r1/{{=sprig.osBase(inputs.parameters.fq-r1)}}\")\n\nLB = \"NULL\"  # Read-Group library\nPL = \"ILLUMINA\"  # Read-Group\
+        \ platorm\nSM = \"{{inputs.parameters.sample-name}}\"  # Sample ID\n\nwith gzip.open(input_file, \"rt\", encoding='ascii') as f:\n      RGID = \"_\".join(f.readline().split(\":\")[0:4])[\n     \
+        \     1:\n      ].replace(\n          \" \", \"_\"\n      )  # Read Group ID / Platform Unit\nPU = RGID + \".\" + LB\n\nRG_str = (\n  f\"@RG\\\\tID:{RGID}\\\\tSM:{SM}\\\\tPL:{PL}\\\\tLB:{LB}\\\\\
+        tPU:{PU}\".replace(\n      \"\\r\", \"\"\n  )\n  .replace(\"\\n\", \"\")\n  .replace(\" \", \"_\")\n)\nRG_str_no_RG_prefix = (\n  f\"ID:{RGID}\\tSM:{SM}\\tPL:{PL}\\tLB:{LB}\\tPU:{PU}\".replace(\n\
+        \      \"\\r\", \"\"\n  )\n  .replace(\"\\n\", \"\")\n  .replace(\" \", \"_\")\n)\nwith open(\"/tmp/read_group_str.var\", \"w\") as f:\n  f.write(RG_str)\nwith open(\"/tmp/read_group_str_no_rg_prefix.var\"\
+        , \"w\") as f:\n  f.write(RG_str_no_RG_prefix)\nprint(RG_str)\n"
+      volumeMounts:
+      - mountPath: /mnt/input/r1/{{=sprig.osBase(inputs.parameters.fq-r1)}}
+        name: fq-r1
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.fq-r1}}'
+        type: File
+      name: fq-r1

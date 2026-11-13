@@ -1,0 +1,36 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: get-run-data
+  namespace: argo
+spec:
+  entrypoint: get-run-data
+  serviceAccountName: gennext-workflows
+  templates:
+  - inputs:
+      parameters:
+      - name: job-id
+      - name: input-rel-dir
+    name: get-run-data
+    outputs:
+      parameters:
+      - name: run-data
+        valueFrom:
+          path: /mnt/input/{{inputs.parameters.job-id}}.json
+    script:
+      command:
+      - python
+      image: python:3.11-alpine3.18
+      source: "import json\nfrom pathlib import Path\njob_id = \"{{inputs.parameters.job-id}}\"\njson_f = (Path(\"/mnt/input/\") / job_id).with_suffix(\".json\")\nwith open(json_f, \"r\") as f:\n  run_data\
+        \ = json.load(f)\nis_somatic = run_data.get('processType') in [\"som-test-tumor\", \"som-test-rna\", \"som-test-tumor-rna\"]\nfor sample in run_data.get('samples', []):\n  if sample.get('files')\
+        \ and type(sample['files']) == str:\n    sample['files'] = json.loads(sample['files'])\n  if 'files' in sample and \"regionsFile\" not in sample['files']:\n    sample['files']['regionsFile'] = {\"\
+        name\" : \"\"}\n  if is_somatic:\n    if \"somaticInfo\" not in sample:\n      sample['somaticInfo'] = {}\n    if \"tumorType\" not in sample['somaticInfo']:\n      sample['somaticInfo']['tumorType']\
+        \ = \".\"\nwith open(json_f, \"w\") as f:\n  json.dump(run_data, f)\n"
+      volumeMounts:
+      - mountPath: /mnt/input
+        name: input-rel-dir
+        type: Directory
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-rel-dir}}'
+      name: input-rel-dir

@@ -1,0 +1,207 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: vcf-harmonizer-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: input-vcf
+      - name: ref-base-dir
+    name: vcf-harmonizer-detect
+    outputs:
+      parameters:
+      - name: detected-genome
+        valueFrom:
+          path: /tmp/detected_genome.txt
+    script:
+      command:
+      - /bin/bash
+      image: bergun/vcf-harmonizer:0.2.1
+      source: '#!/bin/bash
+
+        set -e
+
+
+        INPUT_VCF="/mnt/input/{{=sprig.osBase(inputs.parameters[''input-vcf''])}}"
+
+
+        # Detect genome version
+
+        uv run vcf-harmonizer detect "$INPUT_VCF" > /tmp/detected_genome.txt
+
+        '
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-vcf
+      - mountPath: /ref/
+        name: ref-dir
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-vcf''])}}'
+        type: Directory
+      name: input-vcf
+    - hostPath:
+        path: '{{inputs.parameters.ref-base-dir}}'
+        type: Directory
+      name: ref-dir
+  - inputs:
+      parameters:
+      - name: input-vcf
+      - name: output-vcf
+      - name: source-genome
+      - default: hg38
+        name: target-genome
+      - name: ref-base-dir
+    name: vcf-harmonizer-convert
+    outputs:
+      parameters:
+      - name: output-vcf
+        value: '{{inputs.parameters.output-vcf}}'
+    script:
+      command:
+      - /bin/bash
+      image: bergun/vcf-harmonizer:0.2.1
+      source: "#!/bin/bash\nset -e\n\nINPUT_VCF=\"/mnt/input/{{=sprig.osBase(inputs.parameters['input-vcf'])}}\"\nOUTPUT_VCF=\"/mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf'])}}\"\nSOURCE=\"\
+        {{inputs.parameters.source-genome}}\"\nTARGET=\"{{inputs.parameters.target-genome}}\"\n\nuv run vcf-harmonizer convert \"$INPUT_VCF\" \"$OUTPUT_VCF\" \\\n  --source \"$SOURCE\" --target \"$TARGET\"\
+        \ --compress\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-vcf
+      - mountPath: /mnt/output/
+        name: output-dir
+      - mountPath: /ref/
+        name: ref-dir
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-vcf''])}}'
+        type: Directory
+      name: input-vcf
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-vcf''])}}'
+        type: DirectoryOrCreate
+      name: output-dir
+    - hostPath:
+        path: '{{inputs.parameters.ref-base-dir}}'
+        type: Directory
+      name: ref-dir
+  - inputs:
+      parameters:
+      - name: input-vcf
+      - name: output-vcf
+      - default: hg38
+        name: target-genome
+      - name: ref-base-dir
+    name: vcf-harmonizer-auto-convert
+    outputs:
+      parameters:
+      - name: output-vcf
+        value: '{{inputs.parameters.output-vcf}}'
+    script:
+      command:
+      - /bin/bash
+      image: bergun/vcf-harmonizer:0.2.1
+      source: "#!/bin/bash\nset -e\n\nINPUT_VCF=\"/mnt/input/{{=sprig.osBase(inputs.parameters['input-vcf'])}}\"\nOUTPUT_VCF=\"/mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf'])}}\"\nTARGET=\"\
+        {{inputs.parameters.target-genome}}\"\n\nuv run vcf-harmonizer auto-convert \"$INPUT_VCF\" \"$OUTPUT_VCF\" \\\n  --target \"$TARGET\" --compress\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-vcf
+      - mountPath: /mnt/output/
+        name: output-dir
+      - mountPath: /ref/
+        name: ref-dir
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-vcf''])}}'
+        type: Directory
+      name: input-vcf
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-vcf''])}}'
+        type: DirectoryOrCreate
+      name: output-dir
+    - hostPath:
+        path: '{{inputs.parameters.ref-base-dir}}'
+        type: Directory
+      name: ref-dir
+  - inputs:
+      parameters:
+      - name: input-vcf
+      - name: output-vcf
+      - default: auto
+        name: caller
+      - name: ref-base-dir
+    name: vcf-harmonizer-harmonize
+    outputs:
+      parameters:
+      - name: output-vcf
+        value: '{{inputs.parameters.output-vcf}}'
+    script:
+      command:
+      - /bin/bash
+      image: bergun/vcf-harmonizer:0.2.1
+      source: "#!/bin/bash\nset -e\n\nINPUT_VCF=\"/mnt/input/{{=sprig.osBase(inputs.parameters['input-vcf'])}}\"\nOUTPUT_VCF=\"/mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf'])}}\"\nCALLER=\"\
+        {{inputs.parameters.caller}}\"\n\nuv run vcf-harmonizer harmonize \"$INPUT_VCF\" \"$OUTPUT_VCF\" \\\n  --caller \"$CALLER\" --compress --pass-if-all-unfiltered\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-vcf
+      - mountPath: /mnt/output/
+        name: output-dir
+      - mountPath: /ref/
+        name: ref-dir
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-vcf''])}}'
+        type: Directory
+      name: input-vcf
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-vcf''])}}'
+        type: DirectoryOrCreate
+      name: output-dir
+    - hostPath:
+        path: '{{inputs.parameters.ref-base-dir}}'
+        type: Directory
+      name: ref-dir
+  - inputs:
+      parameters:
+      - name: input-vcf
+      - name: output-vcf
+      - default: hg38
+        name: target-genome
+      - default: auto
+        name: caller
+      - name: ref-base-dir
+    name: vcf-harmonizer-full
+    outputs:
+      parameters:
+      - name: output-vcf
+        value: '{{inputs.parameters.output-vcf}}'
+    script:
+      command:
+      - /bin/bash
+      image: bergun/vcf-harmonizer:0.2.1
+      source: "#!/bin/bash\nset -e\n\nINPUT_VCF=\"/mnt/input/{{=sprig.osBase(inputs.parameters['input-vcf'])}}\"\nOUTPUT_VCF=\"/mnt/output/{{=sprig.osBase(inputs.parameters['output-vcf'])}}\"\nTARGET=\"\
+        {{inputs.parameters.target-genome}}\"\nCALLER=\"{{inputs.parameters.caller}}\"\n\n# Step 1: Auto-convert to target genome if needed\nCONVERTED_VCF=\"/tmp/converted.vcf.gz\"\nuv run vcf-harmonizer\
+        \ auto-convert \"$INPUT_VCF\" \"$CONVERTED_VCF\" \\\n  --target \"$TARGET\" --compress\n\n# Step 2: Harmonize to MuTect2 format (if caller specified)\nif [ \"$CALLER\" != \"skip\" ]; then\n  uv\
+        \ run vcf-harmonizer harmonize \"$CONVERTED_VCF\" \"$OUTPUT_VCF\" \\\n    --caller \"$CALLER\" --compress --pass-if-all-unfiltered\nelse\n  mv \"$CONVERTED_VCF\" \"$OUTPUT_VCF\"\n  mv \"${CONVERTED_VCF}.tbi\"\
+        \ \"${OUTPUT_VCF}.tbi\" 2>/dev/null || true\nfi\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-vcf
+      - mountPath: /mnt/output/
+        name: output-dir
+      - mountPath: /ref/
+        name: ref-dir
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-vcf''])}}'
+        type: Directory
+      name: input-vcf
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-vcf''])}}'
+        type: DirectoryOrCreate
+      name: output-dir
+    - hostPath:
+        path: '{{inputs.parameters.ref-base-dir}}'
+        type: Directory
+      name: ref-dir

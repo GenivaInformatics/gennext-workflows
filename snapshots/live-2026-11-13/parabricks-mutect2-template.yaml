@@ -1,0 +1,67 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: parabricks-mutect2-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: input-bam
+      - name: sample-id
+      - name: genome-ref
+      - name: regions-file
+      - name: recal-file
+      - name: output-vcf
+    name: parabricks-mutect2-tumor-only
+    outputs:
+      parameters:
+      - name: output-vcf
+        value: '{{inputs.parameters.output-vcf}}'
+    script:
+      command:
+      - sh
+      image: '{{workflow.parameters.parabricksImage}}'
+      name: parabricks-bqsr-script
+      resources:
+        limits:
+          nvidia.com/gpu: 1
+      source: "pbrun mutectcaller \\\n  --ref /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \\\n  --interval-file /mnt/input/bed/{{=sprig.osBase(inputs.parameters['regions-file'])}}\
+        \ \\\n  --tumor-name \"{{inputs.parameters.sample-id}}\" \\\n  --in-tumor-bam /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \\\n  --in-tumor-recal-file /mnt/input/recal/{{=sprig.osBase(inputs.parameters['recal-file'])}}\
+        \ \\\n  --out-vcf /mnt/output/vcf/{{=sprig.osBase(inputs.parameters['output-vcf'])}} \\\n  --mutect-low-memory\n"
+      volumeMounts:
+      - mountPath: /mnt/ref/genome/
+        name: genome-ref
+      - mountPath: /mnt/input/bed/{{=sprig.osBase(inputs.parameters['regions-file'])}}
+        name: regions-file
+      - mountPath: /mnt/input/bam/
+        name: input-bam
+      - mountPath: /mnt/input/recal/{{=sprig.osBase(inputs.parameters['recal-file'])}}
+        name: recal-file
+      - mountPath: /mnt/output/vcf/
+        name: output-vcf
+    tolerations:
+    - effect: NoSchedule
+      key: nvidia.com/gpu
+      operator: Exists
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-bam''])}}'
+        type: Directory
+      name: input-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''genome-ref''])}}'
+        type: Directory
+      name: genome-ref
+    - hostPath:
+        path: '{{inputs.parameters.regions-file}}'
+        type: File
+      name: regions-file
+    - hostPath:
+        path: '{{inputs.parameters.recal-file}}'
+        type: File
+      name: recal-file
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-vcf''])}}'
+        type: DirectoryOrCreate
+      name: output-vcf

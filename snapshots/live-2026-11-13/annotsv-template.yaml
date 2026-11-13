@@ -1,0 +1,196 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: annotsv-template
+  namespace: argo
+spec:
+  entrypoint: annotsv
+  templates:
+  - inputs:
+      parameters:
+      - name: input-vcf-f
+      - name: annotsv-ref-dir
+      - name: sv-min-size
+        value: '20'
+      - name: ref-version
+        value: hg38
+      - name: output-annotsv-tsv-f
+    name: annotsv
+    outputs:
+      parameters:
+      - name: output-annotsv-tsv-f
+        value: '{{inputs.parameters.output-annotsv-tsv-f}}'
+    script:
+      command:
+      - sh
+      image: quay.io/biocontainers/annotsv:3.3.9--py312hdfd78af_0
+      name: annotsv
+      source: "ref_version=\"{{inputs.parameters.ref-version}}\"\nif [ \"$ref_version\" = \"hg38\" ]; then\n    grch_ref_version=\"GRCh38\"\nelif [ \"$ref_version\" = \"hg19\" ]; then\n    grch_ref_version=\"\
+        GRCh37\"\nelse\n    grch_ref_version=$ref_version\nfi;\n\n# extract input vcf if compressed\nif [[ \"/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}\" == *.gz ]]; then\n  zcat\
+        \ \"/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}\" > \"/tmp/input-vcf.vcf\";\nelse\n  cp \"/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}\" \"/tmp/input-vcf.vcf\"\
+        ;\nfi;\n\nhead -n5 /tmp/input-vcf.vcf;\n\nAnnotSV \\\n-genomeBuild $grch_ref_version \\\n-annotationsDir \"/mnt/ref/\" \\\n-SVminSize {{inputs.parameters.sv-min-size}} \\\n-SVinputFile \"/tmp/input-vcf.vcf\"\
+        \ \\\n-outputFile \"/output/tsv/{{=sprig.osBase(inputs.parameters['output-annotsv-tsv-f'])}}\";\n"
+      volumeMounts:
+      - mountPath: /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}
+        name: input-vcf-f
+      - mountPath: /output/tsv/
+        name: output-annotsv-tsv-f
+      - mountPath: /mnt/ref/
+        name: annotsv-ref-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-vcf-f}}'
+        type: File
+      name: input-vcf-f
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-annotsv-tsv-f''])}}'
+        type: DirectoryOrCreate
+      name: output-annotsv-tsv-f
+    - hostPath:
+        path: '{{inputs.parameters.annotsv-ref-dir}}'
+        type: Directory
+      name: annotsv-ref-dir
+  - inputs:
+      parameters:
+      - name: input-vcf-f
+      - name: annotsv-ref-dir
+      - name: sv-min-size
+        value: '20'
+      - name: ref-version
+        value: hg38
+      - name: output-annotsv-tsv-f
+      - name: node-name
+    name: annotsv-on-node
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.node-name}}'
+    outputs:
+      parameters:
+      - name: output-annotsv-tsv-f
+        value: '{{inputs.parameters.output-annotsv-tsv-f}}'
+    script:
+      command:
+      - sh
+      image: quay.io/biocontainers/annotsv:3.3.9--py312hdfd78af_0
+      name: annotsv
+      source: "ref_version=\"{{inputs.parameters.ref-version}}\"\nif [ \"$ref_version\" = \"hg38\" ]; then\n    grch_ref_version=\"GRCh38\"\nelif [ \"$ref_version\" = \"hg19\" ]; then\n    grch_ref_version=\"\
+        GRCh37\"\nelse\n    grch_ref_version=$ref_version\nfi;\n\n# extract input vcf if compressed\nif [[ \"/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}\" == *.gz ]]; then\n  zcat\
+        \ \"/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}\" > \"/tmp/input-vcf.vcf\";\nelse\n  cp \"/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}\" \"/tmp/input-vcf.vcf\"\
+        ;\nfi;\n\nhead -n5 /tmp/input-vcf.vcf;\n\nAnnotSV \\\n-genomeBuild $grch_ref_version \\\n-annotationsDir \"/mnt/ref/\" \\\n-SVminSize {{inputs.parameters.sv-min-size}} \\\n-SVinputFile \"/tmp/input-vcf.vcf\"\
+        \ \\\n-outputFile \"/output/tsv/{{=sprig.osBase(inputs.parameters['output-annotsv-tsv-f'])}}\";\n"
+      volumeMounts:
+      - mountPath: /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}
+        name: input-vcf-f
+      - mountPath: /output/tsv/
+        name: output-annotsv-tsv-f
+      - mountPath: /mnt/ref/
+        name: annotsv-ref-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-vcf-f}}'
+        type: File
+      name: input-vcf-f
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-annotsv-tsv-f''])}}'
+        type: DirectoryOrCreate
+      name: output-annotsv-tsv-f
+    - hostPath:
+        path: '{{inputs.parameters.annotsv-ref-dir}}'
+        type: Directory
+      name: annotsv-ref-dir
+  - inputs:
+      parameters:
+      - name: input-vcf-f
+      - name: annotsv-ref-dir
+      - name: sample-id
+      - name: sv-min-size
+        value: '20'
+      - name: ref-version
+        value: hg38
+      - name: vcf-pass-only
+        value: 'false'
+      - name: output-annotsv-tsv-f
+    name: annotsv-with-fallback
+    outputs:
+      parameters:
+      - name: output-annotsv-tsv-f
+        value: '{{inputs.parameters.output-annotsv-tsv-f}}'
+    script:
+      command:
+      - sh
+      image: quay.io/biocontainers/annotsv:3.3.9--py312hdfd78af_0
+      name: annotsv
+      source: "ref_version=\"{{inputs.parameters.ref-version}}\"\nif [ \"$ref_version\" = \"hg38\" ]; then\n    grch_ref_version=\"GRCh38\"\nelif [ \"$ref_version\" = \"hg19\" ]; then\n    grch_ref_version=\"\
+        GRCh37\"\nelse\n    grch_ref_version=$ref_version\nfi;\n\n# extract input vcf if compressed\nif [[ \"/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}\" == *.gz ]]; then\n  zcat\
+        \ \"/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}\" > \"/tmp/input-vcf.vcf\";\nelse\n  cp \"/mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}\" \"/tmp/input-vcf.vcf\"\
+        ;\nfi;\n\nhead -n5 /tmp/input-vcf.vcf;\n\n# filter to PASS-only variants if requested\ninput_vcf=\"/tmp/input-vcf.vcf\";\nif [ \"{{inputs.parameters.vcf-pass-only}}\" = \"true\" ]; then\n  bcftools\
+        \ view -f PASS \"/tmp/input-vcf.vcf\" > \"/tmp/input-vcf-pass.vcf\";\n  input_vcf=\"/tmp/input-vcf-pass.vcf\";\nfi;\n\nAnnotSV \\\n-genomeBuild $grch_ref_version \\\n-annotationsDir \"/mnt/ref/\"\
+        \ \\\n-SVminSize {{inputs.parameters.sv-min-size}} \\\n-SVinputFile \"$input_vcf\" \\\n-outputFile \"/output/tsv/{{=sprig.osBase(inputs.parameters['output-annotsv-tsv-f'])}}\" || true;\n\n# create\
+        \ header-only dummy TSV if AnnotSV produced no output (e.g. no variants)\noutput_tsv=\"/output/tsv/{{=sprig.osBase(inputs.parameters['output-annotsv-tsv-f'])}}\";\nif [ ! -f \"$output_tsv\" ]; then\n\
+        \  echo \"No AnnotSV output produced, creating header-only dummy TSV\";\n  python3 -c \"\nfrom pathlib import Path\nsample_id = '{{inputs.parameters.sample-id}}'\noutput = Path('$output_tsv')\n\
+        annotsv_columns = [\n    'AnnotSV_ID', 'SV_chrom', 'SV_start', 'SV_end', 'SV_length', 'SV_type', 'Samples_ID', 'ID',\n    'REF', 'ALT', 'QUAL', 'FILTER', 'INFO', 'FORMAT', sample_id, 'Annotation_mode',\
+        \ 'CytoBand',\n    'Gene_name', 'Gene_count', 'Tx', 'Tx_start', 'Tx_end', 'Overlapped_tx_length', 'Overlapped_CDS_length',\n    'Overlapped_CDS_percent', 'Frameshift', 'Exon_count', 'Location',\
+        \ 'Location2', 'Dist_nearest_SS',\n    'Nearest_SS_type', 'Intersect_start', 'Intersect_end', 'RE_gene', 'P_gain_phen', 'P_gain_hpo',\n    'P_gain_source', 'P_gain_coord', 'P_loss_phen', 'P_loss_hpo',\
+        \ 'P_loss_source', 'P_loss_coord',\n    'P_ins_phen', 'P_ins_hpo', 'P_ins_source', 'P_ins_coord', 'po_P_gain_phen', 'po_P_gain_hpo',\n    'po_P_gain_source', 'po_P_gain_coord', 'po_P_gain_percent',\
+        \ 'po_P_loss_phen', 'po_P_loss_hpo',\n    'po_P_loss_source', 'po_P_loss_coord', 'po_P_loss_percent', 'P_snvindel_nb', 'P_snvindel_phen',\n    'B_gain_source', 'B_gain_coord', 'B_gain_AFmax', 'B_loss_source',\
+        \ 'B_loss_coord', 'B_loss_AFmax',\n    'B_ins_source', 'B_ins_coord', 'B_ins_AFmax', 'B_inv_source', 'B_inv_coord', 'B_inv_AFmax',\n    'po_B_gain_allG_source', 'po_B_gain_allG_coord', 'po_B_gain_someG_source',\
+        \ 'po_B_gain_someG_coord',\n    'po_B_loss_allG_source', 'po_B_loss_allG_coord', 'po_B_loss_someG_source', 'po_B_loss_someG_coord',\n    'TAD_coordinate', 'ENCODE_experiment', 'GC_content_left',\
+        \ 'GC_content_right', 'Repeat_coord_left',\n    'Repeat_type_left', 'Repeat_coord_right', 'Repeat_type_right', 'Gap_left', 'Gap_right', 'SegDup_left',\n    'SegDup_right', 'ENCODE_blacklist_left',\
+        \ 'ENCODE_blacklist_characteristics_left', 'ENCODE_blacklist_right',\n    'ENCODE_blacklist_characteristics_right', 'ACMG', 'HI', 'TS', 'DDD_HI_percent', 'DDD_status', 'DDD_mode',\n    'DDD_consequence',\
+        \ 'DDD_disease', 'DDD_pmid', 'ExAC_delZ', 'ExAC_dupZ', 'ExAC_cnvZ', 'ExAC_synZ', 'ExAC_misZ',\n    'GenCC_disease', 'GenCC_moi', 'GenCC_classification', 'GenCC_pmid', 'OMIM_ID', 'OMIM_phenotype',\n\
+        \    'OMIM_inheritance', 'OMIM_morbid', 'OMIM_morbid_candidate', 'LOEUF_bin', 'GnomAD_pLI', 'ExAC_pLI',\n    'AnnotSV_ranking_score', 'AnnotSV_ranking_criteria', 'ACMG_class'\n]\noutput.write_text('\\\
+        t'.join(annotsv_columns) + '\\n')\n\"\nfi;\n"
+      volumeMounts:
+      - mountPath: /mnt/input/vcf/{{=sprig.osBase(inputs.parameters['input-vcf-f'])}}
+        name: input-vcf-f
+      - mountPath: /output/tsv/
+        name: output-annotsv-tsv-f
+      - mountPath: /mnt/ref/
+        name: annotsv-ref-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-vcf-f}}'
+        type: File
+      name: input-vcf-f
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-annotsv-tsv-f''])}}'
+        type: DirectoryOrCreate
+      name: output-annotsv-tsv-f
+    - hostPath:
+        path: '{{inputs.parameters.annotsv-ref-dir}}'
+        type: Directory
+      name: annotsv-ref-dir
+  - inputs:
+      parameters:
+      - name: dummy-annotsv-tsv-f
+      - name: sample-id
+    name: annotsv-create-dummy-tsv
+    outputs:
+      parameters:
+      - name: dummy-annotsv-tsv-f
+        value: '{{inputs.parameters.dummy-annotsv-tsv-f}}'
+    script:
+      command:
+      - python
+      image: python:alpine
+      name: annotsv
+      source: "from pathlib import Path\n\nsample_id = \"{{inputs.parameters.sample-id}}\"\ndummy_annotsv_tsv_path = \"/mnt/output/tsv/{{=sprig.osBase(inputs.parameters['dummy-annotsv-tsv-f'])}}\"\n\ndummy_annotsv_tsv_f\
+        \ = Path(dummy_annotsv_tsv_path)\nannotsv_columns = [\n    'AnnotSV_ID', 'SV_chrom', 'SV_start', 'SV_end', 'SV_length', 'SV_type', 'Samples_ID', 'ID',\n    'REF', 'ALT', 'QUAL', 'FILTER', 'INFO',\
+        \ 'FORMAT', sample_id, 'Annotation_mode', 'CytoBand',\n    'Gene_name', 'Gene_count', 'Tx', 'Tx_start', 'Tx_end', 'Overlapped_tx_length', 'Overlapped_CDS_length',\n    'Overlapped_CDS_percent',\
+        \ 'Frameshift', 'Exon_count', 'Location', 'Location2', 'Dist_nearest_SS',\n    'Nearest_SS_type', 'Intersect_start', 'Intersect_end', 'RE_gene', 'P_gain_phen', 'P_gain_hpo',\n    'P_gain_source',\
+        \ 'P_gain_coord', 'P_loss_phen', 'P_loss_hpo', 'P_loss_source', 'P_loss_coord',\n    'P_ins_phen', 'P_ins_hpo', 'P_ins_source', 'P_ins_coord', 'po_P_gain_phen', 'po_P_gain_hpo',\n    'po_P_gain_source',\
+        \ 'po_P_gain_coord', 'po_P_gain_percent', 'po_P_loss_phen', 'po_P_loss_hpo',\n    'po_P_loss_source', 'po_P_loss_coord', 'po_P_loss_percent', 'P_snvindel_nb', 'P_snvindel_phen',\n    'B_gain_source',\
+        \ 'B_gain_coord', 'B_gain_AFmax', 'B_loss_source', 'B_loss_coord', 'B_loss_AFmax',\n    'B_ins_source', 'B_ins_coord', 'B_ins_AFmax', 'B_inv_source', 'B_inv_coord', 'B_inv_AFmax',\n    'po_B_gain_allG_source',\
+        \ 'po_B_gain_allG_coord', 'po_B_gain_someG_source', 'po_B_gain_someG_coord',\n    'po_B_loss_allG_source', 'po_B_loss_allG_coord', 'po_B_loss_someG_source', 'po_B_loss_someG_coord',\n    'TAD_coordinate',\
+        \ 'ENCODE_experiment', 'GC_content_left', 'GC_content_right', 'Repeat_coord_left',\n    'Repeat_type_left', 'Repeat_coord_right', 'Repeat_type_right', 'Gap_left', 'Gap_right', 'SegDup_left',\n \
+        \   'SegDup_right', 'ENCODE_blacklist_left', 'ENCODE_blacklist_characteristics_left', 'ENCODE_blacklist_right',\n    'ENCODE_blacklist_characteristics_right', 'ACMG', 'HI', 'TS', 'DDD_HI_percent',\
+        \ 'DDD_status', 'DDD_mode',\n    'DDD_consequence', 'DDD_disease', 'DDD_pmid', 'ExAC_delZ', 'ExAC_dupZ', 'ExAC_cnvZ', 'ExAC_synZ', 'ExAC_misZ',\n    'GenCC_disease', 'GenCC_moi', 'GenCC_classification',\
+        \ 'GenCC_pmid', 'OMIM_ID', 'OMIM_phenotype',\n    'OMIM_inheritance', 'OMIM_morbid', 'OMIM_morbid_candidate', 'LOEUF_bin', 'GnomAD_pLI', 'ExAC_pLI',\n    'AnnotSV_ranking_score', 'AnnotSV_ranking_criteria',\
+        \ 'ACMG_class'\n]\n\nif not dummy_annotsv_tsv_f.is_file():\n    with dummy_annotsv_tsv_f.open(\"w\") as f:\n        f.write(\"\\t\".join(annotsv_columns) + \"\\n\")\n"
+      volumeMounts:
+      - mountPath: /mnt/output/tsv/
+        name: dummy-annotsv-tsv-f
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''dummy-annotsv-tsv-f''])}}'
+        type: DirectoryOrCreate
+      name: dummy-annotsv-tsv-f

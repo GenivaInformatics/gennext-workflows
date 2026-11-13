@@ -1,0 +1,94 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: check-file-path
+  namespace: argo
+spec:
+  entrypoint: check-file-path
+  templates:
+  - inputs:
+      parameters:
+      - name: input-file-1
+        value: .
+      - name: input-file-2
+        value: .
+      - name: input-file-3
+        value: .
+      - name: input-rel-dir
+      - default: ''
+        name: sample-uuid
+    name: check-file-path
+    outputs:
+      parameters:
+      - name: output-file-1
+        valueFrom:
+          path: /tmp/output-file-1.txt
+      - name: output-file-2
+        valueFrom:
+          path: /tmp/output-file-2.txt
+      - name: output-file-3
+        valueFrom:
+          path: /tmp/output-file-3.txt
+      - name: input-rel-dir-1
+        valueFrom:
+          path: /tmp/input-rel-dir-1.txt
+      - name: input-rel-dir-2
+        valueFrom:
+          path: /tmp/input-rel-dir-2.txt
+      - name: input-rel-dir-3
+        valueFrom:
+          path: /tmp/input-rel-dir-3.txt
+    script:
+      command:
+      - python3
+      image: python:3.12-alpine
+      source: "from pathlib import Path\n\ninput_dir = Path(\"{{inputs.parameters.input-rel-dir}}\")\nsample_uuid = \"{{inputs.parameters.sample-uuid}}\".strip()\ninput_file_1 = Path(\"{{inputs.parameters.input-file-1}}\"\
+        )\ninput_file_2 = Path(\"{{inputs.parameters.input-file-2}}\")\ninput_file_3 = Path(\"{{inputs.parameters.input-file-3}}\")\n\ndef with_trailing_slash(path):\n    return str(path) + \"/\"\n\ndef\
+        \ check_file_path(path, input_dir, sample_uuid):\n    if str(path) == '.':\n        return ('.', '.')\n    if path.is_absolute():\n        return (with_trailing_slash(path.parent), path.name)\n\n\
+        \    if sample_uuid:\n        sample_candidate = input_dir / sample_uuid / path\n        if sample_candidate.is_file():\n            return (\n                with_trailing_slash(sample_candidate.parent),\n\
+        \                sample_candidate.name,\n            )\n\n    # Preserve the existing downstream fallback behavior for files\n    # such as optional regions BEDs. Mandatory FASTQ/BAM copies fail\n\
+        \    # clearly in their copy task if the base candidate is also absent.\n    base_candidate = input_dir / path\n    return (with_trailing_slash(base_candidate.parent), base_candidate.name)\n\nfile_dir_1,\
+        \ file_name_1 = check_file_path(input_file_1, input_dir, sample_uuid)\nfile_dir_2, file_name_2 = check_file_path(input_file_2, input_dir, sample_uuid)\nfile_dir_3, file_name_3 = check_file_path(input_file_3,\
+        \ input_dir, sample_uuid)\n\n# Write outputs to files\nwith open('/tmp/output-file-1.txt', 'w') as f:\n    f.write(file_name_1)\nwith open('/tmp/output-file-2.txt', 'w') as f:\n    f.write(file_name_2)\n\
+        with open('/tmp/output-file-3.txt', 'w') as f:\n    f.write(file_name_3)\nwith open('/tmp/input-rel-dir-1.txt', 'w') as f:\n    f.write(file_dir_1)\nwith open('/tmp/input-rel-dir-2.txt', 'w') as\
+        \ f:\n    f.write(file_dir_2)\nwith open('/tmp/input-rel-dir-3.txt', 'w') as f:\n    f.write(file_dir_3)\n"
+      volumeMounts:
+      - mountPath: '{{inputs.parameters.input-rel-dir}}'
+        name: input-dir
+        readOnly: true
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-rel-dir}}'
+        type: Directory
+      name: input-dir
+  - inputs:
+      parameters:
+      - name: input-file-path
+      - name: input-rel-dir
+      - name: product-id
+    name: check-file-path-prs
+    outputs:
+      parameters:
+      - name: output-file-1
+        valueFrom:
+          path: /tmp/output-file-1.txt
+      - name: input-rel-dir-1
+        valueFrom:
+          path: /tmp/input-rel-dir-1.txt
+    script:
+      command:
+      - python3
+      image: python:3.12-alpine
+      source: "import os\nfrom pathlib import Path\n\nproduct_id = \"{{inputs.parameters.product-id}}\"\ninput_rel_dir = Path(\"{{inputs.parameters.input-rel-dir}}\")\ninput_file_path = Path(\"{{inputs.parameters.input-file-path}}\"\
+        )\n\ndef check_file_path(path, base_dir, product_id):\n    if path.is_dir():\n        print(f\"Path is a directory: {path}\")\n        input_dir = path / product_id\n        input_file = os.listdir(input_dir)[0]\n\
+        \        return (str(input_dir)+'/', input_file)\n    elif path.is_absolute():\n        print(f\"Path is absolute: {path}\")\n        return (str(path.parent)+'/', path.name)\n    else:\n      \
+        \  print(f\"Path is relative: {path}\")\n        input_dir = base_dir / product_id\n        input_file = os.listdir(input_dir)[0]\n        return (str(input_dir)+'/', input_file)\n\nfile_dir_1,\
+        \ file_name_1 = check_file_path(input_file_path, input_rel_dir, product_id)\n\n# Write outputs to files\nwith open('/tmp/output-file-1.txt', 'w') as f:\n    f.write(file_name_1)\nwith open('/tmp/input-rel-dir-1.txt',\
+        \ 'w') as f:\n    f.write(file_dir_1)\n"
+      volumeMounts:
+      - mountPath: '{{inputs.parameters.input-file-path}}'
+        name: input-file-path
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-file-path}}'
+      name: input-file-path

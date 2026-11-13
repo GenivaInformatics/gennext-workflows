@@ -1,0 +1,86 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: indelible-template
+  namespace: argo
+spec:
+  entrypoint: indelible
+  templates:
+  - inputs:
+      parameters:
+      - name: input-bam
+      - name: output-dir
+      - name: regions-file
+        value: ''
+      - name: ref-version
+        value: hg38
+      - name: thread-count
+        value: '10'
+    name: indelible
+    outputs:
+      parameters:
+      - name: output-tsv
+        valueFrom:
+          parameter: '{{steps.indelible-hg38.outputs.parameters.output-tsv}}'
+    steps:
+    - - arguments:
+          parameters:
+          - name: input-bam
+            value: '{{inputs.parameters.input-bam}}'
+          - name: config-f
+            value: config.hg38.yml
+          - name: regions-file
+            value: '{{inputs.parameters.regions-file}}'
+          - name: genome-ref-f
+            value: data/GRCh38_full_analysis_set.fa
+          - name: 10k-priors-bed-f
+            value: data/Indelible_db_10k.hg38.bed
+          - name: output-dir
+            value: '{{inputs.parameters.output-dir}}'
+          - name: thread-count
+            value: '{{inputs.parameters.thread-count}}'
+        name: indelible-hg38
+        template: indelible-base
+  - inputs:
+      parameters:
+      - name: input-bam
+      - name: config-f
+      - name: genome-ref-f
+      - name: 10k-priors-bed-f
+      - name: regions-file
+      - name: output-dir
+      - name: thread-count
+    name: indelible-base
+    outputs:
+      parameters:
+      - name: output-tsv
+        value: '{{inputs.parameters.output-dir}}/{{=sprig.osBase(inputs.parameters[''input-bam''])}}.indelible.tsv'
+    script:
+      command:
+      - sh
+      image: mercury/indelible
+      name: indelible
+      source: "\nregionsFile=\"{{=sprig.osBase(inputs.parameters['regions-file'])}}\";\n10kPriorsBedFile=\"{{inputs.parameters.10k-priors-bed-f}}\";\n\nif [ ${regionsFile} -e '' ]\nthen\n    regionsFile=${10kPriorsBedFile};\n\
+        else\n    regionsFile=\"/mnt/ref/regions_file.bed\";\nfi\n\nls /mnt/output/; # No output dir error fixed with this?\npython indelible.py complete \\\n    --config {{inputs.parameters.config-f}}\
+        \ \\\n    --i /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} \\\n    --o /mnt/output/ \\\n    --r {{inputs.parameters.genome-ref-f}} \\\n    --priors ${regionsFile} \\\n    --tb\
+        \ {{inputs.parameters.thread-count}}\n"
+      volumeMounts:
+      - mountPath: /mnt/input/bam/
+        name: input-bam
+      - mountPath: /mnt/output/
+        name: output-dir
+      - mountPath: /mnt/ref/regions_file.bed
+        name: regions-file
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-bam''])}}'
+        type: Directory
+      name: input-bam
+    - hostPath:
+        path: '{{inputs.parameters.regions-file}}'
+        type: File
+      name: regions-file
+    - hostPath:
+        path: '{{inputs.parameters.output-dir}}'
+        type: DirectoryOrCreate
+      name: output-dir

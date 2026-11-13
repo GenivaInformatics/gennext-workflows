@@ -1,0 +1,48 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: tiddit
+  namespace: argo
+spec:
+  arguments: {}
+  templates:
+  - inputs:
+      parameters:
+      - name: input-bam
+      - name: input-ref
+    metadata: {}
+    name: tiddit
+    outputs:
+      parameters:
+      - name: output-vcf
+        valueFrom:
+          path: /mnt/output/tiddit_targeted_result/{{=sprig.osBase(inputs.parameters['input-bam'])}}.vcf
+    script:
+      command:
+      - sh
+      image: quay.io/biocontainers/tiddit:3.9.2--py312hc9302aa_0
+      name: ''
+      resources: {}
+      source: 'tiddit --sv --threads 20 \ --bam /mnt/input/bam/{{=sprig.osBase(inputs.parameters[''input-bam''])}} \ --ref /mnt/input/ref/{{=sprig.osBase(inputs.parameters[''input-ref''])}}\   -o /mnt/output/tiddit_targeted_result/{{=sprig.osBase(inputs.parameters[''input-bam''])}}.vcf
+
+        '
+      volumeMounts:
+      - mountPath: /mnt/input/bam/
+        name: input-bam
+      - mountPath: /mnt/input/ref/
+        name: input-ref
+      - mountPath: /mnt/output/tiddit_targeted_result/
+        name: output-vcf
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-bam''])}}'
+        type: Directory
+      name: input-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-ref''])}}'
+        type: Directory
+      name: input-ref
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-bam''])}}'
+        type: Directory
+      name: output-vcf

@@ -1,0 +1,52 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cnvkit-filter
+  namespace: argo
+  labels:
+    pipeline: cnv-calling
+    tool: cnvkit-filter
+spec:
+  templates:
+  - container:
+      args:
+      - "import json\nimport sys\nimport os\n\nSAMPLE_ID = \"{{inputs.parameters.sample-id}}\"\nINPUT_VCF = f\"/mnt/output/{SAMPLE_ID}.cnv.annotated.vcf\"\nOUTPUT_VCF = f\"/mnt/output/{SAMPLE_ID}.cnv.annotated.filtered.vcf\"\
+        \nCONFIG_FILE = \"/mnt/ref/other/cnvkit/A3416642_cnv_thresholds.json\"\n\nprint(\"=== CNVkit Sigma-Based Filtering ===\")\nprint(f\"  Sample: {SAMPLE_ID}\")\nprint(f\"  Input:  {INPUT_VCF}\")\n\
+        print(f\"  Config: {CONFIG_FILE}\")\nprint(f\"  Output: {OUTPUT_VCF}\")\n\n# Validate inputs\nfor path, label in [(INPUT_VCF, \"Input VCF\"), (CONFIG_FILE, \"Config\")]:\n    if not os.path.isfile(path):\n\
+        \        print(f\"Error: {label} not found: {path}\", file=sys.stderr)\n        sys.exit(1)\n\n# Load threshold configuration\nwith open(CONFIG_FILE, \"r\") as f:\n    config = json.load(f)\n\n\
+        thresholds = config[\"filtering\"][\"thresholds\"]\nmin_probes = config[\"filtering\"][\"min_probes\"]\n\nprint(f\"  Min probes: {min_probes}\")\nfor name, t in thresholds.items():\n    print(f\"\
+        \  {name}: |log2| >= {t['abs_log2_threshold']:.3f}\")\n\n\ndef extract_info_value(info_str, key):\n    \"\"\"Extract a value from VCF INFO field by key.\"\"\"\n    for field in info_str.split(\"\
+        ;\"):\n        if field.startswith(key + \"=\"):\n            return field[len(key) + 1:]\n    return None\n\n\ndef evaluate_variant(fold_change_log, probes):\n    \"\"\"Evaluate variant against\
+        \ sigma thresholds. Returns (should_pass, sigma_level).\"\"\"\n    if probes < min_probes:\n        return False, None\n\n    abs_log2 = abs(fold_change_log)\n    highest_sigma = None\n\n    for\
+        \ threshold_config in thresholds.values():\n        threshold_value = threshold_config[\"abs_log2_threshold\"]\n        if abs_log2 >= threshold_value:\n            level = threshold_config[\"level\"\
+        ]\n            if highest_sigma is None or level > highest_sigma:\n                highest_sigma = level\n\n    return highest_sigma is not None, highest_sigma\n\n\n# Process VCF\nprint(\"Processing\
+        \ VCF...\")\ntotal_variants = 0\npassed_variants = 0\nsigma_counts = {1: 0, 2: 0, 3: 0}\n\nfilter_header = '##FILTER=<ID=PASS,Description=\"All filters passed\">'\nsigma_header = '##INFO=<ID=SIGMA_LEVEL,Number=1,Type=Integer,Description=\"\
+        Sigma level threshold met for PASS filter (1, 2, or 3)\">'\n\nwith open(INPUT_VCF, \"r\") as fin, open(OUTPUT_VCF, \"w\") as fout:\n    for line in fin:\n        if line.startswith(\"##\"):\n  \
+        \          fout.write(line)\n            continue\n\n        if line.startswith(\"#CHROM\"):\n            fout.write(filter_header + \"\\n\")\n            fout.write(sigma_header + \"\\n\")\n  \
+        \          fout.write(line)\n            continue\n\n        # Data line\n        total_variants += 1\n        parts = line.rstrip(\"\\n\").split(\"\\t\")\n        if len(parts) < 8:\n         \
+        \   fout.write(line)\n            continue\n\n        info = parts[7]\n\n        fc_val = extract_info_value(info, \"FOLD_CHANGE_LOG\")\n        probes_val = extract_info_value(info, \"PROBES\"\
+        )\n\n        if fc_val is not None and probes_val is not None:\n            fold_change_log = float(fc_val)\n            probes = int(probes_val)\n\n            should_pass, sigma_level = evaluate_variant(fold_change_log,\
+        \ probes)\n\n            if should_pass and sigma_level is not None:\n                # Set FILTER to PASS\n                parts[6] = \"PASS\"\n\n                # Remove IMPRECISE from INFO and\
+        \ add SIGMA_LEVEL\n                info_parts = [p for p in info.split(\";\") if p != \"IMPRECISE\"]\n                info_parts.append(f\"SIGMA_LEVEL={sigma_level}\")\n                parts[7]\
+        \ = \";\".join(info_parts)\n\n                passed_variants += 1\n                sigma_counts[sigma_level] += 1\n\n        fout.write(\"\\t\".join(parts) + \"\\n\")\n\nprint(f\"\\nFiltering complete:\"\
+        )\nprint(f\"  Total variants: {total_variants}\")\nif total_variants > 0:\n    pct = 100 * passed_variants / total_variants\n    print(f\"  PASS variants:  {passed_variants} ({pct:.1f}%)\")\nelse:\n\
+        \    print(f\"  PASS variants:  0\")\nprint(\"  Sigma level breakdown:\")\nfor level in [1, 2, 3]:\n    count = sigma_counts[level]\n    if count > 0:\n        print(f\"    Sigma {level}: {count}\
+        \ variants\")\nprint(f\"  Output: {OUTPUT_VCF}\")\n"
+      command:
+      - python3
+      - -c
+      image: python:3.11-slim
+      resources:
+        requests:
+          cpu: '1'
+          memory: 1Gi
+      volumeMounts:
+      - mountPath: /mnt/ref
+        name: ref-data
+        readOnly: true
+      - mountPath: /mnt/output
+        name: output-data
+    inputs:
+      parameters:
+      - name: sample-id
+    name: run-cnvkit-filter

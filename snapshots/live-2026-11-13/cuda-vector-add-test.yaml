@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cuda-vector-add-test
+  namespace: argo
+spec:
+  entrypoint: main
+  templates:
+  - container:
+      image: k8s.gcr.io/cuda-vector-add:v0.1
+      resources:
+        limits:
+          nvidia.com/gpu: 1
+    name: main
+    nodeSelector:
+      kubernetes.io/hostname: ikf-01
+    tolerations:
+    - effect: NoSchedule
+      key: nvidia.com/gpu
+      operator: Exists

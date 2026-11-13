@@ -1,0 +1,63 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: get-node-config
+  namespace: argo
+spec:
+  arguments:
+    parameters:
+    - name: node-name
+    - name: user-id
+    - name: job-id
+  entrypoint: get-node-config
+  serviceAccountName: gennext-workflows
+  templates:
+  - inputs:
+      parameters:
+      - name: node-name
+      - name: user-id
+      - name: job-id
+    name: get-node-config
+    outputs:
+      parameters:
+      - name: input-rel-dir
+        valueFrom:
+          path: /tmp/INPUT_REL_DIR
+      - name: output-rel-dir
+        valueFrom:
+          path: /tmp/OUTPUT_REL_DIR
+      - name: ref-base-dir
+        valueFrom:
+          path: /tmp/REF_BASE_DIR
+      - name: temp-rel-dir
+        valueFrom:
+          path: /tmp/TEMP_REL_DIR
+      - name: scratch-rel-dir
+        valueFrom:
+          path: /tmp/SCRATCH_REL_DIR
+      - name: annots-base-dir
+        valueFrom:
+          path: /tmp/ANNOTS_BASE_DIR
+      - name: modules-base-dir
+        valueFrom:
+          path: /tmp/MODULES_BASE_DIR
+      - name: thread-count
+        valueFrom:
+          path: /tmp/THREAD_COUNT
+      - name: max-concurrent-samples
+        valueFrom:
+          path: /tmp/MAX_CONCURRENT_SAMPLES
+    script:
+      command:
+      - sh
+      image: alpine/kubectl
+      source: "NODE_NAME=\"{{inputs.parameters.node-name}}\"\nUSER_ID=\"{{inputs.parameters.user-id}}\"\nJOB_ID=\"{{inputs.parameters.job-id}}\"\nRANDOM_SUFFIX=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' |\
+        \ fold -w 6 | head -n 1)\nclean_path() {\nsed -E 's#/+#/#g; s#([^/])$#\\1/#';\n}\njoin_paths() {\necho \"${1:+$1/}$2\" | clean_path\n}\nkubectl get node $NODE_NAME -o jsonpath='\n{\"INPUT_REL_DIR=\"\
+        }{.metadata.annotations.gennext\\.bio/input-base-dir}\n{\"\\nOUTPUT_REL_DIR=\"}{.metadata.annotations.gennext\\.bio/output-base-dir}\n{\"\\nREF_BASE_DIR=\"}{.metadata.annotations.gennext\\.bio/ref-base-dir}\n\
+        {\"\\nTEMP_REL_DIR=\"}{.metadata.annotations.gennext\\.bio/temp-base-dir}\n{\"\\nSCRATCH_REL_DIR=\"}{.metadata.annotations.gennext\\.bio/scratch-base-dir}\n{\"\\nANNOTS_BASE_DIR=\"}{.metadata.annotations.gennext\\\
+        .bio/annots-base-dir}\n{\"\\nMODULES_BASE_DIR=\"}{.metadata.annotations.gennext\\.bio/modules-base-dir}\n{\"\\nTHREAD_COUNT=\"}{.metadata.annotations.gennext\\.bio/thread-count}\n{\"\\nMAX_CONCURRENT_SAMPLES=\"\
+        }{.metadata.annotations.gennext\\.bio/max-concurrent-samples}\n' > /tmp/keypaths_tmp0\nwhile IFS='=' read -r key val\ndo\n  if [[ $key = \"REF_BASE_DIR\" || $key = \"ANNOTS_BASE_DIR\" || $key =\
+        \ \"MODULES_BASE_DIR\" ]]\n  then\n    echo \"$val\" | clean_path > \"/tmp/$key\"\n  elif [[ $key = \"SCRATCH_REL_DIR\" || $key = \"TEMP_REL_DIR\" ]]\n  then\n    echo \"$(join_paths $val ${USER_ID}/${JOB_ID}_${RANDOM_SUFFIX})\"\
+        \ > \"/tmp/$key\"\n  elif [[ $key = \"THREAD_COUNT\" || $key = \"MAX_CONCURRENT_SAMPLES\" ]]\n  then\n    echo \"$val\" > \"/tmp/$key\"\n  else\n    echo \"$(join_paths $val ${USER_ID}/${JOB_ID})\"\
+        \ > \"/tmp/$key\"\n  fi\ndone < /tmp/keypaths_tmp0\n# Default max-concurrent-samples to 1 if not set on node\nif [ ! -s /tmp/MAX_CONCURRENT_SAMPLES ]; then\n  echo \"1\" > /tmp/MAX_CONCURRENT_SAMPLES\n\
+        fi\n"

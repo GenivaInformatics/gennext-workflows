@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: multiqc-template-test
+  namespace: argo
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: gorillab-01
+  templates:
+  - inputs:
+      parameters:
+      - name: input-dir
+      - name: output-dir
+    name: multiqc
+    outputs:
+      parameters:
+      - name: output-dir
+        value: '{{inputs.parameters.output-dir}}'
+    script:
+      command:
+      - sh
+      image: ewels/multiqc:latest
+      name: multiqc-script
+      source: 'mkdir /mnt/output/multiqc_data;
+
+        multiqc \
+
+        /mnt/input/ \
+
+        -o /mnt/output/
+
+        '
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-dir
+      - mountPath: /mnt/output/
+        name: output-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-dir}}'
+        type: Directory
+      name: input-dir
+    - hostPath:
+        path: '{{inputs.parameters.output-dir}}'
+        type: DirectoryOrCreate
+      name: output-dir

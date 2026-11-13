@@ -1,0 +1,39 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: annovar-to-maf-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: annovar-out-f
+      - name: ref-version
+        value: hg38
+    name: annovar-to-maf
+    outputs:
+      parameters:
+      - name: annovar-maf-f
+        value: '{{=sprig.osDir(inputs.parameters[''annovar-out-f''])}}/{{inputs.parameters.sample-id}}.maf'
+    script:
+      command:
+      - sh
+      image: bergun/maftools-rs:v0.1.0
+      name: annovar-script
+      resources:
+        limits:
+          memory: 2Gi
+        requests:
+          cpu: '1'
+          memory: 256Mi
+      source: "set -e\nmaftools-rs annovar-to-maf \\\n  --input \"/mnt/input/{{=sprig.osBase(inputs.parameters['annovar-out-f'])}}\" \\\n  --output \"/mnt/input/{{inputs.parameters.sample-id}}.maf\"\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: annovar-out-f
+      workingDir: /mnt/input/
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''annovar-out-f''])}}'
+        type: Directory
+      name: annovar-out-f

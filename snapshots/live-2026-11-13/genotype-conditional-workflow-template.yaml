@@ -1,0 +1,112 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: genotype-conditional-workflow-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: input-dbsnp-file
+      - name: input-prs-ref-file
+      - name: input-genotype-file
+      - name: input-fasta-file
+      - name: output-genotype-file
+      - default: '20'
+        name: thread-count
+    name: genotype-conditional-workflow
+    outputs:
+      parameters:
+      - name: output-genotype-file
+        valueFrom:
+          parameter: '{{steps.genotype-conditional-reducer.outputs.parameters.output-genotype-file}}'
+    steps:
+    - - arguments:
+          parameters:
+          - name: input-file
+            value: '{{inputs.parameters.input-genotype-file}}'
+        name: genotype-file-check-extension
+        template: genotype-file-check-extension
+    - - arguments:
+          parameters:
+          - name: input-prs-ref-file
+            value: '{{inputs.parameters.input-prs-ref-file}}'
+          - name: input-gvcf-file
+            value: '{{inputs.parameters.input-genotype-file}}'
+          - name: input-fasta-file
+            value: '{{inputs.parameters.input-fasta-file}}'
+          - name: output-genotype-file
+            value: '{{inputs.parameters.output-genotype-file}}'
+          - name: thread-count
+            value: '{{inputs.parameters.thread-count}}'
+        name: update-genotype-snps-gvcf
+        templateRef:
+          name: update-genotype-snps-template
+          template: update-genotype-snps-gvcf
+        when: '{{steps.genotype-file-check-extension.outputs.parameters.result}} == ''gvcf'''
+    - - arguments:
+          parameters:
+          - name: dbsnp-file
+            value: '{{inputs.parameters.input-dbsnp-file}}'
+          - name: input-genotype-file
+            value: '{{inputs.parameters.input-genotype-file}}'
+          - name: output-genotype-file
+            value: '{{inputs.parameters.output-genotype-file}}'
+        name: update-genotype-snps
+        templateRef:
+          name: update-genotype-snps-template
+          template: update-genotype-snps
+        when: '{{steps.genotype-file-check-extension.outputs.parameters.result}} == ''other'''
+    - - arguments:
+          parameters:
+          - name: gvcf-output
+            value: '{{steps.update-genotype-snps-gvcf.outputs.parameters.output-genotype-file}}'
+          - name: other-output
+            value: '{{steps.update-genotype-snps.outputs.parameters.output-genotype-file}}'
+        name: genotype-conditional-reducer
+        template: genotype-conditional-reducer
+  - inputs:
+      parameters:
+      - name: input-file
+    name: genotype-file-check-extension
+    outputs:
+      parameters:
+      - name: result
+        valueFrom:
+          path: /tmp/result.txt
+    script:
+      command:
+      - bash
+      image: quay.io/biocontainers/htslib:1.21--h566b1c6_1
+      name: genotype-file-check-extension-script
+      source: "#!/bin/bash\n\n# Get just the filename and directory from the input parameter\nfile_name=$(basename \"{{inputs.parameters.input-file}}\")\nmount_dir=\"/mnt/input\"\nfile_path=\"${mount_dir}/${file_name}\"\
+        \nresult=\"other\"\n\necho \"Checking file: ${file_path}\"\n\nif [[ \"$file_path\" == *.g.vcf.gz || \"$file_path\" == *.gvcf.gz ]]; then\n    result=\"gvcf\"\n    if [[ ! -f \"${file_path}.tbi\"\
+        \ ]]; then\n        echo \"Indexing GVCF file...\"\n        tabix -p vcf \"$file_path\"\n    else\n        echo \"Index file exists, skipping indexing step.\"\n    fi\nelif [[ \"$file_path\" ==\
+        \ *.g.vcf || \"$file_path\" == *.gvcf ]]; then\n    result=\"gvcf\"\n    echo \"File is a GVCF file without compression.\"\n    bgzip \"$file_path\"\n    tabix -p vcf \"${file_path}.gz\"\nfi\n\n\
+        # Write the result to a file\necho \"$result\" > /tmp/result.txt\n\n# Print the result to stdout for debugging\necho \"File check result: $result\"\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-volume
+      workingDir: /mnt/input/
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-file''])}}'
+        type: Directory
+      name: input-volume
+  - inputs:
+      parameters:
+      - name: gvcf-output
+      - name: other-output
+    name: genotype-conditional-reducer
+    outputs:
+      parameters:
+      - name: output-genotype-file
+        valueFrom:
+          path: /tmp/final-output.txt
+    script:
+      command:
+      - sh
+      image: alpine:3.14
+      source: "#!/bin/sh\n# Use a simple string comparison to check for {{ characters\nfirst_two_chars=$(echo \"{{inputs.parameters.gvcf-output}}\" | cut -c1-2)\n\nif [ \"$first_two_chars\" = \"{{\" ];\
+        \ then\n    # The gvcf-output appears to be an unreplaced template\n    chosen_path=\"{{inputs.parameters.other-output}}\"\nelse\n    # The gvcf-output is valid\n    chosen_path=\"{{inputs.parameters.gvcf-output}}\"\
+        \nfi\n\n# Write only the chosen file path into the output file\necho \"${chosen_path}\" > /tmp/final-output.txt\n"

@@ -1,0 +1,37 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: bgzip-tabix-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: input-file
+    name: bgzip-tabix
+    outputs:
+      parameters:
+      - name: output-file
+        value: '{{inputs.parameters.input-file}}.gz'
+    script:
+      command:
+      - sh
+      image: quay.io/biocontainers/htslib:1.17--h81da01d_2
+      name: samtools-index-script
+      source: 'bgzip -k \
+
+        /mnt/input/{{=sprig.osBase(inputs.parameters[''input-file''])}};
+
+        tabix \
+
+        /mnt/input/{{{=sprig.osBase(inputs.parameters[''input-file''])}}.gz
+
+        '
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-file
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-file''])}}'
+        type: Directory
+      name: input-file

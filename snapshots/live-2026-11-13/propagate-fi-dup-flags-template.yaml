@@ -1,0 +1,53 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: propagate-fi-dup-flags-template
+  namespace: argo
+spec:
+  templates:
+  - container:
+      args:
+      - "FI_BAM=\"/mnt/fi/{{=sprig.osBase(inputs.parameters['fi-bam'])}}\"\nif [ ! -f \"$FI_BAM\" ]; then\n  echo \"No FusionInspector BAM at $FI_BAM (no fusion candidates); nothing to propagate.\"\n  exit\
+        \ 0\nfi\nexec propagate-fi-dup-flags \\\n  \"--upstream-bam=/mnt/upstream/{{=sprig.osBase(inputs.parameters['upstream-bam'])}}\" \\\n  \"--fi-bam=$FI_BAM\" \\\n  \"--out-bam=/mnt/out/{{=sprig.osBase(inputs.parameters['out-bam'])}}\"\
+        \n"
+      command:
+      - sh
+      - -c
+      image: bergun/extract-fusion-reads:0.3.2
+      name: propagate-fi-dup-flags
+      resources:
+        requests:
+          cpu: '4'
+          memory: 8Gi
+      volumeMounts:
+      - mountPath: /mnt/upstream/
+        name: upstream-bam
+      - mountPath: /mnt/fi/
+        name: fi-bam
+      - mountPath: /mnt/out/
+        name: out-bam
+    inputs:
+      parameters:
+      - name: upstream-bam
+      - name: fi-bam
+      - name: out-bam
+      - default: '4'
+        name: thread-count
+    name: propagate-fi-dup-flags
+    outputs:
+      parameters:
+      - name: out-bam
+        value: '{{inputs.parameters.out-bam}}'
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''upstream-bam''])}}'
+        type: Directory
+      name: upstream-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''fi-bam''])}}'
+        type: Directory
+      name: fi-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''out-bam''])}}'
+        type: DirectoryOrCreate
+      name: out-bam

@@ -1,0 +1,68 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: test-workflow
+  namespace: argo
+spec:
+  arguments:
+    parameters:
+    - name: input_bed_f
+    - name: output_dir
+    - name: thread_count
+    - name: node_name
+  entrypoint: test-workflow
+  nodeSelector:
+    kubernetes.io/hostname: '{{workflow.parameters.node_name}}'
+  templates:
+  - name: test-workflow
+    steps:
+    - - arguments:
+          parameters:
+          - name: input_bed_f
+            value: '{{workflow.parameters.input_bed_f}}'
+          - name: output_dir
+            value: '{{workflow.parameters.output_dir}}'
+        name: copy-bed-f
+        template: copy-bed-f
+    - - arguments:
+          parameters:
+          - name: input_bed_f
+            value: '{{steps.copy-bed-f.outputs.parameters.input_v2_bed_f}}'
+          - name: output_dir
+            value: '{{workflow.parameters.output_dir}}'
+          - name: thread_count
+            value: '{{workflow.parameters.thread_count}}'
+          - name: node_name
+            value: '{{workflow.parameters.node_name}}'
+        name: bed-split-workflow
+        templateRef:
+          name: bed-split-workflow
+          template: bed-split-workflow
+  - inputs:
+      parameters:
+      - name: input_bed_f
+      - name: output_dir
+    name: copy-bed-f
+    outputs:
+      parameters:
+      - name: input_v2_bed_f
+        value: '{{workflow.parameters.output_dir}}/{{=sprig.osBase(workflow.parameters.input_bed_f)}}_v2.bed'
+    script:
+      command:
+      - sh
+      image: alpine:latest
+      source: 'ls -lha /mnt/input/; head -n 5 /mnt/input/{{=sprig.osBase(workflow.parameters.input_bed_f)}}; cp /mnt/input/{{=sprig.osBase(workflow.parameters.input_bed_f)}} /mnt/output/{{=sprig.osBase(workflow.parameters.input_bed_f)}}_v2.bed
+
+        '
+      volumeMounts:
+      - mountPath: /mnt/input/{{=sprig.osBase(workflow.parameters.input_bed_f)}}
+        name: input
+      - mountPath: /mnt/output/
+        name: output
+  volumes:
+  - hostPath:
+      path: '{{workflow.parameters.input_bed_f}}'
+    name: input
+  - hostPath:
+      path: '{{workflow.parameters.output_dir}}'
+    name: output

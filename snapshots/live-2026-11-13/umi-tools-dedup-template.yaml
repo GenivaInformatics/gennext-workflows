@@ -1,0 +1,60 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: umi-tools-dedup-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: input-bam
+      - name: output-bam
+      - name: output-stats-prefix
+      - default: '8'
+        name: thread-count
+    name: umi-tools-dedup
+    outputs:
+      parameters:
+      - name: output-bam
+        value: '{{inputs.parameters.output-bam}}'
+      - name: output-stats-prefix
+        value: '{{inputs.parameters.output-stats-prefix}}'
+    script:
+      command:
+      - bash
+      image: bergun/umi-tools-dedup:0.1.0
+      name: umi-tools-dedup
+      resources:
+        requests:
+          cpu: '8'
+          memory: 16Gi
+      source: "set -euo pipefail\n\nBAM_IN=\"/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}\"\nBAM_OUT=\"/mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}\"\nSTATS_PREFIX=\"\
+        /mnt/output/stats/{{=sprig.osBase(inputs.parameters['output-stats-prefix'])}}\"\nLOG_PATH=\"${STATS_PREFIX}.log\"\nTHREADS=\"{{inputs.parameters.thread-count}}\"\n\necho \"Running umi_tools dedup\"\
+        \necho \"  Input:        ${BAM_IN}\"\necho \"  Output:       ${BAM_OUT}\"\necho \"  Stats prefix: ${STATS_PREFIX}\"\n\n# umi_tools dedup supports --extract-umi-method=read_id|tag|umis\n# (the regex\
+        \ method is only on the `extract` FASTQ subcommand).\n# Our QNAMEs after fastp look like\n#   <original>:UMI_<R1bases>_<R2bases>\n# e.g. R213040...:UMI_GGCTG_ATGTC. We split on the multi-char\n\
+        # separator \":UMI_\" so the last field becomes the full 11-char\n# composite UMI \"GGCTG_ATGTC\" (the underscore between R1 and R2\n# UMIs is part of the captured UMI token, which is correct \u2014\
+        \n# umi_tools clusters UMIs as opaque strings of any length).\n# --paired: paired-end RNA-seq input.\n# --method=directional: graph-based UMI clustering with 1-edit-\n# distance tolerance (handles\
+        \ UMI sequencing errors).\numi_tools dedup \\\n  --stdin=\"${BAM_IN}\" \\\n  --stdout=\"${BAM_OUT}\" \\\n  --extract-umi-method=read_id \\\n  --umi-separator=':UMI_' \\\n  --paired \\\n  --method=directional\
+        \ \\\n  --output-stats=\"${STATS_PREFIX}\" \\\n  --log=\"${LOG_PATH}\"\n\necho \"Indexing deduped BAM\"\nsamtools index -@ \"${THREADS}\" \"${BAM_OUT}\"\n\necho \"umi_tools dedup completed\"\nls\
+        \ -la \"${BAM_OUT}\" \"${BAM_OUT}.bai\" \"${STATS_PREFIX}\"* 2>&1 || true\n"
+      volumeMounts:
+      - mountPath: /mnt/input/bam/
+        name: input-bam
+      - mountPath: /mnt/output/bam/
+        name: output-bam
+      - mountPath: /mnt/output/stats/
+        name: output-stats
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-bam''])}}'
+        type: Directory
+      name: input-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-bam''])}}'
+        type: DirectoryOrCreate
+      name: output-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-stats-prefix''])}}'
+        type: DirectoryOrCreate
+      name: output-stats

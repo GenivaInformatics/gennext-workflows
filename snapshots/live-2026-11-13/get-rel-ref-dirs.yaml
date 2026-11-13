@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: get-rel-ref-dirs
+  namespace: argo
+spec:
+  arguments:
+    parameters:
+    - name: ref-ver
+  entrypoint: get-rel-ref-dirs
+  serviceAccountName: gennext-workflows
+  templates:
+  - inputs:
+      parameters:
+      - name: ref-ver
+    name: get-rel-ref-dirs
+    outputs:
+      parameters:
+      - name: ref-genome-rel-f
+        valueFrom:
+          path: /tmp/ref-configmap/{{inputs.parameters.ref-ver}}.genome
+      - name: dbsnp-rel-f
+        valueFrom:
+          path: /tmp/ref-configmap/{{inputs.parameters.ref-ver}}.dbsnp
+      - name: regions-bed-rel-f
+        valueFrom:
+          path: /tmp/ref-configmap/{{inputs.parameters.ref-ver}}.regions.targeted
+      - name: exome-regions-bed-rel-f
+        valueFrom:
+          path: /tmp/ref-configmap/{{inputs.parameters.ref-ver}}.regions.exome
+    script:
+      command:
+      - bash
+      image: alpine:latest
+      source: 'echo "Reference Version: {{inputs.parameters.ref-ver}}"
+
+        ls /tmp/ref-configmap
+
+        '
+      volumeMounts:
+      - mountPath: /tmp/ref-configmap
+        name: gennext-references
+    volumes:
+    - configMap:
+        name: gennext-references
+      name: gennext-references

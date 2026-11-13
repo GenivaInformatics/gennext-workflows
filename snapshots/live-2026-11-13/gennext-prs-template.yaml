@@ -1,0 +1,65 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: gennext-prs-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: input-genotype-file
+      - name: ref-pgs-folder
+      - name: ref-pgs-metadata
+      - name: thread-count
+      - name: output-json-folder
+      - name: output-dbs-folder
+    name: gennext-prs
+    outputs:
+      parameters:
+      - name: output-dbs-folder
+        value: '{{inputs.parameters.output-dbs-folder}}'
+      - name: output-json-folder
+        value: '{{inputs.parameters.output-json-folder}}'
+    script:
+      command:
+      - sh
+      image: bergun/gennext-prs:v0.0.1
+      name: gennext-prs-script
+      source: "PRODUCT_ID=$(basename \"{{=sprig.osBase(inputs.parameters['input-genotype-file'])}}\" .tsv);\nmkdir -p /mnt/output/dbs/$(basename \"{{=sprig.osBase(inputs.parameters['input-genotype-file'])}}\"\
+        \ .tsv)/ &&\n./gennext-prs \\\n--genotype-file /mnt/input/{{=sprig.osBase(inputs.parameters['input-genotype-file'])}} \\\n--metadata /mnt/ref/meta/{{=sprig.osBase(inputs.parameters['ref-pgs-metadata'])}}\
+        \ \\\n--pgs-folder /mnt/ref/pgs/ \\\n--output /mnt/output/json/ \\\n--dbs /mnt/output/dbs/ \\\n--threads {{inputs.parameters.thread-count}};\n\necho \"Cleaning PRS data...\";\n\nDB_FOLDER=\"/mnt/output/dbs/$PRODUCT_ID/\"\
+        ;\nfind \"$DB_FOLDER\" -type f | grep \"\\.sqlite$\" > /tmp/sqlite_files.txt\n\nwhile read db_file; do\n  echo \"Querying $db_file:\"\n\n  # Run the query and check if the result is empty\n  result=$(sqlite3\
+        \ \"$db_file\" \"SELECT prs FROM results;\")\n\n  if [ -z \"$result\" ]; then\n    echo \"No data found. Removing $db_file.\"\n    sudo rm \"$db_file\"\n  else\n    echo \"Result: $result\"\n  fi\n\
+        done < /tmp/sqlite_files.txt\n\nmv $DB_FOLDER/* $DB_FOLDER/../\n"
+      volumeMounts:
+      - mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['input-genotype-file'])}}
+        name: input-genotype-file
+      - mountPath: /mnt/ref/pgs/
+        name: ref-pgs-folder
+      - mountPath: /mnt/ref/meta/{{=sprig.osBase(inputs.parameters['ref-pgs-metadata'])}}
+        name: ref-pgs-metadata
+      - mountPath: /mnt/output/dbs/
+        name: output-dbs-folder
+      - mountPath: /mnt/output/json/
+        name: output-json-folder
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-genotype-file}}'
+        type: File
+      name: input-genotype-file
+    - hostPath:
+        path: '{{inputs.parameters.ref-pgs-folder}}'
+        type: Directory
+      name: ref-pgs-folder
+    - hostPath:
+        path: '{{inputs.parameters.ref-pgs-metadata}}'
+        type: File
+      name: ref-pgs-metadata
+    - hostPath:
+        path: '{{inputs.parameters.output-dbs-folder}}'
+        type: DirectoryOrCreate
+      name: output-dbs-folder
+    - hostPath:
+        path: '{{inputs.parameters.output-json-folder}}'
+        type: DirectoryOrCreate
+      name: output-json-folder

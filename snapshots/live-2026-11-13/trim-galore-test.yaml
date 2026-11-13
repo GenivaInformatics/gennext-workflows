@@ -1,0 +1,51 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: trim-galore-test
+  namespace: argo
+spec:
+  arguments:
+    parameters:
+    - name: sample_name
+      value: SMP-00
+    - name: node_name
+      value: gorillab-02
+  entrypoint: trim-galore
+  nodeSelector:
+    kubernetes.io/hostname: '{{workflow.parameters.node_name}}'
+  templates:
+  - container:
+      args:
+      - --paired
+      - --basename
+      - '{{inputs.parameters.sample_name}}'
+      - /mnt/input/SRR100910_R1.fastq.gz
+      - /mnt/input/SRR100910_R2.fastq.gz
+      - --output_dir
+      - /mnt/scratch/
+      command:
+      - trim_galore
+      image: quay.io/biocontainers/trim-galore:0.6.7--hdfd78af_0
+      name: trim-galore
+      resources: {}
+      volumeMounts:
+      - mountPath: /mnt/scratch
+        name: scratch
+      - mountPath: /mnt/input
+        name: input
+    inputs:
+      parameters:
+      - name: sample_name
+        value: '{{workflow.parameters.sample_name}}'
+    metadata: {}
+    name: trim-galore
+    outputs: {}
+  ttlStrategy:
+    secondsAfterCompletion: 300
+  volumes:
+  - name: scratch
+    persistentVolumeClaim:
+      claimName: gennext-scratch
+  - name: input
+    persistentVolumeClaim:
+      claimName: gennext-input
