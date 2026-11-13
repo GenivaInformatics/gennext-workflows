@@ -189,12 +189,15 @@ spec:
           trap 'rm -f "$sql_file"' EXIT
           cat > "$sql_file" <<'SQL'
           .open /mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}
+          SET threads = 4;
+          SET memory_limit = '8GB';
+          SET preserve_insertion_order = false;
           DROP VIEW IF EXISTS advanced_combined_snv;
           DROP VIEW IF EXISTS combined_snv;
           DROP TABLE IF EXISTS oncokb_snv;
           DROP TABLE IF EXISTS cancervar_snv;
-          CREATE TABLE oncokb_snv AS FROM read_csv_auto('/mnt/input/oncokb_snv.tsv', header=True, sep='\t', sample_size=-1);
-          CREATE TABLE cancervar_snv AS FROM read_csv_auto('/mnt/input/cancervar_snv.tsv', header=True, sep='\t', sample_size=-1);
+          CREATE TABLE oncokb_snv AS FROM read_csv_auto('/mnt/input/oncokb_snv.tsv', header=True, sep='\t', sample_size=20000);
+          CREATE TABLE cancervar_snv AS SELECT * REPLACE (TRY_CAST("Start" AS BIGINT) AS "Start", TRY_CAST("End" AS BIGINT) AS "End") FROM read_csv_auto('/mnt/input/cancervar_snv.tsv', header=True, sep='\t', sample_size=20000, all_varchar=true);
           CREATE OR REPLACE VIEW combined_snv AS
           SELECT
               cancervar_snv_with_row_ids."row_id",
