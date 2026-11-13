@@ -91,27 +91,30 @@ spec:
           #
           # In the RNA fusion DAG the upstream is `fgbio-mark-duplicates`
           # which sets 0x400 via UMI-aware Adjacency clustering (=
-          # umi_tools' "directional"). Arriba with -u sees the dedup'd
-          # view at the same time the FI consolidated BAM keeps every
-          # read for IGV inspection. Switch to a UMI-aware upstream tool
-          # if true UMIs are introduced and coord-only dedup would be
-          # wrong — already true in this DAG.
+          # umi_tools' "directional"). The flags only take effect while
+          # Arriba's `duplicates` filter is ON, so `duplicates` must never
+          # appear in the -f (disable filters) lists below: -u together
+          # with `-f duplicates` counts every PCR duplicate as support.
           ARRIBA_ARGS="${ARRIBA_ARGS} -u"
 
           case "${SENSITIVITY}" in
             ultra_sensitivity)
               echo "Using ultra_sensitivity mode"
-              ARRIBA_ARGS="${ARRIBA_ARGS} -f blacklist,duplicates,low_entropy,multimappers,small_insert_size,hairpin,homopolymer,mismatches,relative_support,homologs"
+              ARRIBA_ARGS="${ARRIBA_ARGS} -f blacklist,low_entropy,multimappers,small_insert_size,hairpin,homopolymer,mismatches,relative_support,homologs"
               ARRIBA_ARGS="${ARRIBA_ARGS} -S 1 -E 5.0 -V 0.2 -A 10 -K 0.95 -R 1000"
               ;;
             max_sensitivity)
               echo "Using max_sensitivity mode"
-              ARRIBA_ARGS="${ARRIBA_ARGS} -f blacklist,duplicates,low_entropy,multimappers"
+              ARRIBA_ARGS="${ARRIBA_ARGS} -f blacklist,low_entropy,multimappers"
               ARRIBA_ARGS="${ARRIBA_ARGS} -S 1 -E 1.0 -V 0.05 -A 15 -K 0.8 -R 5000"
+              ;;
+            standard)
+              # Arriba's recommended defaults: every filter on.
+              echo "Using standard mode (Arriba defaults)"
               ;;
             *)
               echo "ERROR: Unknown arriba sensitivity mode: ${SENSITIVITY}"
-              echo "Valid modes: ultra_sensitivity, max_sensitivity"
+              echo "Valid modes: ultra_sensitivity, max_sensitivity, standard"
               exit 1
               ;;
           esac
