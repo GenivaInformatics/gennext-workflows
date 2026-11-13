@@ -501,6 +501,10 @@ spec:
                   value: "{{inputs.parameters.sample-temp-dir}}metrics/mosdepth/"
                 - name: regions-bed-f
                   value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-cds-only-file}}"
+                # Coverage method v2: count overlapping mates once (same as
+                # somatic-dna-fastq-v2). Germline/WGS keep the template default.
+                - name: fast-mode
+                  value: "false"
             depends: "pb-applybqsr && verifybamid && validate-bed-file"
           - name: msisensor-pro
             templateRef:

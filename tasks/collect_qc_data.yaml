@@ -291,6 +291,71 @@ spec:
                     print(f"coverage {_t}x: MultiQC {coverage_metrics.get(f'{_t}x_coverage')} -> {_pct} from {_dist_file}")
                 coverage_metrics[f"{_t}x_coverage"] = _pct
 
+        # --- Coverage method and extra coverage figures (all optional) ---
+        # Each is posted only when its file exists; otherwise it is null and
+        # the sample keeps showing "-" for that figure.
+        def _read_json(path):
+            try:
+                with open(path) as fh:
+                    return json.load(fh)
+            except (OSError, ValueError) as e:
+                if os.path.exists(path):
+                    print(f"could not read {path}: {e}")
+                return None
+
+        def _mean_from_run(subdir, prefix):
+            # Same source as the main mean: MultiQC general stats for this
+            # prefix, else the total_region row of mosdepth's summary.
+            stats = general_stats.get(prefix, {})
+            if 'mosdepth-mean_coverage' in stats:
+                return float(stats['mosdepth-mean_coverage'])
+            path = f"{subdir}/{prefix}.mosdepth.summary.txt"
+            if os.path.exists(path):
+                with open(path) as fh:
+                    for line in fh:
+                        parts = line.rstrip("\n").split("\t")
+                        if parts[0] == "total_region":
+                            return float(parts[3])
+            return None
+
+        _method = _read_json(f"mosdepth/{sample_id}.coverage-method.json") or {}
+        coverage_method_version = _method.get("coverageMethodVersion")
+        mean_coverage_padded = _mean_from_run("mosdepth-padded", f"{sample_id}.padded")
+        mean_coverage_predup = _mean_from_run("mosdepth-predup", f"{sample_id}.predup")
+
+        # Positional duplicate rate (Picard metrics written by fq2bam), any sample.
+        dup_rate_position = None
+        _dupes = f"{sample_id}.dupes"
+        if os.path.exists(_dupes):
+            with open(_dupes) as fh:
+                _rows = [l.rstrip("\n").split("\t") for l in fh if l.strip() and not l.startswith("#")]
+            if len(_rows) >= 2 and "PERCENT_DUPLICATION" in _rows[0]:
+                try:
+                    dup_rate_position = float(_rows[1][_rows[0].index("PERCENT_DUPLICATION")])
+                except (ValueError, IndexError):
+                    pass
+
+        # UMI detection decision and UMI-aware duplicate rate (fgbio-umi-dna).
+        _detection = _read_json("umi/detection.json") or {}
+        _decision = _detection.get("decision") or {}
+        umi_status = _decision.get("status")
+        umi_scheme = _decision.get("result")
+        dup_rate_umi = None
+        if os.path.exists("umi/umi_dedup_summary.tsv"):
+            _umi = {}
+            with open("umi/umi_dedup_summary.tsv") as fh:
+                for line in fh:
+                    parts = line.rstrip("\n").split("\t")
+                    if len(parts) == 2 and not parts[0].startswith("#"):
+                        _umi[parts[0]] = parts[1]
+            try:
+                dup_rate_umi = int(_umi["dup_flagged_umi"]) / int(_umi["primary_records"])
+            except (KeyError, ValueError, ZeroDivisionError):
+                pass
+
+        def _fmt(v, nd):
+            return None if v is None else f"{v:.{nd}f}"
+
         # Extract VerifyBAMID contamination
         contamination = sample_data.get('verifybamid-FREEMIX', 0.0)
 
@@ -314,6 +379,14 @@ spec:
             "maxCoverage": str(f'{coverage_metrics["max_coverage"]:.2f}'),
             "coverageBasesMb": str(f'{coverage_metrics["coverage_bases_mb"]:.2f}'),
             "genomeLength": str(coverage_metrics["genome_length"]),
+            # Coverage method and extra figures (null when not produced)
+            "coverageMethodVersion": coverage_method_version,
+            "meanCoveragePadded": _fmt(mean_coverage_padded, 2),
+            "meanCoveragePredup": _fmt(mean_coverage_predup, 2),
+            "dupRatePosition": _fmt(dup_rate_position, 5),
+            "dupRateUmi": _fmt(dup_rate_umi, 5),
+            "umiStatus": umi_status,
+            "umiScheme": umi_scheme,
             # Contamination
             "contamination": str(f'{contamination:.5f}'),
             # These will be filled from FastQC data if available
