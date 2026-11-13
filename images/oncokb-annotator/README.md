@@ -1,4 +1,31 @@
-# OncoKB SNV annotation wrapper
+# OncoKB annotator image
+
+`bergun/oncokb-annotator:0.2.0-upstream-v3.4.2` is upstream
+[oncokb-annotator](https://github.com/oncokb/oncokb-annotator) at tag `v3.4.2`
+(commit `1cbdfb2`), unmodified, plus the three wrapper scripts in this
+directory. OncoKB publishes no container image, so the Dockerfile builds
+upstream's source at that pinned commit on a digest-pinned
+`python:3.12.12-alpine3.22`, installs upstream's own requirement files, and
+copies the wrappers in last.
+
+Differences from upstream, all of them:
+
+| What | Kind |
+| --- | --- |
+| `filtered_maf_annotator.py`, `filtered_sv_annotator.py`, `backfill_filtered_maf.py` | our wrappers, added to `/app/oncokb` |
+| `constraints.txt` holds `certifi`, `charset-normalizer`, `idna` at the versions `0.1.7-unfiltered` shipped | packaging only |
+| Python from the official `python` image instead of Alpine's `apk` package (3.12.12 in both) | packaging only |
+
+No upstream file is patched. Compared with `0.1.7-unfiltered`, every shared
+file under `/app/oncokb` is byte-identical and the installed Python packages
+are the same versions. The unused `custom/` helpers and the image-level
+`Dockerfile`/`.dockerignore` of the old base image are gone; upstream's
+`.github/` and `.gitignore` are now present.
+
+The same image serves `oncokb-templates` (SNV, SV/CNV, fusions) and
+`oncokb-fusion-annotation-template`.
+
+## SNV annotation wrapper
 
 `filtered_maf_annotator.py` sends every MAF row to the upstream
 `MafAnnotator.py`, then merges the result back onto the original input rows.
@@ -26,11 +53,12 @@ Both `oncokb-snv` and `oncokb-snv-on-node` in
 have cached the old template in `status.storedTemplates`, so deploying the
 WorkflowTemplate alone does not update already-running workflows.
 
-Run tests in the upstream image before building:
+Run tests in the built image before pushing:
 
 ```sh
+docker buildx build --load -t oncokb-annotator:test images/oncokb-annotator
 docker run --rm --entrypoint sh \
   -v "$PWD/images/oncokb-annotator:/work:ro" \
-  bergun/oncokb-annotator:v0.1.2 \
-  -c 'PYTHONPATH=/work:/app/oncokb python -m unittest -v test_filtered_maf_annotator'
+  oncokb-annotator:test \
+  -c 'cd /tmp && PYTHONPATH=/work:/app/oncokb python3 -m unittest -v test_filtered_maf_annotator'
 ```
