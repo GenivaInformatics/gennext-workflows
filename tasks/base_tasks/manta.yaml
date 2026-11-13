@@ -88,9 +88,9 @@ spec:
           # Status is always recorded in /mnt/output/stats/${sampleId}_manta_status.json
           # and in the `manta-status` output parameter:
           #   ok            Manta ran with its own alignment stats.
-          #   ok_clipstats  Manta's alignment-stats step found too few unclipped
-          #                 read pairs (UMI kits mask the inline UMI to N, so every
-          #                 read is soft-clipped). Stats were estimated on a 10%
+          #   ok_clipstats  The BAM has no unclipped read pairs for Manta's
+          #                 alignment-stats step (UMI kits mask the inline UMI to N,
+          #                 so every read is soft-clipped). Stats were estimated on a 10%
           #                 subsample with soft clips stripped and passed to Manta
           #                 as --existingAlignStatsFile; SV calling still uses the
           #                 real BAM.
@@ -189,12 +189,39 @@ spec:
             } | $MANTA_HOME/libexec/bgzip > "$output_file"
           }
 
+          # UMI libraries with the inline UMI masked to N have no unclipped reads at
+          # all; Manta's own stats step then retries for ~30 min before failing. Detect
+          # that up front from the first 20k properly paired primary reads.
+          needs_clipstats() {
+            local bam n
+            for bam in ${statsBams[@]+"${statsBams[@]}"}; do
+              n=$( { $SAMTOOLS view -f 0x2 -F 0xF0C "$bam" || true; } | head -n 20000 \
+                   | awk '$6 ~ /^[0-9]+M$/ { c++ } END { print c + 0 }')
+              echo "Unclipped reads in first 20k of $(basename $bam): $n"
+              if [ "$n" -eq 0 ]; then return 0; fi
+            done
+            return 1
+          }
+
           status=failed
           reason=""
+          okStatus=ok
+          extra=()
           runDir=$MANTA_TMP_DIR/run
-          if run_manta $runDir 2>&1 | tee -a "$LOG"; then
-            status=ok
-          elif grep -rqs "Too few high-confidence read pairs" "$LOG" "$runDir/workspace/pyflow.data/logs"; then
+          if needs_clipstats; then
+            echo "No unclipped read pairs; estimating alignment stats on clip-stripped reads"
+            if clip_stripped_stats $MANTA_TMP_DIR/clipstats.xml 2>&1 | tee -a "$LOG"; then
+              extra=(--existingAlignStatsFile=$MANTA_TMP_DIR/clipstats.xml)
+              okStatus=ok_clipstats
+            else
+              reason="clip-stripped alignment stats failed"
+            fi
+          fi
+
+          if [ -z "$reason" ] && run_manta $runDir ${extra[@]+"${extra[@]}"} 2>&1 | tee -a "$LOG"; then
+            status=$okStatus
+          elif [ -z "$reason" ] && [ ${#extra[@]} -eq 0 ] \
+               && grep -rqs "Too few high-confidence read pairs" "$LOG" "$runDir/workspace/pyflow.data/logs"; then
             echo "Manta could not estimate alignment stats; retrying with clip-stripped stats"
             if clip_stripped_stats $MANTA_TMP_DIR/clipstats.xml 2>&1 | tee -a "$LOG" \
                && runDir=$MANTA_TMP_DIR/run_clipstats \
@@ -203,7 +230,7 @@ spec:
             else
               reason="alignment stats: too few high-confidence read pairs; clip-stripped retry failed"
             fi
-          else
+          elif [ -z "$reason" ]; then
             reason=$(grep -hE "ERROR|Error|error" "$LOG" | grep -v "^\s*$" | tail -1 | tr -d '"\\' | cut -c1-300)
             reason=${reason:-"unknown (see step log)"}
           fi
@@ -313,9 +340,9 @@ spec:
           # Status is always recorded in /mnt/output/stats/${sampleId}_manta_status.json
           # and in the `manta-status` output parameter:
           #   ok            Manta ran with its own alignment stats.
-          #   ok_clipstats  Manta's alignment-stats step found too few unclipped
-          #                 read pairs (UMI kits mask the inline UMI to N, so every
-          #                 read is soft-clipped). Stats were estimated on a 10%
+          #   ok_clipstats  The BAM has no unclipped read pairs for Manta's
+          #                 alignment-stats step (UMI kits mask the inline UMI to N,
+          #                 so every read is soft-clipped). Stats were estimated on a 10%
           #                 subsample with soft clips stripped and passed to Manta
           #                 as --existingAlignStatsFile; SV calling still uses the
           #                 real BAM.
@@ -414,12 +441,39 @@ spec:
             } | $MANTA_HOME/libexec/bgzip > "$output_file"
           }
 
+          # UMI libraries with the inline UMI masked to N have no unclipped reads at
+          # all; Manta's own stats step then retries for ~30 min before failing. Detect
+          # that up front from the first 20k properly paired primary reads.
+          needs_clipstats() {
+            local bam n
+            for bam in ${statsBams[@]+"${statsBams[@]}"}; do
+              n=$( { $SAMTOOLS view -f 0x2 -F 0xF0C "$bam" || true; } | head -n 20000 \
+                   | awk '$6 ~ /^[0-9]+M$/ { c++ } END { print c + 0 }')
+              echo "Unclipped reads in first 20k of $(basename $bam): $n"
+              if [ "$n" -eq 0 ]; then return 0; fi
+            done
+            return 1
+          }
+
           status=failed
           reason=""
+          okStatus=ok
+          extra=()
           runDir=$MANTA_TMP_DIR/run
-          if run_manta $runDir 2>&1 | tee -a "$LOG"; then
-            status=ok
-          elif grep -rqs "Too few high-confidence read pairs" "$LOG" "$runDir/workspace/pyflow.data/logs"; then
+          if needs_clipstats; then
+            echo "No unclipped read pairs; estimating alignment stats on clip-stripped reads"
+            if clip_stripped_stats $MANTA_TMP_DIR/clipstats.xml 2>&1 | tee -a "$LOG"; then
+              extra=(--existingAlignStatsFile=$MANTA_TMP_DIR/clipstats.xml)
+              okStatus=ok_clipstats
+            else
+              reason="clip-stripped alignment stats failed"
+            fi
+          fi
+
+          if [ -z "$reason" ] && run_manta $runDir ${extra[@]+"${extra[@]}"} 2>&1 | tee -a "$LOG"; then
+            status=$okStatus
+          elif [ -z "$reason" ] && [ ${#extra[@]} -eq 0 ] \
+               && grep -rqs "Too few high-confidence read pairs" "$LOG" "$runDir/workspace/pyflow.data/logs"; then
             echo "Manta could not estimate alignment stats; retrying with clip-stripped stats"
             if clip_stripped_stats $MANTA_TMP_DIR/clipstats.xml 2>&1 | tee -a "$LOG" \
                && runDir=$MANTA_TMP_DIR/run_clipstats \
@@ -428,7 +482,7 @@ spec:
             else
               reason="alignment stats: too few high-confidence read pairs; clip-stripped retry failed"
             fi
-          else
+          elif [ -z "$reason" ]; then
             reason=$(grep -hE "ERROR|Error|error" "$LOG" | grep -v "^\s*$" | tail -1 | tr -d '"\\' | cut -c1-300)
             reason=${reason:-"unknown (see step log)"}
           fi
