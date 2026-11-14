@@ -104,8 +104,16 @@ spec:
           # in the first 1M primary records and uses -u only if it finds any.
           USE_DUP_FLAGS="{{inputs.parameters.use-dup-flags}}"
           if [ "${USE_DUP_FLAGS}" = "auto" ]; then
-            NDUP=$( { samtools view -F 0x900 "${BAM}" || true; } | head -n 1000000 \
-                    | awk -F'\t' 'int($2 / 1024) % 2 == 1 { c++ } END { print c + 0 }')
+            # samtools is stopped by head after 1M records (SIGPIPE); only a
+            # failure before that is worth a warning.
+            PROBE_RC=$(mktemp)
+            PROBE=$( { samtools view -F 0x900 "${BAM}" || echo $? > "${PROBE_RC}"; } | head -n 1000000 \
+                     | awk -F'\t' '{ n++ } int($2 / 1024) % 2 == 1 { c++ } END { print n + 0, c + 0 }')
+            NREC=${PROBE% *}; NDUP=${PROBE#* }
+            if [ -s "${PROBE_RC}" ] && [ "${NREC}" -lt 1000000 ]; then
+              echo "WARNING: samtools exited with $(cat "${PROBE_RC}") after ${NREC} records while probing for duplicate flags; the auto decision may be wrong (set use-dup-flags to true or false to force it)"
+            fi
+            rm -f "${PROBE_RC}"
             echo "Duplicate-flagged reads in the first 1M primary records: ${NDUP}"
             if [ "${NDUP}" -gt 0 ]; then USE_DUP_FLAGS=true; else USE_DUP_FLAGS=false; fi
           fi

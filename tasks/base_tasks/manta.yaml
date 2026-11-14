@@ -120,9 +120,10 @@ spec:
           # sprig.osBase returns "." if the path is empty
           # mind the whitespace before '--'
           # Fallback stats: Manta applies the FIRST entry of the fallback file to every
-          # read group it cannot estimate, so the tumor goes first. In a tumor+normal
-          # run where both fail, the normal would also get the tumor's distribution;
-          # no live caller runs Manta with a normal BAM today.
+          # read group it cannot estimate, so the tumor goes first. In a run with
+          # both a tumor and a normal BAM where both fail, the normal would also get
+          # the tumor's distribution. Live callers pass one BAM: a tumor (somatic) or
+          # a normal (germline mode: wes, wgs, tps, germline-wgs-gpu); none passes both.
           if [ ! "." = "$tumorBam" ]; then statsBams+=("/mnt/input/tumor_bam/$tumorBam"); fi
           if [ ! "." = "$normalBam" ]; then options+=" --normalBam=/mnt/input/normal_bam/$normalBam"; statsBams+=("/mnt/input/normal_bam/$normalBam"); fi
           if [ ! "." = "$tumorBam" ]; then options+=" --tumorBam=/mnt/input/tumor_bam/$tumorBam"; fi
@@ -254,7 +255,7 @@ spec:
             status=ok
             if [ ${#extra[@]} -gt 0 ] && used_fallback_stats $runDir; then status=ok_clipstats; fi
           elif [ -z "$reason" ] && [ ${#extra[@]} -eq 0 ] \
-               && grep -rqs "Too few high-confidence read pairs" "$LOG" "$runDir/workspace/pyflow.data/logs"; then
+               && grep -rqsE "Too few high-confidence read pairs|Can't generate pair statistics" "$LOG" "$runDir/workspace/pyflow.data/logs"; then
             echo "Manta could not estimate alignment stats; retrying with clip-stripped stats"
             if clip_stripped_stats $MANTA_TMP_DIR/clipstats.xml 2>&1 | tee -a "$LOG" \
                && runDir=$MANTA_TMP_DIR/run_clipstats \
@@ -415,9 +416,10 @@ spec:
           # sprig.osBase returns "." if the path is empty
           # mind the whitespace before '--'
           # Fallback stats: Manta applies the FIRST entry of the fallback file to every
-          # read group it cannot estimate, so the tumor goes first. In a tumor+normal
-          # run where both fail, the normal would also get the tumor's distribution;
-          # no live caller runs Manta with a normal BAM today.
+          # read group it cannot estimate, so the tumor goes first. In a run with
+          # both a tumor and a normal BAM where both fail, the normal would also get
+          # the tumor's distribution. Live callers pass one BAM: a tumor (somatic) or
+          # a normal (germline mode: wes, wgs, tps, germline-wgs-gpu); none passes both.
           if [ ! "." = "$tumorBam" ]; then statsBams+=("/mnt/input/tumor_bam/$tumorBam"); fi
           if [ ! "." = "$normalBam" ]; then options+=" --normalBam=/mnt/input/normal_bam/$normalBam"; statsBams+=("/mnt/input/normal_bam/$normalBam"); fi
           if [ ! "." = "$tumorBam" ]; then options+=" --tumorBam=/mnt/input/tumor_bam/$tumorBam"; fi
@@ -549,7 +551,7 @@ spec:
             status=ok
             if [ ${#extra[@]} -gt 0 ] && used_fallback_stats $runDir; then status=ok_clipstats; fi
           elif [ -z "$reason" ] && [ ${#extra[@]} -eq 0 ] \
-               && grep -rqs "Too few high-confidence read pairs" "$LOG" "$runDir/workspace/pyflow.data/logs"; then
+               && grep -rqsE "Too few high-confidence read pairs|Can't generate pair statistics" "$LOG" "$runDir/workspace/pyflow.data/logs"; then
             echo "Manta could not estimate alignment stats; retrying with clip-stripped stats"
             if clip_stripped_stats $MANTA_TMP_DIR/clipstats.xml 2>&1 | tee -a "$LOG" \
                && runDir=$MANTA_TMP_DIR/run_clipstats \
