@@ -22,7 +22,7 @@ spec:
           secretKeyRef:
             key: gennext_cluster_token
             name: gennext-cluster-secrets
-      image: demisto/pandas:1.0.0.80782
+      image: demisto/pandas:1.0.0.80782@sha256:5443f1faef36929e38b482d54fcc0c258686e8f4e7a63650c20cdadb79a528a2
       name: collect-qc-data-bam
       source: |
         import os
@@ -64,7 +64,7 @@ spec:
             "median_coverage": sample_data.get('mosdepth-median_coverage', 0),
             "min_coverage": sample_data.get('mosdepth-min_coverage', 0.0),
             "max_coverage": sample_data.get('mosdepth-max_coverage', 0.0),
-            "coverage_bases_mb": sample_data.get('mosdepth-coverage_bases', 0.0),  # In megabases
+            "coverage_bases_mb": sample_data.get('mosdepth-coverage_bases', 0.0) / 1e6,  # raw data is a base count
             "genome_length": sample_data.get('mosdepth-length', 0),
         }
 
@@ -98,6 +98,114 @@ spec:
                     print(f"coverage {_t}x: MultiQC {coverage_metrics.get(f'{_t}x_coverage')} -> {_pct} from {_dist_file}")
                 coverage_metrics[f"{_t}x_coverage"] = _pct
 
+        # --- Coverage method and extra coverage figures (all optional) ---
+        # Each is null when its input is absent, unreadable or out of range. A bad
+        # optional file is logged and never fails the sample.
+        def _optional(label, fn):
+            try:
+                return fn()
+            except Exception as e:
+                print(f"{label}: not posted ({type(e).__name__}: {e})")
+                return None
+
+        def _text(v):
+            return v if isinstance(v, str) and v else None
+
+        def _rate(label, v):
+            if v is not None and not 0 <= v <= 1:
+                print(f"{label}: {v} is outside 0-1; not posted")
+                return None
+            return v
+
+        def _read_json(path):
+            if not os.path.exists(path):
+                return None
+            with open(path) as fh:
+                return json.load(fh)
+
+        def _method_of(subdir, prefix):
+            m = _read_json(f"{subdir}/{prefix}.coverage-method.json")
+            return _text(m.get("coverageMethodVersion")) if isinstance(m, dict) else None
+
+        def _mean_from_run(subdir, prefix):
+            # Same source as the main mean: MultiQC general stats for this prefix,
+            # else the total_region row of mosdepth's summary.
+            stats = general_stats.get(prefix, {})
+            if 'mosdepth-mean_coverage' in stats:
+                return float(stats['mosdepth-mean_coverage'])
+            path = f"{subdir}/{prefix}.mosdepth.summary.txt"
+            if not os.path.exists(path):
+                return None
+            with open(path) as fh:
+                for line in fh:
+                    parts = line.rstrip("\n").split("\t")
+                    if parts[0] == "total_region":
+                        return float(parts[3])
+            return None
+
+        def _same_method_mean(subdir, prefix):
+            # Posted only when computed with the same method as the main mean, so a
+            # v1 recompute of a v2 sample does not carry over v2 padded/pre-dedup means.
+            m = _method_of(subdir, prefix)
+            if m is None or m != coverage_method_version:
+                if os.path.exists(f"{subdir}/{prefix}.mosdepth.summary.txt"):
+                    print(f"{prefix}: method {m} differs from main {coverage_method_version}; not posted")
+                return None
+            return _mean_from_run(subdir, prefix)
+
+        def _dup_rate_position():
+            # Picard DuplicationMetrics written by fq2bam: header row, then one row
+            # per library up to the blank line before the histogram.
+            path = f"{sample_id}.dupes"
+            if not os.path.exists(path):
+                return None
+            with open(path) as fh:
+                lines = [l.rstrip("\n") for l in fh]
+            start = next(i for i, l in enumerate(lines) if l.startswith("LIBRARY\t"))
+            header = lines[start].split("\t")
+            rows = []
+            for l in lines[start + 1:]:
+                if not l.strip() or l.startswith("#"):
+                    break
+                rows.append(dict(zip(header, l.split("\t"))))
+            if len(rows) == 1:
+                return float(rows[0]["PERCENT_DUPLICATION"])
+            # Several libraries: Picard's formula over the summed counts.
+            tot = lambda k: sum(int(r[k]) for r in rows)
+            return ((tot("UNPAIRED_READ_DUPLICATES") + 2 * tot("READ_PAIR_DUPLICATES"))
+                    / (tot("UNPAIRED_READS_EXAMINED") + 2 * tot("READ_PAIRS_EXAMINED")))
+
+        def _dup_rate_umi():
+            # UMI-aware duplicate rate from fgbio-umi-dna. primary_records counts
+            # -F 0x900 (it includes unmapped primaries; ~0.002% on a test sample).
+            path = "umi/umi_dedup_summary.tsv"
+            if not os.path.exists(path):
+                return None
+            umi = {}
+            with open(path) as fh:
+                for line in fh:
+                    parts = line.rstrip("\n").split("\t")
+                    if len(parts) == 2 and not parts[0].startswith("#"):
+                        umi[parts[0]] = parts[1]
+            return int(umi["dup_flagged_umi"]) / int(umi["primary_records"])
+
+        def _umi_decision():
+            d = _read_json("umi/detection.json")
+            dec = d.get("decision") if isinstance(d, dict) else None
+            return dec if isinstance(dec, dict) else {}
+
+        coverage_method_version = _optional("coverageMethodVersion", lambda: _method_of("mosdepth", sample_id))
+        mean_coverage_padded = _optional("meanCoveragePadded", lambda: _same_method_mean("mosdepth-padded", f"{sample_id}.padded"))
+        mean_coverage_predup = _optional("meanCoveragePredup", lambda: _same_method_mean("mosdepth-predup", f"{sample_id}.predup"))
+        dup_rate_position = _rate("dupRatePosition", _optional("dupRatePosition", _dup_rate_position))
+        dup_rate_umi = _rate("dupRateUmi", _optional("dupRateUmi", _dup_rate_umi))
+        _decision = _optional("umiStatus", _umi_decision) or {}
+        umi_status = _text(_decision.get("status"))
+        umi_scheme = _text(_decision.get("result"))
+
+        def _fmt(v, nd):
+            return None if v is None else f"{v:.{nd}f}"
+
         # Extract VerifyBAMID contamination
         contamination = sample_data.get('verifybamid-FREEMIX', 0.0)
 
@@ -121,6 +229,14 @@ spec:
             "maxCoverage": str(f'{coverage_metrics["max_coverage"]:.2f}'),
             "coverageBasesMb": str(f'{coverage_metrics["coverage_bases_mb"]:.2f}'),
             "genomeLength": str(coverage_metrics["genome_length"]),
+            # Coverage method and extra figures (null when not produced)
+            "coverageMethodVersion": coverage_method_version,
+            "meanCoveragePadded": _fmt(mean_coverage_padded, 2),
+            "meanCoveragePredup": _fmt(mean_coverage_predup, 2),
+            "dupRatePosition": _fmt(dup_rate_position, 5),
+            "dupRateUmi": _fmt(dup_rate_umi, 5),
+            "umiStatus": umi_status,
+            "umiScheme": umi_scheme,
             # Contamination
             "contamination": str(f'{contamination:.5f}'),
             # FastQC data (will be filled if available)
@@ -181,7 +297,7 @@ spec:
           secretKeyRef:
             key: gennext_cluster_token
             name: gennext-cluster-secrets
-      image: demisto/pandas:1.0.0.80782
+      image: demisto/pandas:1.0.0.80782@sha256:5443f1faef36929e38b482d54fcc0c258686e8f4e7a63650c20cdadb79a528a2
       name: collect-qc-data
       source: |
         import os
@@ -257,7 +373,7 @@ spec:
             "median_coverage": sample_data.get('mosdepth-median_coverage', 0),
             "min_coverage": sample_data.get('mosdepth-min_coverage', 0.0),
             "max_coverage": sample_data.get('mosdepth-max_coverage', 0.0),
-            "coverage_bases_mb": sample_data.get('mosdepth-coverage_bases', 0.0),  # In megabases
+            "coverage_bases_mb": sample_data.get('mosdepth-coverage_bases', 0.0) / 1e6,  # raw data is a base count
             "genome_length": sample_data.get('mosdepth-length', 0),
         }
 
@@ -292,66 +408,109 @@ spec:
                 coverage_metrics[f"{_t}x_coverage"] = _pct
 
         # --- Coverage method and extra coverage figures (all optional) ---
-        # Each is posted only when its file exists; otherwise it is null and
-        # the sample keeps showing "-" for that figure.
-        def _read_json(path):
+        # Each is null when its input is absent, unreadable or out of range. A bad
+        # optional file is logged and never fails the sample.
+        def _optional(label, fn):
             try:
-                with open(path) as fh:
-                    return json.load(fh)
-            except (OSError, ValueError) as e:
-                if os.path.exists(path):
-                    print(f"could not read {path}: {e}")
+                return fn()
+            except Exception as e:
+                print(f"{label}: not posted ({type(e).__name__}: {e})")
                 return None
 
+        def _text(v):
+            return v if isinstance(v, str) and v else None
+
+        def _rate(label, v):
+            if v is not None and not 0 <= v <= 1:
+                print(f"{label}: {v} is outside 0-1; not posted")
+                return None
+            return v
+
+        def _read_json(path):
+            if not os.path.exists(path):
+                return None
+            with open(path) as fh:
+                return json.load(fh)
+
+        def _method_of(subdir, prefix):
+            m = _read_json(f"{subdir}/{prefix}.coverage-method.json")
+            return _text(m.get("coverageMethodVersion")) if isinstance(m, dict) else None
+
         def _mean_from_run(subdir, prefix):
-            # Same source as the main mean: MultiQC general stats for this
-            # prefix, else the total_region row of mosdepth's summary.
+            # Same source as the main mean: MultiQC general stats for this prefix,
+            # else the total_region row of mosdepth's summary.
             stats = general_stats.get(prefix, {})
             if 'mosdepth-mean_coverage' in stats:
                 return float(stats['mosdepth-mean_coverage'])
             path = f"{subdir}/{prefix}.mosdepth.summary.txt"
-            if os.path.exists(path):
-                with open(path) as fh:
-                    for line in fh:
-                        parts = line.rstrip("\n").split("\t")
-                        if parts[0] == "total_region":
-                            return float(parts[3])
+            if not os.path.exists(path):
+                return None
+            with open(path) as fh:
+                for line in fh:
+                    parts = line.rstrip("\n").split("\t")
+                    if parts[0] == "total_region":
+                        return float(parts[3])
             return None
 
-        _method = _read_json(f"mosdepth/{sample_id}.coverage-method.json") or {}
-        coverage_method_version = _method.get("coverageMethodVersion")
-        mean_coverage_padded = _mean_from_run("mosdepth-padded", f"{sample_id}.padded")
-        mean_coverage_predup = _mean_from_run("mosdepth-predup", f"{sample_id}.predup")
+        def _same_method_mean(subdir, prefix):
+            # Posted only when computed with the same method as the main mean, so a
+            # v1 recompute of a v2 sample does not carry over v2 padded/pre-dedup means.
+            m = _method_of(subdir, prefix)
+            if m is None or m != coverage_method_version:
+                if os.path.exists(f"{subdir}/{prefix}.mosdepth.summary.txt"):
+                    print(f"{prefix}: method {m} differs from main {coverage_method_version}; not posted")
+                return None
+            return _mean_from_run(subdir, prefix)
 
-        # Positional duplicate rate (Picard metrics written by fq2bam), any sample.
-        dup_rate_position = None
-        _dupes = f"{sample_id}.dupes"
-        if os.path.exists(_dupes):
-            with open(_dupes) as fh:
-                _rows = [l.rstrip("\n").split("\t") for l in fh if l.strip() and not l.startswith("#")]
-            if len(_rows) >= 2 and "PERCENT_DUPLICATION" in _rows[0]:
-                try:
-                    dup_rate_position = float(_rows[1][_rows[0].index("PERCENT_DUPLICATION")])
-                except (ValueError, IndexError):
-                    pass
+        def _dup_rate_position():
+            # Picard DuplicationMetrics written by fq2bam: header row, then one row
+            # per library up to the blank line before the histogram.
+            path = f"{sample_id}.dupes"
+            if not os.path.exists(path):
+                return None
+            with open(path) as fh:
+                lines = [l.rstrip("\n") for l in fh]
+            start = next(i for i, l in enumerate(lines) if l.startswith("LIBRARY\t"))
+            header = lines[start].split("\t")
+            rows = []
+            for l in lines[start + 1:]:
+                if not l.strip() or l.startswith("#"):
+                    break
+                rows.append(dict(zip(header, l.split("\t"))))
+            if len(rows) == 1:
+                return float(rows[0]["PERCENT_DUPLICATION"])
+            # Several libraries: Picard's formula over the summed counts.
+            tot = lambda k: sum(int(r[k]) for r in rows)
+            return ((tot("UNPAIRED_READ_DUPLICATES") + 2 * tot("READ_PAIR_DUPLICATES"))
+                    / (tot("UNPAIRED_READS_EXAMINED") + 2 * tot("READ_PAIRS_EXAMINED")))
 
-        # UMI detection decision and UMI-aware duplicate rate (fgbio-umi-dna).
-        _detection = _read_json("umi/detection.json") or {}
-        _decision = _detection.get("decision") or {}
-        umi_status = _decision.get("status")
-        umi_scheme = _decision.get("result")
-        dup_rate_umi = None
-        if os.path.exists("umi/umi_dedup_summary.tsv"):
-            _umi = {}
-            with open("umi/umi_dedup_summary.tsv") as fh:
+        def _dup_rate_umi():
+            # UMI-aware duplicate rate from fgbio-umi-dna. primary_records counts
+            # -F 0x900 (it includes unmapped primaries; ~0.002% on a test sample).
+            path = "umi/umi_dedup_summary.tsv"
+            if not os.path.exists(path):
+                return None
+            umi = {}
+            with open(path) as fh:
                 for line in fh:
                     parts = line.rstrip("\n").split("\t")
                     if len(parts) == 2 and not parts[0].startswith("#"):
-                        _umi[parts[0]] = parts[1]
-            try:
-                dup_rate_umi = int(_umi["dup_flagged_umi"]) / int(_umi["primary_records"])
-            except (KeyError, ValueError, ZeroDivisionError):
-                pass
+                        umi[parts[0]] = parts[1]
+            return int(umi["dup_flagged_umi"]) / int(umi["primary_records"])
+
+        def _umi_decision():
+            d = _read_json("umi/detection.json")
+            dec = d.get("decision") if isinstance(d, dict) else None
+            return dec if isinstance(dec, dict) else {}
+
+        coverage_method_version = _optional("coverageMethodVersion", lambda: _method_of("mosdepth", sample_id))
+        mean_coverage_padded = _optional("meanCoveragePadded", lambda: _same_method_mean("mosdepth-padded", f"{sample_id}.padded"))
+        mean_coverage_predup = _optional("meanCoveragePredup", lambda: _same_method_mean("mosdepth-predup", f"{sample_id}.predup"))
+        dup_rate_position = _rate("dupRatePosition", _optional("dupRatePosition", _dup_rate_position))
+        dup_rate_umi = _rate("dupRateUmi", _optional("dupRateUmi", _dup_rate_umi))
+        _decision = _optional("umiStatus", _umi_decision) or {}
+        umi_status = _text(_decision.get("status"))
+        umi_scheme = _text(_decision.get("result"))
 
         def _fmt(v, nd):
             return None if v is None else f"{v:.{nd}f}"
@@ -466,7 +625,7 @@ spec:
           secretKeyRef:
             key: gennext_cluster_token
             name: gennext-cluster-secrets
-      image: demisto/pandas:1.0.0.80782
+      image: demisto/pandas:1.0.0.80782@sha256:5443f1faef36929e38b482d54fcc0c258686e8f4e7a63650c20cdadb79a528a2
       name: collect-qc-data
       source: |
         import os
@@ -546,7 +705,7 @@ spec:
           "median_coverage": sample_data.get('mosdepth-median_coverage', 0),
           "min_coverage": sample_data.get('mosdepth-min_coverage', 0.0),
           "max_coverage": sample_data.get('mosdepth-max_coverage', 0.0),
-          "coverage_bases_mb": sample_data.get('mosdepth-coverage_bases', 0.0),  # In megabases
+          "coverage_bases_mb": sample_data.get('mosdepth-coverage_bases', 0.0) / 1e6,  # raw data is a base count
           "genome_length": sample_data.get('mosdepth-length', 0),
         }
 
@@ -580,6 +739,114 @@ spec:
                     print(f"coverage {_t}x: MultiQC {coverage_metrics.get(f'{_t}x_coverage')} -> {_pct} from {_dist_file}")
                 coverage_metrics[f"{_t}x_coverage"] = _pct
 
+        # --- Coverage method and extra coverage figures (all optional) ---
+        # Each is null when its input is absent, unreadable or out of range. A bad
+        # optional file is logged and never fails the sample.
+        def _optional(label, fn):
+            try:
+                return fn()
+            except Exception as e:
+                print(f"{label}: not posted ({type(e).__name__}: {e})")
+                return None
+
+        def _text(v):
+            return v if isinstance(v, str) and v else None
+
+        def _rate(label, v):
+            if v is not None and not 0 <= v <= 1:
+                print(f"{label}: {v} is outside 0-1; not posted")
+                return None
+            return v
+
+        def _read_json(path):
+            if not os.path.exists(path):
+                return None
+            with open(path) as fh:
+                return json.load(fh)
+
+        def _method_of(subdir, prefix):
+            m = _read_json(f"{subdir}/{prefix}.coverage-method.json")
+            return _text(m.get("coverageMethodVersion")) if isinstance(m, dict) else None
+
+        def _mean_from_run(subdir, prefix):
+            # Same source as the main mean: MultiQC general stats for this prefix,
+            # else the total_region row of mosdepth's summary.
+            stats = general_stats.get(prefix, {})
+            if 'mosdepth-mean_coverage' in stats:
+                return float(stats['mosdepth-mean_coverage'])
+            path = f"{subdir}/{prefix}.mosdepth.summary.txt"
+            if not os.path.exists(path):
+                return None
+            with open(path) as fh:
+                for line in fh:
+                    parts = line.rstrip("\n").split("\t")
+                    if parts[0] == "total_region":
+                        return float(parts[3])
+            return None
+
+        def _same_method_mean(subdir, prefix):
+            # Posted only when computed with the same method as the main mean, so a
+            # v1 recompute of a v2 sample does not carry over v2 padded/pre-dedup means.
+            m = _method_of(subdir, prefix)
+            if m is None or m != coverage_method_version:
+                if os.path.exists(f"{subdir}/{prefix}.mosdepth.summary.txt"):
+                    print(f"{prefix}: method {m} differs from main {coverage_method_version}; not posted")
+                return None
+            return _mean_from_run(subdir, prefix)
+
+        def _dup_rate_position():
+            # Picard DuplicationMetrics written by fq2bam: header row, then one row
+            # per library up to the blank line before the histogram.
+            path = f"{sample_id}.dupes"
+            if not os.path.exists(path):
+                return None
+            with open(path) as fh:
+                lines = [l.rstrip("\n") for l in fh]
+            start = next(i for i, l in enumerate(lines) if l.startswith("LIBRARY\t"))
+            header = lines[start].split("\t")
+            rows = []
+            for l in lines[start + 1:]:
+                if not l.strip() or l.startswith("#"):
+                    break
+                rows.append(dict(zip(header, l.split("\t"))))
+            if len(rows) == 1:
+                return float(rows[0]["PERCENT_DUPLICATION"])
+            # Several libraries: Picard's formula over the summed counts.
+            tot = lambda k: sum(int(r[k]) for r in rows)
+            return ((tot("UNPAIRED_READ_DUPLICATES") + 2 * tot("READ_PAIR_DUPLICATES"))
+                    / (tot("UNPAIRED_READS_EXAMINED") + 2 * tot("READ_PAIRS_EXAMINED")))
+
+        def _dup_rate_umi():
+            # UMI-aware duplicate rate from fgbio-umi-dna. primary_records counts
+            # -F 0x900 (it includes unmapped primaries; ~0.002% on a test sample).
+            path = "umi/umi_dedup_summary.tsv"
+            if not os.path.exists(path):
+                return None
+            umi = {}
+            with open(path) as fh:
+                for line in fh:
+                    parts = line.rstrip("\n").split("\t")
+                    if len(parts) == 2 and not parts[0].startswith("#"):
+                        umi[parts[0]] = parts[1]
+            return int(umi["dup_flagged_umi"]) / int(umi["primary_records"])
+
+        def _umi_decision():
+            d = _read_json("umi/detection.json")
+            dec = d.get("decision") if isinstance(d, dict) else None
+            return dec if isinstance(dec, dict) else {}
+
+        coverage_method_version = _optional("coverageMethodVersion", lambda: _method_of("mosdepth", sample_id))
+        mean_coverage_padded = _optional("meanCoveragePadded", lambda: _same_method_mean("mosdepth-padded", f"{sample_id}.padded"))
+        mean_coverage_predup = _optional("meanCoveragePredup", lambda: _same_method_mean("mosdepth-predup", f"{sample_id}.predup"))
+        dup_rate_position = _rate("dupRatePosition", _optional("dupRatePosition", _dup_rate_position))
+        dup_rate_umi = _rate("dupRateUmi", _optional("dupRateUmi", _dup_rate_umi))
+        _decision = _optional("umiStatus", _umi_decision) or {}
+        umi_status = _text(_decision.get("status"))
+        umi_scheme = _text(_decision.get("result"))
+
+        def _fmt(v, nd):
+            return None if v is None else f"{v:.{nd}f}"
+
         # Extract VerifyBAMID contamination
         contamination = sample_data.get('verifybamid-FREEMIX', 0.0)
 
@@ -603,6 +870,14 @@ spec:
             "maxCoverage": str(f'{coverage_metrics["max_coverage"]:.2f}'),
             "coverageBasesMb": str(f'{coverage_metrics["coverage_bases_mb"]:.2f}'),
             "genomeLength": str(coverage_metrics["genome_length"]),
+            # Coverage method and extra figures (null when not produced)
+            "coverageMethodVersion": coverage_method_version,
+            "meanCoveragePadded": _fmt(mean_coverage_padded, 2),
+            "meanCoveragePredup": _fmt(mean_coverage_predup, 2),
+            "dupRatePosition": _fmt(dup_rate_position, 5),
+            "dupRateUmi": _fmt(dup_rate_umi, 5),
+            "umiStatus": umi_status,
+            "umiScheme": umi_scheme,
             # Contamination
             "contamination": str(f'{contamination:.5f}'),
             # These will be filled from FastQC data if available

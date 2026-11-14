@@ -47,7 +47,7 @@ spec:
             type: Directory
       script:
         name: mosdepth-exome-script
-        image: quay.io/biocontainers/mosdepth:0.3.8--hd299d5a_0
+        image: quay.io/biocontainers/mosdepth:0.3.8--hd299d5a_0@sha256:2decf63be02007796b4d1ab8389e99564a8c2eebeb5bad6983bdb1d7a99a657f
         command: [sh]
         workingDir: /mnt/output
         source: |
@@ -62,7 +62,21 @@ spec:
             false) method="cov-v2-overlap" ;;
             *) echo "fast-mode must be true or false, got '$fastMode'" >&2; exit 2 ;;
           esac
-          if [ -n "$excludeFlags" ]; then opts="$opts -F $excludeFlags"; else excludeFlags=1796; fi
+          if [ -n "$excludeFlags" ]; then
+            # Decimal, or 0x hex normalised to decimal so the method JSON stays valid.
+            case "$excludeFlags" in
+              0[xX]|0[xX]*[!0-9A-Fa-f]*) bad=1 ;;
+              0[xX]*) bad=0; excludeFlags=$((excludeFlags)) ;;
+              *[!0-9]*|0?*) bad=1 ;;
+              *) bad=0 ;;
+            esac
+            if [ "$bad" = 1 ]; then
+              echo "exclude-flags must be a decimal or 0x hex SAM flag, got '$excludeFlags'" >&2; exit 2
+            fi
+            opts="$opts -F $excludeFlags"
+          else
+            excludeFlags=1796
+          fi
           bed="{{=sprig.osBase(inputs.parameters['regions-bed-f'])}}"
 
           mosdepth \
@@ -111,7 +125,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: mosdepth-genome-script
-        image: quay.io/biocontainers/mosdepth:0.3.8--hd299d5a_0
+        image: quay.io/biocontainers/mosdepth:0.3.8--hd299d5a_0@sha256:2decf63be02007796b4d1ab8389e99564a8c2eebeb5bad6983bdb1d7a99a657f
         command: [sh]
         workingDir: /mnt/output
         source: |
@@ -209,7 +223,7 @@ spec:
             type: Directory
       script:
         name: mosdepth-exome-on-node-script
-        image: quay.io/biocontainers/mosdepth:0.3.8--hd299d5a_0
+        image: quay.io/biocontainers/mosdepth:0.3.8--hd299d5a_0@sha256:2decf63be02007796b4d1ab8389e99564a8c2eebeb5bad6983bdb1d7a99a657f
         command: [sh]
         workingDir: /mnt/output
         source: |
@@ -240,8 +254,9 @@ spec:
           $options \
           {{inputs.parameters.sample-id}} \
           /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}} || exit $?
-          printf '{"coverageMethodVersion":"%s","tool":"%s","fastMode":%s,"excludeFlags":1796,"minMapq":0}\n' \
-            "$method" "$(mosdepth --version 2>&1 | head -n1)" "{{inputs.parameters.fast-mode}}" \
+          if [ -f "/mnt/input/bed/$regionsFile" ]; then regions="$regionsFile"; else regions="500bp-windows"; fi
+          printf '{"coverageMethodVersion":"%s","tool":"%s","fastMode":%s,"excludeFlags":1796,"minMapq":0,"regions":"%s"}\n' \
+            "$method" "$(mosdepth --version 2>&1 | head -n1)" "{{inputs.parameters.fast-mode}}" "$regions" \
             > "{{inputs.parameters.sample-id}}.coverage-method.json"
         volumeMounts:
           - name: input-bam

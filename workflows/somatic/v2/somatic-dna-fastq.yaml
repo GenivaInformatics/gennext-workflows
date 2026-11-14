@@ -637,7 +637,7 @@ spec:
                   value: "false"
                 - name: output-prefix
                   value: "{{inputs.parameters.sample-id}}.padded"
-            # Diagnostic only: multiqc and collect-qc-data also accept .Failed,
+            # Diagnostic only: multiqc and collect-qc-data also accept .Failed and .Errored,
             # so a failure here does not block or fail the sample.
             when: "\"{{tasks.validate-bed-file.outputs.parameters.validated-bed-analysis-file}}\" != \".\""
             depends: "pb-applybqsr && verifybamid && validate-bed-file"
@@ -665,7 +665,7 @@ spec:
                   value: "772"
                 - name: output-prefix
                   value: "{{inputs.parameters.sample-id}}.predup"
-            # Diagnostic only: multiqc and collect-qc-data also accept .Failed,
+            # Diagnostic only: multiqc and collect-qc-data also accept .Failed and .Errored,
             # so a failure here does not block or fail the sample.
             depends: "pb-applybqsr && verifybamid && validate-bed-file"
           - name: msisensor-pro
@@ -760,7 +760,7 @@ spec:
                   value: "{{inputs.parameters.sample-temp-dir}}"
                 - name: output-dir
                   value: "{{inputs.parameters.sample-temp-dir}}metrics/"
-            depends: "verifybamid && pb-applybqsr && mosdepth && (mosdepth-padded.Succeeded || mosdepth-padded.Failed || mosdepth-padded.Skipped) && (mosdepth-predup.Succeeded || mosdepth-predup.Failed)"
+            depends: "verifybamid && pb-applybqsr && mosdepth && (mosdepth-padded.Succeeded || mosdepth-padded.Failed || mosdepth-padded.Errored || mosdepth-padded.Skipped) && (mosdepth-predup.Succeeded || mosdepth-predup.Failed || mosdepth-predup.Errored)"
           - name: collect-qc-data
             templateRef:
               name: collect-qc-data-v2-templates
@@ -775,7 +775,7 @@ spec:
                   value: '["{{=sprig.osBase(jsonpath(inputs.parameters[''dna-input-files''], ''$.fq1''))}}", "{{=sprig.osBase(jsonpath(inputs.parameters[''dna-input-files''], ''$.fq2''))}}"]'
                 - name: metrics-dir
                   value: "{{inputs.parameters.sample-temp-dir}}metrics/"
-            depends: "multiqc && mosdepth && verifybamid && (mosdepth-padded.Succeeded || mosdepth-padded.Failed || mosdepth-padded.Skipped) && (mosdepth-predup.Succeeded || mosdepth-predup.Failed)"
+            depends: "multiqc && mosdepth && verifybamid && (mosdepth-padded.Succeeded || mosdepth-padded.Failed || mosdepth-padded.Errored || mosdepth-padded.Skipped) && (mosdepth-predup.Succeeded || mosdepth-predup.Failed || mosdepth-predup.Errored)"
           - name: copy-temp-to-output
             templateRef:
               name: copy-temp-to-output
