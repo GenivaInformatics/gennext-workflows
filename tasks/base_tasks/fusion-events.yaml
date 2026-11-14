@@ -65,8 +65,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: fusion-events
-        # Pin by digest when the tag is pushed.
-        image: bergun/gennext-bpview:0.3.0
+        image: bergun/gennext-bpview:0.3.0@sha256:1dd790a701b5f9f20e969a4fd719394e47208e8c5232a5d9f41ca888dd9f0bf5
         command: [bash]
         source: |
           set -euo pipefail
