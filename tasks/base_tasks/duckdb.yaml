@@ -1038,6 +1038,9 @@ spec:
           .open "/mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}"
           CREATE OR REPLACE TABLE oncokb_cnv{{inputs.parameters.table-suffix}} AS FROM read_csv_auto('/mnt/input/oncokb/oncokb_cnv.tsv', sample_size=-1, header=True, sep='\t');
           CREATE OR REPLACE TABLE annotsv_cnv{{inputs.parameters.table-suffix}} AS FROM read_csv_auto('/mnt/input/annotsv/annotsv_cnv.tsv', sample_size=-1, header=True, sep='\t');
+          -- The OncoKB class each call was annotated with (annotsv-to-oncokb-cna-format,
+          -- #39). CNV inputs from before #39 have no such column: it reads as NULL.
+          ALTER TABLE oncokb_cnv{{inputs.parameters.table-suffix}} ADD COLUMN IF NOT EXISTS Copy_Number_Alteration VARCHAR;
           DROP VIEW IF EXISTS combined_cnv{{inputs.parameters.table-suffix}};
           DROP TABLE IF EXISTS combined_cnv{{inputs.parameters.table-suffix}};
           CREATE OR REPLACE VIEW combined_cnv{{inputs.parameters.table-suffix}} AS
@@ -1146,7 +1149,8 @@ spec:
               oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_Px2,
               oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_Px3,
               oncokb_cnv{{inputs.parameters.table-suffix}}.HIGHEST_PX_LEVEL,
-              CAST(oncokb_cnv{{inputs.parameters.table-suffix}}.PX_CITATIONS AS VARCHAR) AS PX_CITATIONS
+              CAST(oncokb_cnv{{inputs.parameters.table-suffix}}.PX_CITATIONS AS VARCHAR) AS PX_CITATIONS,
+              CAST(oncokb_cnv{{inputs.parameters.table-suffix}}.Copy_Number_Alteration AS VARCHAR) AS COPY_NUMBER_ALTERATION
           FROM
               annotsv_ordered_cnv
           LEFT JOIN oncokb_cnv{{inputs.parameters.table-suffix}} ON annotsv_ordered_cnv.AnnotSV_ID = oncokb_cnv{{inputs.parameters.table-suffix}}.AnnotSV_ID
@@ -1308,6 +1312,7 @@ spec:
               oncokb_cnv{{inputs.parameters.table-suffix}}.LEVEL_Px3,
               oncokb_cnv{{inputs.parameters.table-suffix}}.HIGHEST_PX_LEVEL,
               CAST(oncokb_cnv{{inputs.parameters.table-suffix}}.PX_CITATIONS AS VARCHAR) AS PX_CITATIONS,
+              CAST(oncokb_cnv{{inputs.parameters.table-suffix}}.Copy_Number_Alteration AS VARCHAR) AS COPY_NUMBER_ALTERATION,
           FROM annotsv_cnv{{inputs.parameters.table-suffix}}
           JOIN oncokb_cnv{{inputs.parameters.table-suffix}} ON annotsv_cnv{{inputs.parameters.table-suffix}}.AnnotSV_ID = oncokb_cnv{{inputs.parameters.table-suffix}}.AnnotSV_ID;
           .exit
