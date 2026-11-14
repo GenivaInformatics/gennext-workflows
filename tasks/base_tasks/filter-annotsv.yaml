@@ -245,9 +245,12 @@ spec:
     #   DEL, GT 0/1 (copies left)               -> Loss
     #   DUP, CN >= amplification-min-copies     -> Amplification
     #   DUP, any other CN                       -> Gain
+    #   DEL without a usable GT: the same rule on its CN, if any
     #   no GT/CN: FOLD_CHANGE_LOG, turned into a copy number with CNVkit's
     #   default threshold cut-offs, then the same rule
-    #   nothing to go on                        -> empty (not annotated)
+    #   nothing to go on, or a class against the call's direction (a DEL
+    #   that would be a gain, a DUP that would be a loss) -> empty (not
+    #   annotated)
     #
     # amplification-min-copies is the one setting for the Amplification
     # cut-off. 4 is CNVkit's own level: `cnvkit.py call --method threshold`
@@ -351,25 +354,47 @@ spec:
               return None
 
 
+          # A class must agree with the call's direction: a DEL is never a
+          # gain and a DUP is never a loss. CNV (no direction) takes either.
+          ALLOWED_CLASSES = {
+              "DEL": {"Deletion", "Loss"},
+              "DUP": {"Gain", "Amplification"},
+              "CNV": {"Deletion", "Loss", "Gain", "Amplification"},
+          }
+
+
+          def parse_copies(value):
+              try:
+                  copies = float(value)
+              except ValueError:
+                  return None
+              if not math.isfinite(copies) or copies < 0 or copies != int(copies):
+                  return None
+              return int(copies)
+
+
           def copy_number_alteration(sv_type, evidence, info):
+              allowed = ALLOWED_CLASSES.get(sv_type)
+              if allowed is None:
+                  return ""
               gt = evidence.get("GT", "").replace("|", "/")
               if sv_type == "DEL" and gt in ("1/1", "0/1"):
                   return "Deletion" if gt == "1/1" else "Loss"
-              if sv_type == "DUP":
-                  try:
-                      copies = int(evidence.get("CN", ""))
-                  except ValueError:
-                      copies = None
-                  if copies is not None:
+              copies = parse_copies(evidence.get("CN", ""))
+              if copies is not None:
+                  if sv_type == "DUP":
                       return "Amplification" if copies >= AMPLIFICATION_MIN_COPIES else "Gain"
-              if sv_type in ("DEL", "DUP", "CNV"):
-                  try:
-                      log2 = float(info_value(info, "FOLD_CHANGE_LOG"))
-                  except (TypeError, ValueError):
-                      return ""
-                  if math.isfinite(log2):
-                      return class_from_copies(copies_from_log2(log2))
-              return ""
+                  cna = class_from_copies(copies)
+                  if cna in allowed:
+                      return cna
+              try:
+                  log2 = float(info_value(info, "FOLD_CHANGE_LOG"))
+              except (TypeError, ValueError):
+                  return ""
+              if not math.isfinite(log2):
+                  return ""
+              cna = class_from_copies(copies_from_log2(log2))
+              return cna if cna in allowed else ""
 
 
           # select columns for oncokb annotation, filter by genes lists

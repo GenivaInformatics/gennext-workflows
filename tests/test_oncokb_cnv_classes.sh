@@ -14,6 +14,9 @@
 #   3. duckdb-cnv builds combined_cnv and advanced_combined_cnv from both
 #      outputs with the same columns and types, and the same rows apart from
 #      the OncoKB values.
+#   4. duckdb-cnv keeps every citation column VARCHAR when OncoKB returns a
+#      single PMID (or none), which read_csv_auto would otherwise type BIGINT
+#      and api-edge's v0 CNV grid could not read.
 #
 # The demo API needs no token and knows only BRAF, TP53 and ROS1.
 # Needs docker, network access and python3 with PyYAML.
@@ -237,5 +240,20 @@ for view in combined_cnv advanced_combined_cnv; do
   [ "$(q "$WORK/new" "$count")" = "$(q "$WORK/old" "$count")" ] || fail "$view row count differs"
 done
 echo "ok  duckdb-cnv: same columns, types and rows apart from the OncoKB values"
+
+# --- 4. Single-PMID citations --------------------------------------------------
+build_db "$WORK/pmid" "$FIXTURES/oncokb_cnv_single_pmid.tsv" >/dev/null
+for view in combined_cnv advanced_combined_cnv; do
+  types=$(q "$WORK/pmid" "SELECT column_name || '=' || data_type FROM information_schema.columns
+    WHERE table_name = '$view' AND column_name LIKE '%CITATIONS' ORDER BY column_name" | tail -n +2)
+  [ "$(wc -l <<<"$types")" = 4 ] || fail "$view: expected 4 citation columns: $types"
+  if grep -vq '=VARCHAR$' <<<"$types"; then
+    fail "$view: citation columns are not all VARCHAR: $types"
+  fi
+done
+[ "$(q "$WORK/pmid" "SELECT DISTINCT MUTATION_EFFECT_CITATIONS FROM combined_cnv
+  WHERE MUTATION_EFFECT_CITATIONS IS NOT NULL" | tail -n +2)" = 25978031 ] \
+  || fail "single-PMID citation did not come through as text"
+echo "ok  duckdb-cnv: single-PMID citations stay VARCHAR"
 
 echo "PASS: OncoKB CNV copy-number classes"

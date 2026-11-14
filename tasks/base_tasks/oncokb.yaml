@@ -741,15 +741,18 @@ spec:
               if len(raw_rows) != len(in_rows):
                   raise RuntimeError(f"CnaAnnotator wrote {len(raw_rows)} rows for {len(in_rows)} input rows")
               temporary = output_path.with_name(output_path.name + ".tmp")
-              with temporary.open("w", newline="") as target:
-                  writer = csv.writer(target, delimiter="\t", lineterminator="\n")
-                  writer.writerow(header)
-                  for row in in_rows:
-                      matches = by_input_row[ascii_key(row)]
-                      if not matches:
-                          raise RuntimeError(f"no CnaAnnotator output for input row {row}")
-                      writer.writerow(matches.popleft())
-              os.replace(temporary, output_path)
+              try:
+                  with temporary.open("w", newline="") as target:
+                      writer = csv.writer(target, delimiter="\t", lineterminator="\n")
+                      writer.writerow(header)
+                      for row in in_rows:
+                          matches = by_input_row[ascii_key(row)]
+                          if not matches:
+                              raise RuntimeError(f"no CnaAnnotator output for input row {row}")
+                          writer.writerow(matches.popleft())
+                  os.replace(temporary, output_path)
+              finally:
+                  temporary.unlink(missing_ok=True)
               return len(in_rows)
 
 
