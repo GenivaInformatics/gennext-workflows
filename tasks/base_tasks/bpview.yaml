@@ -77,8 +77,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: bpview
-        # Pin by digest when the tag is pushed.
-        image: bergun/gennext-bpview:0.2.0
+        image: bergun/gennext-bpview:0.2.0@sha256:215e60c9f8e0862bcbc740434844d8a66026caa49c49db58c38a689397515a95
         command: [bash]
         resources:
           requests:
