@@ -196,7 +196,7 @@ spec:
           DROP VIEW IF EXISTS combined_snv;
           DROP TABLE IF EXISTS oncokb_snv;
           DROP TABLE IF EXISTS cancervar_snv;
-          CREATE TABLE oncokb_snv AS FROM read_csv_auto('/mnt/input/oncokb_snv.tsv', header=True, sep='\t', sample_size=20000);
+          CREATE TABLE oncokb_snv AS FROM read_csv_auto('/mnt/input/oncokb_snv.tsv', header=True, sep='\t', sample_size=20000__ONCOKB_SNV_READ_TYPES__);
           -- OncoKB columns read by the views below; an older MAF without one gets it as NULL.
           ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "VARIANT_IN_ONCOKB" BOOLEAN;
           ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "MUTATION_EFFECT" VARCHAR;
@@ -556,6 +556,18 @@ spec:
                         AND cancervar_snv_with_row_ids."Ref" = oncokb_snv."Reference_Allele";
           .exit
           SQL
+          # Read every *_CITATIONS column as text. read_csv_auto types a column
+          # from sampled rows, so one whose sampled rows hold only single PMIDs
+          # becomes BIGINT, and the read then fails at the first "1;2" value.
+          # types= may name only columns the file has (an older MAF lacks some),
+          # so the list comes from the header.
+          citation_types=$(head -n 1 /mnt/input/oncokb_snv.tsv | tr -d '\r' | tr '\t' '\n' \
+            | grep -E '^[A-Za-z0-9_]+_CITATIONS$' | sed "s/.*/'&': 'VARCHAR'/" | paste -sd, -)
+          if [ -n "$citation_types" ]; then
+            sed -i "s/__ONCOKB_SNV_READ_TYPES__/, types={$citation_types}/" "$sql_file"
+          else
+            sed -i "s/__ONCOKB_SNV_READ_TYPES__//" "$sql_file"
+          fi
           duckdb -init "$sql_file"
           db_file="/mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}"
           duckdb -readonly "$db_file" -c "SELECT * FROM combined_snv LIMIT 0;" >/dev/null
@@ -1455,7 +1467,7 @@ spec:
           DROP VIEW IF EXISTS combined_snv;
           DROP TABLE IF EXISTS oncokb_snv;
           DROP TABLE IF EXISTS cancervar_snv;
-          CREATE TABLE oncokb_snv AS FROM read_csv_auto('/mnt/input/oncokb_snv.tsv', header=True, sep='\t', sample_size=-1);
+          CREATE TABLE oncokb_snv AS FROM read_csv_auto('/mnt/input/oncokb_snv.tsv', header=True, sep='\t', sample_size=-1__ONCOKB_SNV_READ_TYPES__);
           -- OncoKB columns read by the views below; an older MAF without one gets it as NULL.
           ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "VARIANT_IN_ONCOKB" BOOLEAN;
           ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "MUTATION_EFFECT" VARCHAR;
@@ -1809,6 +1821,18 @@ spec:
                         AND cancervar_snv_with_row_ids."Ref" = oncokb_snv."Reference_Allele";
           .exit
           SQL
+          # Read every *_CITATIONS column as text. read_csv_auto types a column
+          # from sampled rows, so one whose sampled rows hold only single PMIDs
+          # becomes BIGINT, and the read then fails at the first "1;2" value.
+          # types= may name only columns the file has (an older MAF lacks some),
+          # so the list comes from the header.
+          citation_types=$(head -n 1 /mnt/input/oncokb_snv.tsv | tr -d '\r' | tr '\t' '\n' \
+            | grep -E '^[A-Za-z0-9_]+_CITATIONS$' | sed "s/.*/'&': 'VARCHAR'/" | paste -sd, -)
+          if [ -n "$citation_types" ]; then
+            sed -i "s/__ONCOKB_SNV_READ_TYPES__/, types={$citation_types}/" "$sql_file"
+          else
+            sed -i "s/__ONCOKB_SNV_READ_TYPES__//" "$sql_file"
+          fi
           duckdb -init "$sql_file"
           db_file="/mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}"
           duckdb -readonly "$db_file" -c "SELECT * FROM combined_snv LIMIT 0;" >/dev/null
