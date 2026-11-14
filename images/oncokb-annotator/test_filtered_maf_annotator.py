@@ -6,8 +6,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from AnnotatorCore import get_oncokb_annotation_column_headers
-from filtered_maf_annotator import count_maf, is_genome_kit_regions_file, main, merge_maf
+import io
+
+from AnnotatorCore import MutationStatus, append_headers, get_oncokb_annotation_column_headers
+from filtered_maf_annotator import (
+    count_maf, is_genome_kit_regions_file, main, maf_annotation_header, merge_maf)
 from filtered_sv_annotator import main as sv_main
 from backfill_filtered_maf import main as backfill_main
 
@@ -45,7 +48,7 @@ class FilteredMafTest(unittest.TestCase):
                 run.assert_not_called()
             with output.open(newline="") as file:
                 rows = list(csv.reader(file, delimiter="\t"))
-            annotation_header = get_oncokb_annotation_column_headers(False, True)
+            annotation_header = maf_annotation_header()
             self.assertEqual(rows[0], HEADER + annotation_header)
             self.assertEqual(rows[1:], [row + [""] * len(annotation_header) for row in ROWS])
             self.assertEqual(is_genome_kit_regions_file("/sample/panel.bed"), False)
@@ -71,7 +74,7 @@ class FilteredMafTest(unittest.TestCase):
             self.assertEqual(rows, [header + suffix, data[0] + [""] * len(suffix)])
 
     def test_panel_kit_sends_every_row_to_oncokb(self):
-        annotation_header = get_oncokb_annotation_column_headers(False, True)
+        annotation_header = maf_annotation_header()
 
         def fake_annotator(command, check):
             source = Path(command[command.index("-i") + 1])
@@ -111,7 +114,7 @@ class FilteredMafTest(unittest.TestCase):
                                          ("in.maf", "annotated.maf", "out.maf")]
             write_tsv(source, HEADER, ROWS)
             header, total = count_maf(source)
-            annotation_header = get_oncokb_annotation_column_headers(False, True)
+            annotation_header = maf_annotation_header()
             bad = ROWS[2].copy()
             bad[2] = "999"
             write_tsv(annotated, HEADER + annotation_header,
@@ -126,7 +129,7 @@ class FilteredMafTest(unittest.TestCase):
                                          ("in.maf", "annotated.maf", "out.maf")]
             write_tsv(source, HEADER, ROWS)
             header, _ = count_maf(source)
-            annotation_header = get_oncokb_annotation_column_headers(False, True)
+            annotation_header = maf_annotation_header()
             write_tsv(annotated, HEADER + annotation_header,
                       [row + [""] * len(annotation_header) for row in ROWS + ROWS[:1]])
             with self.assertRaisesRegex(ValueError, "more rows"):
@@ -141,7 +144,7 @@ class FilteredMafTest(unittest.TestCase):
             rows[2][-1] = "Muir-Torré_syndrome"
             write_tsv(source, HEADER, rows)
             header, _ = count_maf(source)
-            annotation_header = get_oncokb_annotation_column_headers(False, True)
+            annotation_header = maf_annotation_header()
             # Mirror AnnotatorCore.append_annotation_to_file.
             with annotated.open("w") as file:
                 file.write("\t".join(HEADER + annotation_header) + "\n")
@@ -154,7 +157,7 @@ class FilteredMafTest(unittest.TestCase):
             self.assertEqual([row[:len(HEADER)] for row in out_rows[1:]], rows)
 
     def test_backfill_annotates_only_previously_skipped_rows(self):
-        annotation_header = get_oncokb_annotation_column_headers(False, True)
+        annotation_header = maf_annotation_header()
         oncogenic = annotation_header.index("ONCOGENIC")
         sent = []
 
@@ -195,6 +198,36 @@ class FilteredMafTest(unittest.TestCase):
                              ["Unknown", "Unknown", "Oncogenic", "Oncogenic", "Oncogenic"])
             with maf.with_name(maf.name + ".filtered.bak").open(newline="") as file:
                 self.assertEqual(list(csv.reader(file, delimiter="\t"))[1:], filtered)
+
+    def test_maf_header_is_what_mafannotator_writes(self):
+        # MafAnnotator.py -> processalterationevents_mixed writes its header
+        # with append_headers(..., True, SOMATIC, combined_mode=True).
+        out = io.StringIO()
+        append_headers(out, 0, False, True, MutationStatus.SOMATIC, combined_mode=True)
+        self.assertEqual(out.getvalue().rstrip("\n").split("\t"), maf_annotation_header())
+
+    def test_maf_header_adds_germline_columns_after_oncogenic(self):
+        v4 = maf_annotation_header()
+        v3 = get_oncokb_annotation_column_headers(False, True)
+        germline = ["PATHOGENIC (Germline)", "PENETRANCE (Germline)",
+                    "GENOMIC_INDICATOR (Germline)"]
+        at = v4.index("ONCOGENIC") + 1
+        self.assertEqual(v4[at:at + 3], germline)
+        self.assertEqual(v4[:at] + v4[at + 3:], v3)
+
+    def test_backfill_refuses_a_v3_layout_maf(self):
+        v3_header = get_oncokb_annotation_column_headers(False, True)
+        with tempfile.TemporaryDirectory() as temp:
+            maf = Path(temp) / "S1_oncokb.maf"
+            write_tsv(maf, HEADER + v3_header,
+                      [row + [""] * len(v3_header) for row in ROWS])
+            argv = ["backfill_filtered_maf.py", "--maf", str(maf), "--reference", "GRCh38"]
+            with patch.object(sys, "argv", argv), \
+                    patch.dict(os.environ, {"ONCOKB_API_TOKEN": "t"}, clear=True), \
+                    patch("backfill_filtered_maf.subprocess.run") as run:
+                with self.assertRaisesRegex(ValueError, "OncoKB annotation columns"):
+                    backfill_main()
+                run.assert_not_called()
 
 
 if __name__ == "__main__":

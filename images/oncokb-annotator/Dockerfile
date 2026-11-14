@@ -8,10 +8,12 @@
 #
 #   0.2.0-upstream-v3.4.2  upstream tag v3.4.2 (1cbdfb2), same code and
 #                          Python packages as 0.1.7-unfiltered
+#   0.3.0-upstream-v4.1.0  upstream tag v4.1.0 (77521cd); the MAF wrapper
+#                          expects v4's mixed-mode MAF header
 FROM python:3.12.12-alpine3.22@sha256:848ba4413eb897e225159b8fc1b02094576cbae4aa73fc13142608ae2c8c0e32
 
-ARG ONCOKB_ANNOTATOR_VERSION=v3.4.2
-ARG ONCOKB_ANNOTATOR_COMMIT=1cbdfb2b971fd1cfe4c0bd7c3e5223fc790d6234
+ARG ONCOKB_ANNOTATOR_VERSION=v4.1.0
+ARG ONCOKB_ANNOTATOR_COMMIT=77521cd2fc568422d87d84b73c24ca65b670a8e4
 
 LABEL org.opencontainers.image.source="https://github.com/GenivaInformatics/gennext-workflows" \
       org.opencontainers.image.description="oncokb-annotator ${ONCOKB_ANNOTATOR_VERSION} (unmodified) with gennext wrapper scripts" \

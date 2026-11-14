@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 
-from AnnotatorCore import get_oncokb_annotation_column_headers
+from AnnotatorCore import MutationStatus, get_oncokb_annotation_column_headers
 
 
 csv.field_size_limit(sys.maxsize)
@@ -22,6 +22,20 @@ def is_genome_kit_regions_file(regions_file):
     return Path(regions_file).name in {
         GENOME_KIT_REGIONS_BASENAME, GENOME_KIT_VALIDATED_BASENAME,
     }
+
+
+def maf_annotation_header():
+    """The OncoKB columns MafAnnotator.py appends to a MAF.
+
+    Since upstream v4.0, MafAnnotator.py always annotates in mixed
+    somatic/germline mode (processalterationevents_mixed, combined_mode=True).
+    That adds PATHOGENIC (Germline), PENETRANCE (Germline) and
+    GENOMIC_INDICATOR (Germline) after ONCOGENIC. Our MAFs have no
+    Mutation_Status column, so every row is annotated as somatic and those three
+    columns stay empty.
+    """
+    return get_oncokb_annotation_column_headers(
+        False, True, MutationStatus.SOMATIC, combined_mode=True)
 
 
 def oncokb_echo(row):
@@ -51,7 +65,7 @@ def count_maf(input_path):
 
 
 def merge_maf(input_path, annotated_path, output_path, input_header, skip_all=False):
-    annotation_header = get_oncokb_annotation_column_headers(False, True)
+    annotation_header = maf_annotation_header()
     temp_output = output_path.with_name(output_path.name + ".tmp")
     try:
         with input_path.open(newline="") as source, temp_output.open("w", newline="") as target:
