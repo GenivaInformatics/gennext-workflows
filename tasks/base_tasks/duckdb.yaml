@@ -1892,3 +1892,102 @@ spec:
             mountPath: "/mnt/input/fusions.json"
           - name: output-duckdb
             mountPath: "/mnt/output/"
+    - name: duckdb-fusion-events
+      # F4 (#30): breakpoint-level fusion events from fusion-events-template, loaded into the
+      # sample's fusions DuckDB next to fusions_with_oncokb. New table only: combined_fusions and
+      # the other fusion objects are unchanged, and older samples simply have no fusion_events.
+      # Column types are explicit (they mirror COLUMNS in images/gennext-bpview/fusion_events.py).
+      # List columns arrive '|'-separated and are split into VARCHAR[]; an empty cell is [].
+      # Image: the digest the other duckdb steps run (DuckDB 0.8.1, the version api-edge reads).
+      # See duckdb-snv: per-file mutex so concurrent writers of the same results DuckDB serialize.
+      synchronization:
+        mutex:
+          name: "{{workflow.name}}-mutex"
+      inputs:
+        parameters:
+          - name: fusion-events-tsv
+          - name: output-duckdb
+      outputs:
+        parameters:
+          - name: output-duckdb
+            value: "{{inputs.parameters.output-duckdb}}"
+      volumes:
+        - name: fusion-events-tsv
+          hostPath:
+            path: "{{inputs.parameters.fusion-events-tsv}}"
+            type: File
+        - name: output-duckdb
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['output-duckdb'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: "duckdb-fusion-events-script"
+        image: qldrsc/duckdb@sha256:fe7b9397f8f65b96c1920c4e5ca66dc71bc30a6872893572a643442d2379fa3d
+        command: [sh]
+        source: |
+          set -eu
+          # SQL on stdin with .bail on, so a failing statement fails the step (under
+          # `duckdb -init` a failed statement still exits 0).
+          duckdb "/mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}" <<'SQL'
+          .bail on
+          CREATE OR REPLACE TABLE fusion_events AS
+          SELECT * REPLACE (
+              coalesce(string_split(gene5_aliases, '|'), []::VARCHAR[]) AS gene5_aliases,
+              coalesce(string_split(gene3_aliases, '|'), []::VARCHAR[]) AS gene3_aliases,
+              coalesce(string_split(callers, '|'), []::VARCHAR[]) AS callers,
+              coalesce(string_split(known_db, '|'), []::VARCHAR[]) AS known_db,
+              coalesce(string_split(tier_flags, '|'), []::VARCHAR[]) AS tier_flags)
+          FROM read_csv('/mnt/input/fusion_events.tsv', delim='\t', header=true, nullstr='',
+            columns={
+                'sample_id': 'VARCHAR',
+                'event_id': 'VARCHAR',
+                'fusion': 'VARCHAR',
+                'gene5': 'VARCHAR',
+                'gene3': 'VARCHAR',
+                'gene5_aliases': 'VARCHAR',
+                'gene3_aliases': 'VARCHAR',
+                'breakpoint5': 'VARCHAR',
+                'breakpoint3': 'VARCHAR',
+                'orientation_known': 'BOOLEAN',
+                'callers': 'VARCHAR',
+                'n_callers': 'INTEGER',
+                'caller_arriba': 'BOOLEAN',
+                'caller_starfusion': 'BOOLEAN',
+                'arriba_status': 'VARCHAR',
+                'arriba_confidence': 'VARCHAR',
+                'arriba_type': 'VARCHAR',
+                'arriba_split_reads': 'INTEGER',
+                'arriba_discordant_mates': 'INTEGER',
+                'starfusion_junction_reads': 'INTEGER',
+                'starfusion_spanning_frags': 'INTEGER',
+                'starfusion_ffpm': 'DOUBLE',
+                'reading_frame': 'VARCHAR',
+                'splice_type': 'VARCHAR',
+                'unique_molecules': 'INTEGER',
+                'pcr_copies': 'INTEGER',
+                'support_source': 'VARCHAR',
+                'known_db': 'VARCHAR',
+                'curated_known': 'BOOLEAN',
+                'oncokb_oncogenic': 'VARCHAR',
+                'oncokb_mutation_effect': 'VARCHAR',
+                'oncokb_highest_level': 'VARCHAR',
+                'oncokb_highest_dx_level': 'VARCHAR',
+                'pair_clinical_tier': 'VARCHAR',
+                'pair_fii': 'DOUBLE',
+                'pon_gene_pair_count': 'INTEGER',
+                'pon_junction_count': 'INTEGER',
+                'pon_size': 'INTEGER',
+                'pon_recurrent': 'BOOLEAN',
+                'tier': 'INTEGER',
+                'tier_basis': 'VARCHAR',
+                'tier_flags': 'VARCHAR',
+                'tier_reason': 'VARCHAR',
+                'bpview_contig': 'VARCHAR',
+                'builder_version': 'VARCHAR'
+            });
+          SQL
+        volumeMounts:
+          - name: fusion-events-tsv
+            mountPath: "/mnt/input/fusion_events.tsv"
+          - name: output-duckdb
+            mountPath: "/mnt/output/"
