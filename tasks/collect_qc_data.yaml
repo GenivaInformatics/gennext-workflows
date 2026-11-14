@@ -64,7 +64,7 @@ spec:
             "median_coverage": sample_data.get('mosdepth-median_coverage', 0),
             "min_coverage": sample_data.get('mosdepth-min_coverage', 0.0),
             "max_coverage": sample_data.get('mosdepth-max_coverage', 0.0),
-            "coverage_bases_mb": sample_data.get('mosdepth-coverage_bases', 0.0) / 1e6,  # raw data is a base count
+            "coverage_bases_mb": sample_data.get('mosdepth-coverage_bases', 0.0),  # already Mb: MultiQC saves general stats after its /1e6 'modify'
             "genome_length": sample_data.get('mosdepth-length', 0),
         }
 
@@ -373,7 +373,7 @@ spec:
             "median_coverage": sample_data.get('mosdepth-median_coverage', 0),
             "min_coverage": sample_data.get('mosdepth-min_coverage', 0.0),
             "max_coverage": sample_data.get('mosdepth-max_coverage', 0.0),
-            "coverage_bases_mb": sample_data.get('mosdepth-coverage_bases', 0.0) / 1e6,  # raw data is a base count
+            "coverage_bases_mb": sample_data.get('mosdepth-coverage_bases', 0.0),  # already Mb: MultiQC saves general stats after its /1e6 'modify'
             "genome_length": sample_data.get('mosdepth-length', 0),
         }
 
@@ -705,7 +705,7 @@ spec:
           "median_coverage": sample_data.get('mosdepth-median_coverage', 0),
           "min_coverage": sample_data.get('mosdepth-min_coverage', 0.0),
           "max_coverage": sample_data.get('mosdepth-max_coverage', 0.0),
-          "coverage_bases_mb": sample_data.get('mosdepth-coverage_bases', 0.0) / 1e6,  # raw data is a base count
+          "coverage_bases_mb": sample_data.get('mosdepth-coverage_bases', 0.0),  # already Mb: MultiQC saves general stats after its /1e6 'modify'
           "genome_length": sample_data.get('mosdepth-length', 0),
         }
 
