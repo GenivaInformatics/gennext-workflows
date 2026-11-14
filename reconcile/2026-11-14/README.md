@@ -1,6 +1,8 @@
 # Live WorkflowTemplates vs `main` (2026-11-14)
 
-Refs #33. This compares the `argo` namespace today (read-only `kubectl get`) with `main` at 1e1fcd6. It updates `snapshots/live-2026-11-13/DRIFT.md`; since that snapshot, the rollout applies brought `duckdb-template` and `manta-template` back in line with `main`.
+Refs #33. This compares the `argo` namespace today (read-only `kubectl get`) with `main` at 1e1fcd6, the `main` of the time of the comparison. It updates `snapshots/live-2026-11-13/DRIFT.md`; since that snapshot, the rollout applies brought `duckdb-template` and `manta-template` back in line with `main`.
+
+**`main` has moved on since:** at 170b3bf, #45 changes `tasks/base_tasks/manta.yaml` only. Against 170b3bf the same export gives 127 matches and 19 drifts; the extra one is `manta-template`, repo-ahead until #45 is applied live. `oncokb-o2c-dev` is a temporary dev template created after the comparison and is not counted.
 
 **Method**
 - Templates are compared by `spec`, as in #28. A repo template is any `WorkflowTemplate` document outside `snapshots/`.
@@ -48,13 +50,12 @@ Runs = workflows in the last two months that reached the template.
 - Committing their live specs first lets the wiring PR start from what runs.
 - `somatic-fusion-fastq-v2` needs a decision before it is wired.
 
-## Live-only templates imported here (29)
+## Live-only templates imported here (28)
 `templates/` holds them verbatim: the live `spec`, with `status`, `uid`, `resourceVersion`, `managedFields`, `creationTimestamp` and the last-applied annotation removed. **None ran in the last two months.**
 
 | Template | Created | Called by | Calls |
 |---|---|---|---|
 | `arriba-fusion-detection` | 2026-02-10 | `fusion-detection-ffpe` | — |
-| `caller-workflow` | 2023-09-20 | — | `haplotypecaller-template` |
 | `cnv-calling` | 2026-02-10 | — | `annotsv-template`, `cnvkit-analysis`, `cnvkit-annotate`, `cnvkit-export`, `cnvkit-filter`, `collect-somatic-data-templates`, `duckdb-template`, `filter-annotsv-template`, `oncokb-templates`, `scarhrd` |
 | `cnv-fusion-combined` | 2026-02-11 | — | — |
 | `cnvkit-analysis` | 2026-02-10 | `cnv-calling` | — |
@@ -93,14 +94,15 @@ Notes:
   - `no-filter-mutect2-calls` calls `vlod-template.vlod-merge-with-vcf`, which no longer exists.
   - `filter-and-annot-workflow` doesn't pass `regions-file` to `bcftools-template`.
 
-  The other 25 pass.
-- **Node names:** `caller-workflow`, `cnv-calling`, `cnv-fusion-combined` and `fusion-detection-ffpe` hard-code a node name as a parameter default, as `cnv-workflow-template` and `msi-tmb-coverage-workflow-template` on `main` already do. They are kept verbatim here. Making them parameters without a default is one of the proposed fixes.
+  The other 24 pass.
+- **Node names:** `cnv-calling`, `cnv-fusion-combined` and `fusion-detection-ffpe` hard-code a node name as a parameter default, as `cnv-workflow-template` and `msi-tmb-coverage-workflow-template` on `main` already do. They are kept verbatim here. Making them parameters without a default is one of the proposed fixes.
 
 Proposal for each group: keep the two pipelines, `collect-qc-data-templates` and `recompute-cds-coverage-workflow-template` if their owners still need them. Retire the rest, starting with the four that no longer lint, after an owner check.
 
-## Live-only templates not imported (22)
+## Live-only templates not imported (23)
 - **Tests and examples (13), retire candidates:** `complete-workflow-test`, `example-template-3ffd`, `example-template-3fv`, `fan-out-in-params-workflow`, `fastqc-v2-template` (used only by `test-workflow-v2`), `hostpath-example`, `multiqc-template-test`, `sprig-os-base-test`, `subtract-test`, `test-workflow`, `test-workflow-v2`, `trim-galore-test`, `verifybamid-template-test`. Their specs stay on record in `snapshots/live-2026-11-13/`.
-- **Epigenetics (9):** `gennext-assemble`, `-ewas`, `-finalize`, `-normalize`, `-plot`, `-qc`, `-read`, `-report`, `-score`, on `gennext-epi`. Out of scope: they belong to a separate project and are not imported into this repository. Their copies in `snapshots/live-2026-11-13/` stay as they are.
+- **Another project (9 templates):** out of scope, not imported.
+- **`caller-workflow`, a retire candidate:** not imported. It is unused, and its parameter defaults carry test sample data.
 
 ## Repo-only templates (15)
 These are on `main` but not on the cluster, and no live template calls them: `arriba-to-oncokb-template`, `batch-orchestrator-prototype`, `calc-tmb-template`, `caller-dv-workflow`, `caller-hc-workflow`, `filter-manta-template`, `freebayes-template`, `multicaller-template`, `parabricks-germline-pipeline-template`, `parallel-caller-workflow`, `per-sample-somatic-fusion`, `regenerate-qc-workflow`, `sample-worker-prototype`, `somatic-testing-dna-workflow`, `wrapper-batch-somatic-fusion`. Proposal: keep the prototypes that are in progress; move the rest to a retired folder or delete them, after an owner check.
@@ -124,4 +126,5 @@ The Parabricks templates take their image from `{{workflow.parameters.parabricks
 2. **Apply repo → live** (gate:live-template): `filter-msisensor-pro-template`, `trim-galore-template`, `annotsv-to-oncokb-template`, and `fastqc-template` with its workflow-level fields dropped.
 3. **Pin images by digest**, starting with `fusion-inspector` and `duckdb`. `duckdb-template` waits for the OncoKB track's change to that file.
 4. **Owner decisions:** `somatic-fusion-fastq-v2`, `msi-tmb-coverage-workflow-template`, `wrapper-workflow-prs`, the imported live-only templates, the retire candidates and the repo-only templates.
-5. **Node-name defaults:** make them required parameters in `cnv-workflow-template`, `msi-tmb-coverage-workflow-template` and the imported templates that have them.
+5. **Token in pod logs:** the live `update-run-status-template` and `collect-qc-data-templates` print the cluster token in their pod logs, and `collect-qc-data-templates` posts to the gennext-dev backend. Stop printing the token, and point it at the right backend or retire it.
+6. **Node-name defaults:** make them required parameters in `cnv-workflow-template`, `msi-tmb-coverage-workflow-template` and the imported templates that have them.
