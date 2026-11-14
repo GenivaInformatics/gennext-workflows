@@ -6,7 +6,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import contextlib
 import io
+import subprocess
 
 import AnnotatorCore
 from AnnotatorCore import MutationStatus, append_headers, get_oncokb_annotation_column_headers
@@ -185,7 +187,7 @@ class FilteredMafTest(unittest.TestCase):
         oncogenic = annotation_header.index("ONCOGENIC")
         sent = []
 
-        def fake_annotator(command, check):
+        def fake_annotator(command, check=False):
             source = Path(command[command.index("-i") + 1])
             target = Path(command[command.index("-o") + 1])
             with source.open(newline="") as file:
@@ -197,6 +199,7 @@ class FilteredMafTest(unittest.TestCase):
             with target.open("w") as file:
                 for row in [rows[0] + annotation_header] + [r + suffix for r in rows[1:]]:
                     file.write("\t".join(row).encode("ascii", "ignore").decode("ascii") + "\n")
+            return subprocess.CompletedProcess(command, 0)
 
         rows = [row.copy() for row in ROWS]
         rows[1][-1] = "Café"
@@ -300,6 +303,24 @@ class FilteredMafTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "records but"):
                     main()
             self.assertFalse(output.exists())
+
+
+    def test_sv_wrapper_reports_upstream_failure_without_the_token(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source, output = [Path(temp) / name for name in ("sv.tsv", "annot.tsv")]
+            write_tsv(source, ["Sample", "GeneA", "GeneB", "SVType"], [["S1", "BRAF", "BRAF", "DELETION"]])
+            argv = ["filtered_sv_annotator.py", "--input", str(source), "--output", str(output)]
+            err = io.StringIO()
+            with patch.object(sys, "argv", argv), \
+                    patch.dict(os.environ, {"ONCOKB_API_TOKEN": "secret-token"}, clear=True), \
+                    patch("filtered_sv_annotator.subprocess.run",
+                          side_effect=lambda command: subprocess.CompletedProcess(command, 3)), \
+                    contextlib.redirect_stderr(err), contextlib.redirect_stdout(err):
+                with self.assertRaises(SystemExit) as exit_:
+                    sv_main()
+            self.assertEqual(exit_.exception.code, 3)
+            self.assertIn("StructuralVariantAnnotator.py exited with status 3", err.getvalue())
+            self.assertNotIn("secret-token", err.getvalue())
 
 
 if __name__ == "__main__":

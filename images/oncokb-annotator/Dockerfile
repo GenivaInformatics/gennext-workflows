@@ -13,6 +13,9 @@
 #                          posts a whole MAF in one request (HTTP 500)
 #   0.3.1-upstream-v4.1.0  as 0.3.0; the MAF wrapper annotates in chunks of
 #                          100 rows, v3's request size
+#   0.3.2-upstream-v4.1.0  as 0.3.1; the SV and backfill wrappers report an
+#                          upstream failure by exit status only, so the token
+#                          on upstream's command line isn't printed
 FROM python:3.12.12-alpine3.22@sha256:848ba4413eb897e225159b8fc1b02094576cbae4aa73fc13142608ae2c8c0e32
 
 ARG ONCOKB_ANNOTATOR_VERSION=v4.1.0

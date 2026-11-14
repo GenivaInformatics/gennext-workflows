@@ -110,7 +110,12 @@ def main():
                    "-b", os.environ["ONCOKB_API_TOKEN"]]
         if args.tumor_type != ".":
             command.extend(["-t", args.tumor_type])
-        subprocess.run(command, check=True)
+        # Not check=True: a CalledProcessError traceback prints the command,
+        # which holds the token. Report the exit status only.
+        result = subprocess.run(command)
+        if result.returncode:
+            print(f"{Path(command[1]).name} exited with status {result.returncode}", file=sys.stderr)
+            sys.exit(result.returncode)
         filled = merge_backfill(args.maf, annotated, merged, header, n_input, func_index)
         if filled != skipped:
             raise ValueError(f"Filled {filled} rows, expected {skipped}")

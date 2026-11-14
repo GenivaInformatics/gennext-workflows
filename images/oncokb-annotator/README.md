@@ -1,6 +1,6 @@
 # OncoKB annotator image
 
-`bergun/oncokb-annotator:0.3.1-upstream-v4.1.0` is upstream
+`bergun/oncokb-annotator:0.3.2-upstream-v4.1.0` is upstream
 [oncokb-annotator](https://github.com/oncokb/oncokb-annotator) at tag `v4.1.0`
 (commit `77521cd`), unmodified, plus the three wrapper scripts in this
 directory. The previous image, `0.2.0-upstream-v3.4.2`, is upstream `v3.4.2`
@@ -45,6 +45,12 @@ Each chunk is the header line plus the next 100 data lines, copied byte for
 byte. The wrapper refuses a MAF whose records span lines. The token is no
 longer passed on a command line, so it doesn't show in a failed step's log.
 `0.3.0` lacks the chunking and isn't used.
+
+The SV wrapper and `backfill_filtered_maf.py` still run upstream's command-line
+scripts, which take the token as `-b`. When upstream exits non-zero they print
+only the script name and exit status, never the command (from `0.3.2`; before,
+an uncaught `CalledProcessError` printed it). The live `0.2.0` tasks still
+print it on such a failure.
 Upstream writes each output row through `encode('ascii', 'ignore')`, which
 drops non-ASCII characters from echoed input columns (ClinVar `CLNDN`
 "Muir-Torré"); the merge checks the echo against the ASCII-folded input and
