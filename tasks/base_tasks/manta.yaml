@@ -98,10 +98,15 @@ spec:
           #                 --default-stats-file: Manta's own stats step always runs and
           #                 uses the file for read groups it cannot estimate. SV calling
           #                 always uses the real BAM.
-          #   failed        Manta did not complete. With on-failure=placeholder the
-          #                 step writes empty VCFs (marked ##MantaStatus=FAILED) so
-          #                 the downstream SV chain can still run; with on-failure=fail
-          #                 the step exits non-zero after writing them.
+          #   failed        Manta did not complete, or an input BAM is missing, empty,
+          #                 unindexed or unreadable (checked before anything runs). With
+          #                 on-failure=placeholder the step writes empty VCFs (marked
+          #                 ##MantaStatus=FAILED) so the downstream SV chain can still
+          #                 run; with on-failure=fail the step exits non-zero after
+          #                 writing them.
+          # The status JSON also records fallback_stats_supplied (true/false) and
+          # fallback_stats_used (true/false, or null when not known: not supplied counts
+          # as false; supplied but the run failed, or Manta's task log is missing, is null).
 
           MANTA_HOME=/usr/local/share/manta-1.6.0-2
           SAMTOOLS=$MANTA_HOME/libexec/samtools
@@ -132,6 +137,10 @@ spec:
           echo "Sample ID: $sampleId"
           echo "Manta options: $options"
           echo "On failure: $onFailure"
+          case "$onFailure" in
+            placeholder|fail) ;;
+            *) echo "ERROR: on-failure must be placeholder or fail (got: $onFailure)"; exit 1 ;;
+          esac
 
           mkdir -p /mnt/output/stats
           MANTA_TMP_DIR=$(mktemp -p /mnt/scratch/ -d manta.XXXXXXXX)
@@ -192,19 +201,49 @@ spec:
             printf '%s' "$1" | tr -d '"\\\000-\037'
           }
 
+          fallbackSupplied=false
+          fallbackUsed=false  # true, false or null (not known)
+
           write_status() {  # $1 = status, $2 = reason
-            printf '{"sample_id": "%s", "status": "%s", "reason": "%s", "manta_version": "1.6.0"}\n' \
-              "$(json_safe "$sampleId")" "$1" "$(json_safe "$2")" > "/mnt/output/stats/${sampleId}_manta_status.json"
+            printf '{"sample_id": "%s", "status": "%s", "reason": "%s", "fallback_stats_supplied": %s, "fallback_stats_used": %s, "manta_version": "1.6.0"}\n' \
+              "$(json_safe "$sampleId")" "$1" "$(json_safe "$2")" "$fallbackSupplied" "$fallbackUsed" \
+              > "/mnt/output/stats/${sampleId}_manta_status.json"
             echo "$1" > /tmp/manta_status
           }
 
-          # Did Manta's own stats step fall back to the supplied stats for a read
-          # group? GetAlignmentStats then prints "Using existing stats as default"
-          # (pyflow collects task stderr); "Too few high-confidence read pairs" is
-          # only printed when no fallback file is given. Checked on the run that
-          # succeeded.
-          used_fallback_stats() {
-            grep -qs "Using existing stats as default" "$1/workspace/pyflow.data/logs/pyflow_tasks_stderr_log.txt"
+          # After a successful run with fallback stats supplied: did Manta's own stats
+          # step use them? GetAlignmentStats then prints "Using existing stats as
+          # default" (pyflow collects task stderr); "Too few high-confidence read
+          # pairs" is only printed when no fallback file is given. Used on both the
+          # up-front and the retry path. If the log is missing, the fallback is
+          # assumed used (it was only supplied because the BAM had no usable pairs)
+          # and fallback_stats_used records null.
+          label_fallback_run() {  # $1 = run dir; sets status and fallbackUsed
+            local rc=0
+            grep -qs "Using existing stats as default" "$1/workspace/pyflow.data/logs/pyflow_tasks_stderr_log.txt" || rc=$?
+            case $rc in
+              0) status=ok_clipstats; fallbackUsed=true ;;
+              1) status=ok; fallbackUsed=false ;;
+              *) status=ok_clipstats; fallbackUsed=null
+                 echo "WARNING: Manta's task log is missing; assuming the fallback stats were used" ;;
+            esac
+          }
+
+          # Missing, empty, unindexed or unreadable input BAMs: report them as such
+          # instead of as an alignment-stats failure. Sets reason.
+          check_inputs() {
+            local bam
+            if [ ${#statsBams[@]} -eq 0 ]; then reason="no tumor or normal BAM given"; return 1; fi
+            for bam in "${statsBams[@]}"; do
+              if [ ! -s "$bam" ]; then reason="input BAM missing or empty: $(basename "$bam")"; return 1; fi
+              if [ ! -s "$bam.bai" ] && [ ! -s "${bam%.bam}.bai" ] && [ ! -s "$bam.csi" ]; then
+                reason="input BAM has no index: $(basename "$bam")"; return 1
+              fi
+              if ! $SAMTOOLS quickcheck "$bam"; then reason="input BAM unreadable or truncated: $(basename "$bam")"; return 1; fi
+              if [ -z "$( { $SAMTOOLS view "$bam" || true; } | head -n 1)" ]; then
+                reason="input BAM has no reads: $(basename "$bam")"; return 1
+              fi
+            done
           }
 
           create_empty_vcf() {
@@ -242,10 +281,12 @@ spec:
           reason=""
           extra=()
           runDir=$MANTA_TMP_DIR/run
-          if needs_clipstats; then
+          check_inputs || echo "Input check failed: $reason"
+          if [ -z "$reason" ] && needs_clipstats; then
             echo "No unclipped read pairs; estimating fallback alignment stats on clip-stripped reads"
             if clip_stripped_stats $MANTA_TMP_DIR/clipstats.xml 2>&1 | tee -a "$LOG"; then
               extra=(--existingAlignStatsFile=$MANTA_TMP_DIR/clipstats.xml)
+              fallbackSupplied=true; fallbackUsed=null
             else
               reason="clip-stripped alignment stats failed"
             fi
@@ -253,14 +294,15 @@ spec:
 
           if [ -z "$reason" ] && run_manta $runDir ${extra[@]+"${extra[@]}"} 2>&1 | tee -a "$LOG"; then
             status=ok
-            if [ ${#extra[@]} -gt 0 ] && used_fallback_stats $runDir; then status=ok_clipstats; fi
+            if [ ${#extra[@]} -gt 0 ]; then label_fallback_run $runDir; fi
           elif [ -z "$reason" ] && [ ${#extra[@]} -eq 0 ] \
                && grep -rqsE "Too few high-confidence read pairs|Can't generate pair statistics" "$LOG" "$runDir/workspace/pyflow.data/logs"; then
             echo "Manta could not estimate alignment stats; retrying with clip-stripped stats"
             if clip_stripped_stats $MANTA_TMP_DIR/clipstats.xml 2>&1 | tee -a "$LOG" \
+               && fallbackSupplied=true && fallbackUsed=null \
                && runDir=$MANTA_TMP_DIR/run_clipstats \
                && run_manta $runDir --existingAlignStatsFile=$MANTA_TMP_DIR/clipstats.xml 2>&1 | tee -a "$LOG"; then
-              status=ok_clipstats
+              label_fallback_run $runDir
             else
               reason="alignment stats: too few high-confidence read pairs; clip-stripped retry failed"
             fi
@@ -394,10 +436,15 @@ spec:
           #                 --default-stats-file: Manta's own stats step always runs and
           #                 uses the file for read groups it cannot estimate. SV calling
           #                 always uses the real BAM.
-          #   failed        Manta did not complete. With on-failure=placeholder the
-          #                 step writes empty VCFs (marked ##MantaStatus=FAILED) so
-          #                 the downstream SV chain can still run; with on-failure=fail
-          #                 the step exits non-zero after writing them.
+          #   failed        Manta did not complete, or an input BAM is missing, empty,
+          #                 unindexed or unreadable (checked before anything runs). With
+          #                 on-failure=placeholder the step writes empty VCFs (marked
+          #                 ##MantaStatus=FAILED) so the downstream SV chain can still
+          #                 run; with on-failure=fail the step exits non-zero after
+          #                 writing them.
+          # The status JSON also records fallback_stats_supplied (true/false) and
+          # fallback_stats_used (true/false, or null when not known: not supplied counts
+          # as false; supplied but the run failed, or Manta's task log is missing, is null).
 
           MANTA_HOME=/usr/local/share/manta-1.6.0-2
           SAMTOOLS=$MANTA_HOME/libexec/samtools
@@ -428,6 +475,10 @@ spec:
           echo "Sample ID: $sampleId"
           echo "Manta options: $options"
           echo "On failure: $onFailure"
+          case "$onFailure" in
+            placeholder|fail) ;;
+            *) echo "ERROR: on-failure must be placeholder or fail (got: $onFailure)"; exit 1 ;;
+          esac
 
           mkdir -p /mnt/output/stats
           MANTA_TMP_DIR=$(mktemp -p /mnt/scratch/ -d manta.XXXXXXXX)
@@ -488,19 +539,49 @@ spec:
             printf '%s' "$1" | tr -d '"\\\000-\037'
           }
 
+          fallbackSupplied=false
+          fallbackUsed=false  # true, false or null (not known)
+
           write_status() {  # $1 = status, $2 = reason
-            printf '{"sample_id": "%s", "status": "%s", "reason": "%s", "manta_version": "1.6.0"}\n' \
-              "$(json_safe "$sampleId")" "$1" "$(json_safe "$2")" > "/mnt/output/stats/${sampleId}_manta_status.json"
+            printf '{"sample_id": "%s", "status": "%s", "reason": "%s", "fallback_stats_supplied": %s, "fallback_stats_used": %s, "manta_version": "1.6.0"}\n' \
+              "$(json_safe "$sampleId")" "$1" "$(json_safe "$2")" "$fallbackSupplied" "$fallbackUsed" \
+              > "/mnt/output/stats/${sampleId}_manta_status.json"
             echo "$1" > /tmp/manta_status
           }
 
-          # Did Manta's own stats step fall back to the supplied stats for a read
-          # group? GetAlignmentStats then prints "Using existing stats as default"
-          # (pyflow collects task stderr); "Too few high-confidence read pairs" is
-          # only printed when no fallback file is given. Checked on the run that
-          # succeeded.
-          used_fallback_stats() {
-            grep -qs "Using existing stats as default" "$1/workspace/pyflow.data/logs/pyflow_tasks_stderr_log.txt"
+          # After a successful run with fallback stats supplied: did Manta's own stats
+          # step use them? GetAlignmentStats then prints "Using existing stats as
+          # default" (pyflow collects task stderr); "Too few high-confidence read
+          # pairs" is only printed when no fallback file is given. Used on both the
+          # up-front and the retry path. If the log is missing, the fallback is
+          # assumed used (it was only supplied because the BAM had no usable pairs)
+          # and fallback_stats_used records null.
+          label_fallback_run() {  # $1 = run dir; sets status and fallbackUsed
+            local rc=0
+            grep -qs "Using existing stats as default" "$1/workspace/pyflow.data/logs/pyflow_tasks_stderr_log.txt" || rc=$?
+            case $rc in
+              0) status=ok_clipstats; fallbackUsed=true ;;
+              1) status=ok; fallbackUsed=false ;;
+              *) status=ok_clipstats; fallbackUsed=null
+                 echo "WARNING: Manta's task log is missing; assuming the fallback stats were used" ;;
+            esac
+          }
+
+          # Missing, empty, unindexed or unreadable input BAMs: report them as such
+          # instead of as an alignment-stats failure. Sets reason.
+          check_inputs() {
+            local bam
+            if [ ${#statsBams[@]} -eq 0 ]; then reason="no tumor or normal BAM given"; return 1; fi
+            for bam in "${statsBams[@]}"; do
+              if [ ! -s "$bam" ]; then reason="input BAM missing or empty: $(basename "$bam")"; return 1; fi
+              if [ ! -s "$bam.bai" ] && [ ! -s "${bam%.bam}.bai" ] && [ ! -s "$bam.csi" ]; then
+                reason="input BAM has no index: $(basename "$bam")"; return 1
+              fi
+              if ! $SAMTOOLS quickcheck "$bam"; then reason="input BAM unreadable or truncated: $(basename "$bam")"; return 1; fi
+              if [ -z "$( { $SAMTOOLS view "$bam" || true; } | head -n 1)" ]; then
+                reason="input BAM has no reads: $(basename "$bam")"; return 1
+              fi
+            done
           }
 
           create_empty_vcf() {
@@ -538,10 +619,12 @@ spec:
           reason=""
           extra=()
           runDir=$MANTA_TMP_DIR/run
-          if needs_clipstats; then
+          check_inputs || echo "Input check failed: $reason"
+          if [ -z "$reason" ] && needs_clipstats; then
             echo "No unclipped read pairs; estimating fallback alignment stats on clip-stripped reads"
             if clip_stripped_stats $MANTA_TMP_DIR/clipstats.xml 2>&1 | tee -a "$LOG"; then
               extra=(--existingAlignStatsFile=$MANTA_TMP_DIR/clipstats.xml)
+              fallbackSupplied=true; fallbackUsed=null
             else
               reason="clip-stripped alignment stats failed"
             fi
@@ -549,14 +632,15 @@ spec:
 
           if [ -z "$reason" ] && run_manta $runDir ${extra[@]+"${extra[@]}"} 2>&1 | tee -a "$LOG"; then
             status=ok
-            if [ ${#extra[@]} -gt 0 ] && used_fallback_stats $runDir; then status=ok_clipstats; fi
+            if [ ${#extra[@]} -gt 0 ]; then label_fallback_run $runDir; fi
           elif [ -z "$reason" ] && [ ${#extra[@]} -eq 0 ] \
                && grep -rqsE "Too few high-confidence read pairs|Can't generate pair statistics" "$LOG" "$runDir/workspace/pyflow.data/logs"; then
             echo "Manta could not estimate alignment stats; retrying with clip-stripped stats"
             if clip_stripped_stats $MANTA_TMP_DIR/clipstats.xml 2>&1 | tee -a "$LOG" \
+               && fallbackSupplied=true && fallbackUsed=null \
                && runDir=$MANTA_TMP_DIR/run_clipstats \
                && run_manta $runDir --existingAlignStatsFile=$MANTA_TMP_DIR/clipstats.xml 2>&1 | tee -a "$LOG"; then
-              status=ok_clipstats
+              label_fallback_run $runDir
             else
               reason="alignment stats: too few high-confidence read pairs; clip-stripped retry failed"
             fi
