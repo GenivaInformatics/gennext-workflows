@@ -28,8 +28,8 @@ def tsv(path, hdr, rows):
             fh.write("\t".join(str(r.get(h.lstrip("#"), ".")) for h in hdr) + "\n")
 
 
-def arriba_row(g1, g2, bp1, bp2, sr1, sr2, conf, frame, tags="."):
-    return {"gene1": g1, "gene2": g2, "strand1(gene/fusion)": "+/+", "strand2(gene/fusion)": "+/+",
+def arriba_row(g1, g2, bp1, bp2, sr1, sr2, conf, frame, tags=".", strands="+/+"):
+    return {"gene1": g1, "gene2": g2, "strand1(gene/fusion)": strands, "strand2(gene/fusion)": strands,
             "breakpoint1": bp1, "breakpoint2": bp2, "site1": "splice-site", "site2": "splice-site",
             "type": "translocation", "split_reads1": sr1, "split_reads2": sr2, "discordant_mates": 0,
             "coverage1": 10, "coverage2": 10, "confidence": conf, "reading_frame": frame, "tags": tags,
@@ -83,7 +83,8 @@ def main():
         pon = os.path.join(d, "pon.tsv")
         subprocess.run([sys.executable, FE, "pon", "--events-tsv", *evs, "--out-tsv", pon], check=True)
 
-        _, rows = run_build(d, "S1", arriba, sf, pairs, ["--pon", pon])
+        # ALK1--PART1 is in 1 of 3 other PoN samples (33%): not recurrent at 50%; RECUR--PAIR is in 3/3.
+        _, rows = run_build(d, "S1", arriba, sf, pairs, ["--pon", pon, "--pon-min-fraction", "0.5"])
         assert len(rows) == 4, sorted(rows)
         alk = rows["ALK1--PART1@chr1:1000:+"]
         assert alk["callers"] == "arriba|starfusion" and alk["n_callers"] == "2", alk
@@ -101,7 +102,8 @@ def main():
         assert junk["tier_basis"] == "none" and junk["tier_flags"] == "weak_caller_evidence", junk["tier_flags"]
         assert junk["caller_arriba"] == "false" and junk["caller_starfusion"] == "true"
         known = rows["KNOWN--PAIR@chr7:1000:+"]
-        assert known["tier"] == "2" and known["tier_reason"] == "known fusion: Mitelman", known["tier_reason"]
+        assert known["tier"] == "2" and known["tier_reason"].startswith("known fusion: Mitelman; evidence:"), known["tier_reason"]
+        assert known["tier_flags"] == "weak_caller_evidence|low_unique_molecules", known["tier_flags"]
         assert known["tier_basis"] == "curated_known" and known["curated_known"] == "true"
         assert known["known_db"] == "Mitelman", known["known_db"]
         recur = rows["RECUR--PAIR@chr5:1000:+"]
@@ -123,6 +125,27 @@ def main():
         assert alk["tier"] == "2" and "(not tier 1: 3 unique molecule(s) < 4)" in alk["tier_reason"], alk["tier_reason"]
         assert alk["tier_basis"] == "oncokb_actionable" and alk["tier_flags"] == "low_unique_molecules"
         assert alk["pon_recurrent"] == "" and alk["pon_size"] == ""  # no PoN given
+
+        # Annotation comes only from the gene a breakpoint is in. Arriba between genes: ALK1 is
+        # 400 kb away, so ALK1--PART1's LEVEL_1 must not apply, unless the distance is allowed.
+        far = [arriba_row("ALK1(400000),OTHER(500000)", "PART1", "chr9:1000", "chr10:500", 6, 6, "high", "in-frame")]
+        _, rows = run_build(d, "S3", far, [], pairs)
+        r = rows["ALK1--PART1@chr9:1000:+"] if "ALK1--PART1@chr9:1000:+" in rows else list(rows.values())[0]
+        assert r["tier"] == "3" and r["oncokb_highest_level"] == "" and r["fusion"] == "ALK1--PART1", r
+        _, rows = run_build(d, "S3", far, [], pairs, ["--max-intergenic-distance", "400000"])
+        assert list(rows.values())[0]["tier"] == "1", list(rows.values())[0]["tier_reason"]
+
+        # An unoriented Arriba call (./.) that matches only the reversed pair: no tier 1, and no
+        # curated tier 2 without evidence.
+        rev_pairs = {"ALK2--PART2": oncokb("LEVEL_1", "Oncogenic"), "CUR1--CUR2": oncokb(dbs=["Mitelman"])}
+        rev = [arriba_row("PART2", "ALK2", "chr11:1000", "chr12:500", 6, 6, "high", "in-frame", strands="./."),
+               arriba_row("CUR2", "CUR1", "chr13:1000", "chr14:500", 1, 0, "low", ".", strands="./.")]
+        _, rows = run_build(d, "S4", rev, [], rev_pairs)
+        act = [r for r in rows.values() if r["fusion"] == "ALK2--PART2"][0]
+        assert act["orientation_known"] == "false" and act["tier"] == "2", act
+        assert act["tier_flags"] == "orientation_unknown" and act["tier_basis"] == "oncokb_actionable", act["tier_flags"]
+        cur = [r for r in rows.values() if r["fusion"] == "CUR1--CUR2"][0]
+        assert cur["tier"] == "3" and "orientation_unknown" in cur["tier_flags"], cur
 
         # Empty caller outputs give an empty table with a header.
         _, rows = run_build(d, "S2", [], [], {})

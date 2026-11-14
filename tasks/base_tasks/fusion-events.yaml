@@ -30,8 +30,11 @@ spec:
             default: "."
           - name: tier1-min-unique-molecules
             default: "2"
+          - name: max-intergenic-distance
+            # bp; 0 = annotation only from the gene a breakpoint is in
+            default: "0"
           - name: pon-min-samples
-            default: "3"
+            default: "1"
           - name: pon-min-fraction
             default: "0.10"
       outputs:
@@ -58,14 +61,16 @@ spec:
         - name: pon-tsv
           hostPath:
             path: "{{=sprig.osDir(inputs.parameters['pon-tsv'])}}"
-            type: Directory
+            # A missing PoN directory must not fail the pod: the script warns instead.
+            type: DirectoryOrCreate
         - name: output-dir
           hostPath:
             path: "{{inputs.parameters.output-dir}}"
             type: DirectoryOrCreate
       script:
         name: fusion-events
-        image: bergun/gennext-bpview:0.3.0@sha256:1dd790a701b5f9f20e969a4fd719394e47208e8c5232a5d9f41ca888dd9f0bf5
+        # Pin by digest once 0.3.1 is pushed.
+        image: bergun/gennext-bpview:0.3.1
         command: [bash]
         source: |
           set -euo pipefail
@@ -79,6 +84,7 @@ spec:
             --starfusion-tsv "/mnt/input/starfusion/{{=sprig.osBase(inputs.parameters['starfusion-tsv'])}}"
             --oncokb-json "/mnt/input/oncokb/{{=sprig.osBase(inputs.parameters['oncokb-json'])}}"
             --tier1-min-unique-molecules "{{inputs.parameters.tier1-min-unique-molecules}}"
+            --max-intergenic-distance "{{inputs.parameters.max-intergenic-distance}}"
             --pon-min-samples "{{inputs.parameters.pon-min-samples}}"
             --pon-min-fraction "{{inputs.parameters.pon-min-fraction}}"
             --out-tsv "/mnt/output/${SAMPLE_ID}_fusion_events.tsv")

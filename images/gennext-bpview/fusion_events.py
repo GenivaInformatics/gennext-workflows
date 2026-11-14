@@ -7,6 +7,9 @@
 
 `build` merges Arriba and STAR-Fusion calls by breakpoint with bpview's merge (same loaders,
 same +-10 bp tolerance, same gene aliases), so every event lines up with its bpview contig.
+Gene-pair annotation and PoN pair counts use only the gene each breakpoint is in (STAR-Fusion's
+gene, or an Arriba gene without a distance); an intergenic neighbour counts only within
+--max-intergenic-distance (default 0).
 Gene-pair annotation (OncoKB, fusion-report databases, the existing pair tier) comes from
 oncokb-fusion-annotation's fusions_with_oncokb.json: no second OncoKB query. Support comes
 from bpview's projected, non-duplicate fragments when bpview drew the event, otherwise from
@@ -22,34 +25,41 @@ Tiers (see tier_event; every threshold is a flag):
      and two callers or Arriba confidence high/medium
   2  any OncoKB hit (actionable, Oncogenic / Likely Oncogenic, 3A/3B/4/R2/Dx2/Dx3) with frame
      and caller evidence but not tier 1 (e.g. too few molecules),
-     or a curated known fusion (Mitelman, COSMIC, CIViC) whatever its evidence
+     or a curated known fusion (Mitelman, COSMIC) whatever its evidence; tier_flags still records
+     the weak evidence
   3  everything else. OncoKB levels are often partner-agnostic (any NTRK fusion), so an OncoKB
      hit without fusion evidence and without a curated pair stays here; tier_reason says so.
-A gene pair recurrent in the PoN (>= --pon-min-samples and >= --pon-min-fraction of the other
-samples) is capped at tier 2 (if it would be 1) or 3. tier_reason lists every rule that applied.
+An unoriented Arriba call whose annotation matched only the reversed pair gets no tier 1 and no
+curated tier 2 without evidence (flag orientation_unknown).
+A gene pair recurrent in the PoN (>= --pon-min-fraction of the other samples, and at least
+--pon-min-samples, default 1) is capped at tier 2 (if it would be 1) or 3. tier_reason lists
+every rule that applied.
 """
 import argparse
 import csv
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bpview  # noqa: E402  (same image, same directory)
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 ACTIONABLE = {"LEVEL_1", "LEVEL_2", "LEVEL_R1"}
 ACTIONABLE_DX = {"LEVEL_Dx1"}
 ONCOGENIC_LEVELS = {"LEVEL_3A", "LEVEL_3B", "LEVEL_4", "LEVEL_R2"}
 ONCOGENIC_DX = {"LEVEL_Dx2", "LEVEL_Dx3"}
 ONCOGENIC = {"Oncogenic", "Likely Oncogenic"}
-CURATED_DB = {"Mitelman", "COSMIC", "CIViC"}
+# The curated databases fusion-report 4.0.1 reports (FusionGDB2 is not curated).
+CURATED_DB = {"Mitelman", "COSMIC"}
 
 # Column order and DuckDB types of the output; duckdb-fusion-events reads it with these types.
 # Every field a user may filter on is its own typed column. List columns (VARCHAR[]) are written
 # '|'-separated in the TSV and split on load; an empty cell is an empty list.
-TIER_FLAGS = ("out_of_frame", "weak_caller_evidence", "low_unique_molecules", "pon_recurrent", "pon_capped")
+TIER_FLAGS = ("out_of_frame", "weak_caller_evidence", "low_unique_molecules", "orientation_unknown",
+              "pon_recurrent", "pon_capped")
 COLUMNS = [
     ("sample_id", "VARCHAR"), ("event_id", "VARCHAR"), ("fusion", "VARCHAR"),
     ("gene5", "VARCHAR"), ("gene3", "VARCHAR"), ("gene5_aliases", "VARCHAR[]"), ("gene3_aliases", "VARCHAR[]"),
@@ -78,8 +88,10 @@ PON_COLUMNS = ["sample_id", "gene5", "gene3", "chr5", "pos5", "keep5", "chr3", "
 # ----------------------------------------------------------------------------- inputs
 
 def load_pairs(path):
-    """fusions_with_oncokb.json -> {'G1--G2': entry}. Missing or empty file -> {}."""
+    """fusions_with_oncokb.json -> {'G1--G2': entry}. Missing or empty file -> {} with a warning."""
     if not path or not os.path.exists(path) or not os.path.getsize(path):
+        print(f"WARNING: gene-pair annotation {path!r} missing or empty: no OncoKB or database "
+              "annotation, every event is tier 3", file=sys.stderr)
         return {}
     with open(path) as fh:
         data = json.load(fh)
@@ -129,19 +141,43 @@ def strand3(ev):
     return "+" if ev["keep2"] == "ge" else "-"
 
 
-def pair_entry(ev, pairs):
-    """The fusion-report/OncoKB entry for this event's gene pair, in the event's orientation.
-    Unoriented Arriba calls also try the reverse orientation."""
-    for a in ev["names1"]:
-        for b in ev["names2"]:
+def arriba_distances(ev):
+    """Distance from the breakpoint to every gene Arriba names (0 = the breakpoint is in it).
+    Arriba writes 'GENE' inside a gene and 'GENE1(dist),GENE2(dist)' between genes."""
+    out = {}
+    a = ev.get("arriba") or {}
+    for raw in (a.get("gene1") or "", a.get("gene2") or ""):
+        for part in raw.split(","):
+            m = re.match(r"\s*([^()]+?)\s*(?:\((\d+)\))?\s*$", part)
+            if m and m.group(1):
+                d = int(m.group(2)) if m.group(2) else 0
+                out[m.group(1)] = min(out.get(m.group(1), d), d)
+    return out
+
+
+def genic_names(ev, side, max_distance):
+    """The names of one side that may carry gene-pair annotation and PoN recurrence: the gene the
+    breakpoint is in (STAR-Fusion's gene, or an Arriba name without a distance), or an intergenic
+    neighbour at most max_distance away. A neighbour further away is a label, not the gene."""
+    names, dist = ev["names" + side], arriba_distances(ev)
+    sf_gene = names[0] if "starfusion" in ev["callers"] else None
+    return [n for n in names if n == sf_gene or dist.get(n, 0) <= max_distance]
+
+
+def pair_entry(ev, pairs, n1, n2):
+    """The fusion-report/OncoKB entry for the gene pair (n1 x n2 genic names) in the event's
+    orientation -> (pair, entry, reversed). Unoriented Arriba calls also try the reverse
+    orientation; such a match is reversed=True and can't give tier 1 (see tier_event)."""
+    for a in n1:
+        for b in n2:
             if f"{a}--{b}" in pairs:
-                return f"{a}--{b}", pairs[f"{a}--{b}"]
+                return f"{a}--{b}", pairs[f"{a}--{b}"], False
     if not ev["oriented"]:
-        for a in ev["names1"]:
-            for b in ev["names2"]:
+        for a in n1:
+            for b in n2:
                 if f"{b}--{a}" in pairs:
-                    return f"{b}--{a}", pairs[f"{b}--{a}"]
-    return None, None
+                    return f"{b}--{a}", pairs[f"{b}--{a}"], True
+    return None, None, False
 
 
 def support(ev, bp):
@@ -164,13 +200,15 @@ def known_dbs(ev, entry):
     return dbs
 
 
-def pon_counts(ev, pon, sample_id, tol):
+def pon_counts(ev, pon, sample_id, tol, n1, n2):
+    """PoN recurrence: other samples with the same genic gene pair (either orientation; 0 when a
+    side has no genic name) and with the same junction (+-tol)."""
     if pon is None:
         return None, None, None
     others = pon["samples"] - {sample_id}
     pair = set()
-    for a in ev["names1"]:
-        for b in ev["names2"]:
+    for a in n1:
+        for b in n2:
             pair |= pon["pairs"].get(frozenset((a, b)), set())
     near = pon["by_contig"].get((ev["chr1"], ev["keep1"], ev["chr2"], ev["keep2"]), [])
     junction = {r["sample_id"] for r in near
@@ -199,6 +237,10 @@ def tier_event(row, opts):
     onc = row["oncokb_oncogenic"] or ""
     curated = sorted(CURATED_DB & set(row["known_db"]))
     basic, low = evidence_fails(row, opts)
+    if row["pair_reversed"]:
+        # The annotation matched the reversed pair of a call whose orientation is unknown, so
+        # it may not describe this event: no tier 1, and no curated tier 2 without evidence.
+        low = dict(low, orientation_unknown="orientation unknown; annotation matched the reversed pair")
     # OncoKB levels are often partner-agnostic (any NTRK or ALK fusion), so an OncoKB hit
     # only counts with fusion evidence; without it, only a curated known pair keeps tier 2.
     actionable = level in ACTIONABLE or dx in ACTIONABLE_DX
@@ -212,18 +254,24 @@ def tier_event(row, opts):
         tier, basis = 2, "oncokb_actionable" if actionable else "oncokb_oncogenic"
         if actionable and low:
             flags += list(low)
+        elif "orientation_unknown" in low:
+            flags.append("orientation_unknown")
         reasons.append(lab + (" (not tier 1: " + "; ".join(low.values()) + ")" if actionable and low else ""))
-    elif curated:
+    elif curated and not (row["pair_reversed"] and basic):
         tier, basis = 2, "curated_known"
+        flags += list(basic) + list(low)
         reasons.append("known fusion: " + ", ".join(curated))
+        if basic or low:
+            reasons.append("evidence: " + "; ".join(list(basic.values()) + list(low.values())))
         if oncogenic:
-            flags += list(basic)
-            reasons.append(lab + ", but " + "; ".join(basic.values()))
+            reasons.append(lab + " (not tier 1)")
     else:
         tier, basis = 3, "none"
-        if oncogenic:
-            flags += list(basic)
-            reasons.append(lab + ", but " + "; ".join(basic.values()))
+        if oncogenic or curated:
+            flags += list(basic) + ([k for k in low if k == "orientation_unknown"])
+            known = (lab if oncogenic else "known fusion: " + ", ".join(curated))
+            reasons.append(known + ", but " + "; ".join(list(basic.values())
+                                                      + ([low["orientation_unknown"]] if "orientation_unknown" in low else [])))
         else:
             reasons.append("not known or actionable")
     n, size = row["pon_gene_pair_count"], row["pon_size"]
@@ -252,10 +300,11 @@ def build_rows(opts):
         a, s = ev.get("arriba") or {}, ev.get("starfusion") or {}
         key = event_key(ev["chr1"], ev["pos1"], ev["keep1"], ev["chr2"], ev["pos2"], ev["keep2"])
         b = bp.get(key)
-        fusion, entry = pair_entry(ev, pairs)
+        n1, n2 = (genic_names(ev, i, opts.max_intergenic_distance) for i in ("1", "2"))
+        fusion, entry, reversed_match = pair_entry(ev, pairs, n1, n2)
         onc = (entry or {}).get("OncoKB") or {}
         u, dup, src = support(ev, b)
-        npair, njunc, size = pon_counts(ev, pon, opts.sample_id, opts.merge_tolerance)
+        npair, njunc, size = pon_counts(ev, pon, opts.sample_id, opts.merge_tolerance, n1, n2)
         row = dict(
             sample_id=opts.sample_id, event_id=None,
             fusion=fusion or f"{ev['gene1']}--{ev['gene2']}",
@@ -286,6 +335,7 @@ def build_rows(opts):
             pon_gene_pair_count=npair, pon_junction_count=njunc, pon_size=size,
             bpview_contig=b["contig"] if b else None, builder_version=__version__)
         row["curated_known"] = bool(CURATED_DB & set(row["known_db"]))
+        row["pair_reversed"] = reversed_match
         row.update(tier_event(row, opts))
         rows.append((row, bpview.priority(ev)))
     rows.sort(key=lambda x: x[1], reverse=True)
@@ -348,7 +398,10 @@ def main(argv=None):
     b.add_argument("--tier1-min-unique-molecules", type=int, default=2)
     b.add_argument("--allow-out-of-frame", action="store_true",
                    help="do not hold out-of-frame / stop-codon events back from tiers 1-2")
-    b.add_argument("--pon-min-samples", type=int, default=3)
+    b.add_argument("--max-intergenic-distance", type=int, default=0,
+                   help="an intergenic breakpoint takes a neighbouring gene's annotation only within this "
+                        "many bp (0: only the gene the breakpoint is in)")
+    b.add_argument("--pon-min-samples", type=int, default=1)
     b.add_argument("--pon-min-fraction", type=float, default=0.10)
     p = sub.add_parser("pon")
     p.add_argument("--events-tsv", nargs="+", required=True)

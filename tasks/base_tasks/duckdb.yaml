@@ -2012,7 +2012,7 @@ spec:
               coalesce(string_split(callers, '|'), []::VARCHAR[]) AS callers,
               coalesce(string_split(known_db, '|'), []::VARCHAR[]) AS known_db,
               coalesce(string_split(tier_flags, '|'), []::VARCHAR[]) AS tier_flags)
-          FROM read_csv('/mnt/input/fusion_events.tsv', delim='\t', header=true, nullstr='',
+          FROM read_csv('/mnt/input/fusion_events.tsv', delim='\t', header=true, nullstr='', quote='',
             columns={
                 'sample_id': 'VARCHAR',
                 'event_id': 'VARCHAR',
