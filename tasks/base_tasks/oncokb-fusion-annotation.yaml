@@ -101,9 +101,21 @@ spec:
           for attempt in range(1, max_attempts + 1):
               print(f"--- Attempt {attempt} of {max_attempts} ---")
 
-              result = subprocess.run(cmd, capture_output=False)
+              # Stream upstream's output and count the queries it gave up on: when a
+              # batch POST fails it asks once per query, and each query that still
+              # fails prints this line and leaves its row unannotated, while the
+              # annotator exits 0.
+              failed_calls = 0
+              with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True, bufsize=1) as process:
+                  for line in process.stdout:
+                      print(line, end="", flush=True)
+                      if "Error on annotating the url" in line:
+                          failed_calls += 1
 
-              if result.returncode == 0:
+              if process.returncode == 0 and failed_calls:
+                  print(f"OncoKB: {failed_calls} API call(s) failed on attempt {attempt}; their rows have no annotation")
+              elif process.returncode == 0:
                   time.sleep(5)
                   if os.path.isfile("/tmp/fusions_annotated.tsv") and os.path.getsize("/tmp/fusions_annotated.tsv") > 0:
                       print("Annotation completed and validated successfully")

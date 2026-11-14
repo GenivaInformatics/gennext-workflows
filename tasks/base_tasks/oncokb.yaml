@@ -53,17 +53,20 @@ spec:
           input_file="/mnt/input/{{=sprig.osBase(inputs.parameters['annovar-maf-f'])}}"
           output_file="/mnt/output/{{=sprig.osBase(inputs.parameters['annovar-oncokb-maf-f'])}}"
           
+          annotation_log=/tmp/oncokb-annotation.log
+          rc_file=/tmp/oncokb-annotation.rc
+
           # Function to run annotation
           run_annotation() {
               echo "Running OncoKB annotation (attempt $1)..."
               if [ "$tumor_type" != "." ]; then
                   echo "Using tumor type parameter: $tumor_type"
-                  python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version" --regions-file "{{inputs.parameters.regions-file}}" --tumor-type "$tumor_type"
+                  { python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version" --regions-file "{{inputs.parameters.regions-file}}" --tumor-type "$tumor_type"; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
               else
                   echo "No tumor type specified (using default)"
-                  python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version" --regions-file "{{inputs.parameters.regions-file}}"
+                  { python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version" --regions-file "{{inputs.parameters.regions-file}}"; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
               fi
-              return $?
+              return "$(cat "$rc_file")"
           }
           
           # Function to validate output
@@ -72,6 +75,14 @@ spec:
               sleep 10
               
               if [ -f "$output_file" ] && [ -s "$output_file" ]; then
+                  # When a batch POST fails, upstream asks OncoKB once per query;
+                  # each query that still fails prints this line and leaves its
+                  # row unannotated (ANNOTATED=False), and upstream exits 0.
+                  failed_calls=$(grep -c "Error on annotating the url" "$annotation_log" || true)
+                  if [ "${failed_calls:-0}" -gt 0 ]; then
+                      echo "OncoKB: $failed_calls API call(s) failed in this attempt; their rows have no annotation"
+                      return 1
+                  fi
                   echo "Output file validated successfully: $output_file"
                   return 0
               else
@@ -175,17 +186,20 @@ spec:
           tumor_type="{{inputs.parameters.tumor-type}}"
           echo "OncoKB SV: Using tumor type: '$tumor_type'"
           
+          annotation_log=/tmp/oncokb-annotation.log
+          rc_file=/tmp/oncokb-annotation.rc
+
           # Function to run annotation
           run_annotation() {
               echo "Running OncoKB SV annotation (attempt $1)..."
               if [ "$tumor_type" != "." ]; then
                   echo "Using tumor type parameter: $tumor_type"
-                  python ./filtered_sv_annotator.py --input "$input_file" --output "$output_file" --regions-file "{{inputs.parameters.regions-file}}" --tumor-type "$tumor_type"
+                  { python ./filtered_sv_annotator.py --input "$input_file" --output "$output_file" --regions-file "{{inputs.parameters.regions-file}}" --tumor-type "$tumor_type"; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
               else
                   echo "No tumor type specified (using default)"
-                  python ./filtered_sv_annotator.py --input "$input_file" --output "$output_file" --regions-file "{{inputs.parameters.regions-file}}"
+                  { python ./filtered_sv_annotator.py --input "$input_file" --output "$output_file" --regions-file "{{inputs.parameters.regions-file}}"; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
               fi
-              return $?
+              return "$(cat "$rc_file")"
           }
           
           # Function to validate output
@@ -194,6 +208,14 @@ spec:
               sleep 10
               
               if [ -f "$output_file" ] && [ -s "$output_file" ]; then
+                  # When a batch POST fails, upstream asks OncoKB once per query;
+                  # each query that still fails prints this line and leaves its
+                  # row unannotated (ANNOTATED=False), and upstream exits 0.
+                  failed_calls=$(grep -c "Error on annotating the url" "$annotation_log" || true)
+                  if [ "${failed_calls:-0}" -gt 0 ]; then
+                      echo "OncoKB: $failed_calls API call(s) failed in this attempt; their rows have no annotation"
+                      return 1
+                  fi
                   echo "Output file validated successfully: $output_file"
                   return 0
               else
@@ -295,17 +317,20 @@ spec:
           tumor_type="{{inputs.parameters.tumor-type}}"
           echo "OncoKB Fusions: Using tumor type: '$tumor_type'"
           
+          annotation_log=/tmp/oncokb-annotation.log
+          rc_file=/tmp/oncokb-annotation.rc
+
           # Function to run annotation
           run_annotation() {
               echo "Running OncoKB Fusion annotation (attempt $1)..."
               if [ "$tumor_type" != "." ]; then
                   echo "Using tumor type parameter: $tumor_type"
-                  python ./FusionAnnotator.py -i "$input_file" -o "$output_file" -b ${ONCOKB_API_TOKEN} -t "$tumor_type"
+                  { python ./FusionAnnotator.py -i "$input_file" -o "$output_file" -b ${ONCOKB_API_TOKEN} -t "$tumor_type"; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
               else
                   echo "No tumor type specified (using default)"
-                  python ./FusionAnnotator.py -i "$input_file" -o "$output_file" -b ${ONCOKB_API_TOKEN}
+                  { python ./FusionAnnotator.py -i "$input_file" -o "$output_file" -b ${ONCOKB_API_TOKEN}; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
               fi
-              return $?
+              return "$(cat "$rc_file")"
           }
           
           # Function to validate output
@@ -314,6 +339,14 @@ spec:
               sleep 10
               
               if [ -f "$output_file" ] && [ -s "$output_file" ]; then
+                  # When a batch POST fails, upstream asks OncoKB once per query;
+                  # each query that still fails prints this line and leaves its
+                  # row unannotated (ANNOTATED=False), and upstream exits 0.
+                  failed_calls=$(grep -c "Error on annotating the url" "$annotation_log" || true)
+                  if [ "${failed_calls:-0}" -gt 0 ]; then
+                      echo "OncoKB: $failed_calls API call(s) failed in this attempt; their rows have no annotation"
+                      return 1
+                  fi
                   echo "Output file validated successfully: $output_file"
                   return 0
               else
@@ -432,17 +465,20 @@ spec:
           input_file="/mnt/input/{{=sprig.osBase(inputs.parameters['annovar-maf-f'])}}"
           output_file="/mnt/output/{{=sprig.osBase(inputs.parameters['annovar-oncokb-maf-f'])}}"
           
+          annotation_log=/tmp/oncokb-annotation.log
+          rc_file=/tmp/oncokb-annotation.rc
+
           # Function to run annotation
           run_annotation() {
               echo "Running OncoKB annotation on node (attempt $1)..."
               if [ "$tumor_type" != "." ]; then
                   echo "Using tumor type parameter: $tumor_type"
-                  python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version" --regions-file "{{inputs.parameters.regions-file}}" --tumor-type "$tumor_type"
+                  { python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version" --regions-file "{{inputs.parameters.regions-file}}" --tumor-type "$tumor_type"; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
               else
                   echo "No tumor type specified (using default)"
-                  python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version" --regions-file "{{inputs.parameters.regions-file}}"
+                  { python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version" --regions-file "{{inputs.parameters.regions-file}}"; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
               fi
-              return $?
+              return "$(cat "$rc_file")"
           }
           
           # Function to validate output
@@ -451,6 +487,14 @@ spec:
               sleep 10
               
               if [ -f "$output_file" ] && [ -s "$output_file" ]; then
+                  # When a batch POST fails, upstream asks OncoKB once per query;
+                  # each query that still fails prints this line and leaves its
+                  # row unannotated (ANNOTATED=False), and upstream exits 0.
+                  failed_calls=$(grep -c "Error on annotating the url" "$annotation_log" || true)
+                  if [ "${failed_calls:-0}" -gt 0 ]; then
+                      echo "OncoKB: $failed_calls API call(s) failed in this attempt; their rows have no annotation"
+                      return 1
+                  fi
                   echo "Output file validated successfully: $output_file"
                   return 0
               else
@@ -557,17 +601,20 @@ spec:
           tumor_type="{{inputs.parameters.tumor-type}}"
           echo "OncoKB SV (on-node): Using tumor type: '$tumor_type'"
           
+          annotation_log=/tmp/oncokb-annotation.log
+          rc_file=/tmp/oncokb-annotation.rc
+
           # Function to run annotation
           run_annotation() {
               echo "Running OncoKB SV annotation on node (attempt $1)..."
               if [ "$tumor_type" != "." ]; then
                   echo "Using tumor type parameter: $tumor_type"
-                  python ./filtered_sv_annotator.py --input "$input_file" --output "$output_file" --regions-file "{{inputs.parameters.regions-file}}" --tumor-type "$tumor_type"
+                  { python ./filtered_sv_annotator.py --input "$input_file" --output "$output_file" --regions-file "{{inputs.parameters.regions-file}}" --tumor-type "$tumor_type"; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
               else
                   echo "No tumor type specified (using default)"
-                  python ./filtered_sv_annotator.py --input "$input_file" --output "$output_file" --regions-file "{{inputs.parameters.regions-file}}"
+                  { python ./filtered_sv_annotator.py --input "$input_file" --output "$output_file" --regions-file "{{inputs.parameters.regions-file}}"; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
               fi
-              return $?
+              return "$(cat "$rc_file")"
           }
           
           # Function to validate output
@@ -576,6 +623,14 @@ spec:
               sleep 10
               
               if [ -f "$output_file" ] && [ -s "$output_file" ]; then
+                  # When a batch POST fails, upstream asks OncoKB once per query;
+                  # each query that still fails prints this line and leaves its
+                  # row unannotated (ANNOTATED=False), and upstream exits 0.
+                  failed_calls=$(grep -c "Error on annotating the url" "$annotation_log" || true)
+                  if [ "${failed_calls:-0}" -gt 0 ]; then
+                      echo "OncoKB: $failed_calls API call(s) failed in this attempt; their rows have no annotation"
+                      return 1
+                  fi
                   echo "Output file validated successfully: $output_file"
                   return 0
               else
@@ -726,7 +781,22 @@ spec:
                          "-b", os.environ["ONCOKB_API_TOKEN"], "-f", "individual", "-z"]
               if tumor_type != ".":
                   command.extend(["-t", tumor_type])
-              subprocess.run(command, check=True)
+              # Stream upstream's output and count the queries it gave up on: when a
+              # batch POST fails it asks once per query, and each query that still
+              # fails prints this line and leaves its row unannotated, while the
+              # annotator exits 0.
+              failed_calls = 0
+              with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True, bufsize=1) as process:
+                  for line in process.stdout:
+                      print(line, end="", flush=True)
+                      if "Error on annotating the url" in line:
+                          failed_calls += 1
+              if process.returncode:
+                  # Not the full command: it holds the token.
+                  raise RuntimeError(f"CnaAnnotator exited with status {process.returncode}")
+              if failed_calls:
+                  raise RuntimeError(f"{failed_calls} OncoKB API call(s) failed; their rows have no annotation")
 
               # Upstream writes rows that have no class first, without OncoKB
               # columns. Put every row back in input order, padded to the header.
