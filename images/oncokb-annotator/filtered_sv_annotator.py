@@ -51,7 +51,12 @@ def main():
                "-o", str(args.output), "-b", os.environ["ONCOKB_API_TOKEN"]]
     if args.tumor_type != ".":
         command.extend(["-t", args.tumor_type])
-    subprocess.run(command, check=True)
+    # Not check=True: a CalledProcessError traceback prints the command,
+    # which holds the token. Report the exit status only.
+    result = subprocess.run(command)
+    if result.returncode:
+        print(f"{Path(command[1]).name} exited with status {result.returncode}", file=sys.stderr)
+        sys.exit(result.returncode)
     if not args.output.is_file() or args.output.stat().st_size == 0:
         raise RuntimeError("OncoKB SV/CNV annotator produced no output")
 

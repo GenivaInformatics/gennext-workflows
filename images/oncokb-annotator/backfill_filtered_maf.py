@@ -7,6 +7,10 @@ left the other rows' OncoKB columns empty. This takes such an *_oncokb.maf,
 sends only the skipped rows to MafAnnotator, and fills their OncoKB columns.
 Rows that were already annotated are left untouched. The input is replaced
 atomically; the original is kept as <name>.filtered.bak.
+
+Those MAFs have the v3 annotator's columns. Since 0.3.0 (upstream v4.1.0) the
+expected MAF header has three more germline columns, so this refuses them
+("MAF does not end with the OncoKB annotation columns"); run it from the 0.2.0-upstream-v3.4.2 image instead.
 """
 
 import argparse
@@ -18,8 +22,7 @@ import subprocess
 import sys
 import tempfile
 
-from AnnotatorCore import get_oncokb_annotation_column_headers
-from filtered_maf_annotator import oncokb_echo, read_header
+from filtered_maf_annotator import maf_annotation_header, oncokb_echo, read_header
 
 
 csv.field_size_limit(sys.maxsize)
@@ -37,7 +40,7 @@ def was_skipped(row, func_index):
 
 
 def split_skipped(maf_path, query_path):
-    annotation_header = get_oncokb_annotation_column_headers(False, True)
+    annotation_header = maf_annotation_header()
     with maf_path.open(newline="") as source, query_path.open("w", newline="") as target:
         reader = csv.reader(source, delimiter="\t")
         writer = csv.writer(target, delimiter="\t", lineterminator="\n")
@@ -107,7 +110,12 @@ def main():
                    "-b", os.environ["ONCOKB_API_TOKEN"]]
         if args.tumor_type != ".":
             command.extend(["-t", args.tumor_type])
-        subprocess.run(command, check=True)
+        # Not check=True: a CalledProcessError traceback prints the command,
+        # which holds the token. Report the exit status only.
+        result = subprocess.run(command)
+        if result.returncode:
+            print(f"{Path(command[1]).name} exited with status {result.returncode}", file=sys.stderr)
+            sys.exit(result.returncode)
         filled = merge_backfill(args.maf, annotated, merged, header, n_input, func_index)
         if filled != skipped:
             raise ValueError(f"Filled {filled} rows, expected {skipped}")
