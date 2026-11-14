@@ -1871,22 +1871,97 @@ spec:
             type: DirectoryOrCreate
       script:
         name: "duckdb-fusions-v2-script"
-        image: qldrsc/duckdb:latest
-        command: ["duckdb", "-init"]
+        # Same DuckDB as before (0.8.1), pinned to the digest it runs today.
+        image: qldrsc/duckdb@sha256:fe7b9397f8f65b96c1920c4e5ca66dc71bc30a6872893572a643442d2379fa3d
+        command: [sh]
         source: |
-          .open "/mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}"
-          CREATE TABLE fusions_with_oncokb AS FROM read_json_auto('/mnt/input/fusions.json', format='array');
-          CREATE VIEW combined_fusions AS
+          set -eu
+          # The SQL goes in on stdin with .bail on, so a failing statement fails the step.
+          # (Under `duckdb -init` a failed CREATE still exits 0: that is how the views below
+          # went missing while the step reported Succeeded.)
+          #
+          # combined_fusions and advanced_combined_fusions are built here as plain tables, not
+          # views. They read every field through to_json(row), so a field this sample's JSON
+          # does not have (no Tools, no STAR-Fusion call anywhere, an empty fusion list) gives
+          # NULL instead of a binder error. The JSON functions exist only in this CLI: api-edge's
+          # bundled DuckDB has no json extension, so a view using them could not be read there.
+          # Every column is VARCHAR, BIGINT or DOUBLE (no JSON type, for the same reason).
+          # Numbers use TRY_CAST: a stray "NA" gives NULL (FFPM 0) instead of failing the step
+          # and blocking the sample's output copy.
+          # advanced_combined_fusions carries the columns api-edge's fusion table reads, under
+          # the same names as duckdb-fusions.
+          DB="/mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}"
+          # A file that already has either name as a VIEW (an older layout) would make
+          # CREATE OR REPLACE TABLE fail. DROP VIEW IF EXISTS fails on a TABLE in this
+          # DuckDB, so check the type first; a TABLE from an earlier run is replaced below.
+          for name in combined_fusions advanced_combined_fusions; do
+            if [ "$(duckdb "$DB" -csv -noheader -c "SELECT count(*) FROM information_schema.tables WHERE table_name = '$name' AND table_type = 'VIEW'")" != 0 ]; then
+              duckdb "$DB" -c "DROP VIEW $name"
+            fi
+          done
+          duckdb "$DB" <<'SQL'
+          .bail on
+          CREATE OR REPLACE TABLE fusions_with_oncokb AS FROM read_json_auto('/mnt/input/fusions.json', format='array');
+          CREATE OR REPLACE TABLE combined_fusions AS
           SELECT
-              fusions_with_oncokb."Fusion",
-              fusions_with_oncokb."Tools",
-              fusions_with_oncokb."Fusion Indication Index (FII)",
-              fusions_with_oncokb."order_weight",
-              fusions_with_oncokb."clinical_tier",
-              fusions_with_oncokb."OncoKB",
-          FROM
-              fusions_with_oncokb;
-          .exit
+              j ->> '$.Fusion' AS "Fusion",
+              concat_ws(',',
+                  CASE WHEN coalesce(j ->> '$.arriba', 'null') <> 'null' THEN 'arriba' END,
+                  CASE WHEN coalesce(j ->> '$.starfusion', 'null') <> 'null' THEN 'starfusion' END) AS "Tools",
+              TRY_CAST(j ->> '$."Fusion Indication Index (FII)"' AS DOUBLE) AS "Fusion Indication Index (FII)",
+              TRY_CAST(j ->> '$.order_weight' AS DOUBLE) AS "order_weight",
+              j ->> '$.clinical_tier' AS "clinical_tier",
+              CAST(j -> '$.OncoKB' AS VARCHAR) AS "OncoKB"
+          FROM (SELECT to_json(f) AS j FROM fusions_with_oncokb f);
+          CREATE OR REPLACE TABLE advanced_combined_fusions AS
+          SELECT
+              j ->> '$.Fusion' AS "Fusion",
+              split_part(j ->> '$.Fusion', '--', 1) AS "LeftGene",
+              coalesce(nullif(split_part(sf ->> '$.position', '#', 1), ''),
+                       nullif(split_part(ar ->> '$.position', '#', 1), ''), '') AS "LeftBreakpoint",
+              split_part(j ->> '$.Fusion', '--', 2) AS "RightGene",
+              coalesce(nullif(split_part(sf ->> '$.position', '#', 2), ''),
+                       nullif(split_part(ar ->> '$.position', '#', 2), ''), '') AS "RightBreakpoint",
+              TRY_CAST(sf ->> '$.junction_reads' AS BIGINT) AS "JunctionReadCount",
+              TRY_CAST(sf ->> '$.spanning_reads' AS BIGINT) AS "SpanningFragCount",
+              -- fusion-report writes STAR-Fusion's FFPM as "ffmp"; 0 when only Arriba called it
+              coalesce(TRY_CAST(coalesce(sf ->> '$.ffpm', sf ->> '$.ffmp') AS DOUBLE), 0.0) AS "FFPM",
+              coalesce(j ->> '$.Databases', '[]') AS "annots",
+              concat_ws(',',
+                  CASE WHEN coalesce(ar ->> '$', 'null') <> 'null' THEN 'arriba' END,
+                  CASE WHEN coalesce(sf ->> '$', 'null') <> 'null' THEN 'starfusion' END) AS "Tools",
+              ar ->> '$.confidence' AS "ArribaConfidence",
+              ar ->> '$."reading-frame"' AS "ReadingFrame",
+              TRY_CAST(j ->> '$."Fusion Indication Index (FII)"' AS DOUBLE) AS "FII",
+              TRY_CAST(j ->> '$.order_weight' AS DOUBLE) AS "order_weight",
+              j ->> '$.clinical_tier' AS "clinical_tier",
+              coalesce(o ->> '$.MUTATION_EFFECT', '') AS "MUTATION_EFFECT",
+              coalesce(o ->> '$.ONCOGENIC', '') AS "ONCOGENIC",
+                  nullif(o ->> '$.LEVEL_1', '') AS "LEVEL_1",
+                  nullif(o ->> '$.LEVEL_2', '') AS "LEVEL_2",
+                  nullif(o ->> '$.LEVEL_3A', '') AS "LEVEL_3A",
+                  nullif(o ->> '$.LEVEL_3B', '') AS "LEVEL_3B",
+                  nullif(o ->> '$.LEVEL_4', '') AS "LEVEL_4",
+                  nullif(o ->> '$.LEVEL_R1', '') AS "LEVEL_R1",
+                  nullif(o ->> '$.LEVEL_R2', '') AS "LEVEL_R2",
+                  nullif(o ->> '$.HIGHEST_LEVEL', '') AS "HIGHEST_LEVEL",
+                  nullif(o ->> '$.HIGHEST_SENSITIVE_LEVEL', '') AS "HIGHEST_SENSITIVE_LEVEL",
+                  nullif(o ->> '$.HIGHEST_RESISTANCE_LEVEL', '') AS "HIGHEST_RESISTANCE_LEVEL",
+                  nullif(o ->> '$.TX_CITATIONS', '') AS "TX_CITATIONS",
+                  nullif(o ->> '$.LEVEL_Dx1', '') AS "LEVEL_Dx1",
+                  nullif(o ->> '$.LEVEL_Dx2', '') AS "LEVEL_Dx2",
+                  nullif(o ->> '$.LEVEL_Dx3', '') AS "LEVEL_Dx3",
+                  nullif(o ->> '$.HIGHEST_DX_LEVEL', '') AS "HIGHEST_DX_LEVEL",
+                  nullif(o ->> '$.DX_CITATIONS', '') AS "DX_CITATIONS",
+                  nullif(o ->> '$.LEVEL_Px1', '') AS "LEVEL_Px1",
+                  nullif(o ->> '$.LEVEL_Px2', '') AS "LEVEL_Px2",
+                  nullif(o ->> '$.LEVEL_Px3', '') AS "LEVEL_Px3",
+                  nullif(o ->> '$.HIGHEST_PX_LEVEL', '') AS "HIGHEST_PX_LEVEL",
+                  nullif(o ->> '$.PX_CITATIONS', '') AS "PX_CITATIONS",
+                  nullif(o ->> '$.MUTATION_EFFECT_CITATIONS', '') AS "MUTATION_EFFECT_CITATIONS"
+          FROM (SELECT j, j -> '$.starfusion' AS sf, j -> '$.arriba' AS ar, j -> '$.OncoKB' AS o
+                FROM (SELECT to_json(f) AS j FROM fusions_with_oncokb f));
+          SQL
         volumeMounts:
           - name: fusions-json-f
             mountPath: "/mnt/input/fusions.json"
