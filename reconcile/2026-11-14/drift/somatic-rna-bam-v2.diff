@@ -1,0 +1,20 @@
+--- repo workflows/somatic/v2/somatic-rna-bam.yaml (spec)
++++ live somatic-rna-bam-v2 (spec)
+@@ -100,7 +100,7 @@
+         - name: sample-id
+           value: '{{inputs.parameters.sample-id}}'
+         - name: gene-annotation-gtf
+-          value: '{{inputs.parameters.ref-base-dir}}/{{inputs.parameters.ref-version}}/gene_annots/gencode.v49.basic.annotation.MANE_Select.gtf.gz'
++          value: '{{=jsonpath(inputs.parameters[''ref-paths''], ''$.genes.annotation'')}}'
+         - name: input-bam
+           value: '{{tasks.samtools-sort-index.outputs.parameters.output-bam}}'
+         - name: output-dir
+@@ -121,7 +121,7 @@
+         - name: ref-genome-fa
+           value: '{{=jsonpath(inputs.parameters[''ref-paths''], ''$.genome'')}}'
+         - name: gene-annotation-gtf
+-          value: '{{inputs.parameters.ref-base-dir}}/{{inputs.parameters.ref-version}}/gene_annots/gencode.v49.basic.annotation.MANE_Select.gtf.gz'
++          value: '{{=jsonpath(inputs.parameters[''ref-paths''], ''$.genes.annotation'')}}'
+         - name: output-fusions-tsv
+           value: '{{inputs.parameters.sample-temp-dir}}results/fusions/arriba/{{inputs.parameters.sample-id}}_fusions.tsv'
+         - name: output-fusions-discarded-tsv

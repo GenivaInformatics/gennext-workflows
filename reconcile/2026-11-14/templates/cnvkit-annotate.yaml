@@ -1,0 +1,246 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cnvkit-annotate
+  namespace: argo
+  labels:
+    pipeline: cnv-calling
+    tool: cnvkit-annotate
+spec:
+  templates:
+  - container:
+      args:
+      - |
+        import sys
+        import os
+        from collections import defaultdict
+
+        SAMPLE_ID = "{{inputs.parameters.sample-id}}"
+        INPUT_VCF = f"/mnt/output/{SAMPLE_ID}.cnv.vcf"
+        OUTPUT_VCF = f"/mnt/output/{SAMPLE_ID}.cnv.annotated.vcf"
+        REFFLAT = "/mnt/ref/regions/refFlat_hg38.txt"
+
+        print("=== CNVkit Gene Annotation ===")
+        print(f"  Sample:  {SAMPLE_ID}")
+        print(f"  Input:   {INPUT_VCF}")
+        print(f"  RefFlat: {REFFLAT}")
+        print(f"  Output:  {OUTPUT_VCF}")
+
+        # Validate inputs
+        for path, label in [(INPUT_VCF, "Input VCF"), (REFFLAT, "RefFlat")]:
+            if not os.path.isfile(path):
+                print(f"Error: {label} not found: {path}", file=sys.stderr)
+                sys.exit(1)
+
+        # --- Parse refFlat file ---
+        print("Parsing refFlat file...")
+        genes_by_chrom = defaultdict(list)
+
+        with open(REFFLAT, "r") as f:
+            for line in f:
+                fields = line.strip().split("\t")
+                if len(fields) < 11:
+                    continue
+
+                exon_starts = [int(x) for x in fields[9].rstrip(",").split(",") if x]
+                exon_ends = [int(x) for x in fields[10].rstrip(",").split(",") if x]
+
+                gene = {
+                    "name": fields[0],
+                    "transcript": fields[1],
+                    "chrom": fields[2],
+                    "strand": fields[3],
+                    "tx_start": int(fields[4]),
+                    "tx_end": int(fields[5]),
+                    "cds_start": int(fields[6]),
+                    "cds_end": int(fields[7]),
+                    "exon_count": int(fields[8]),
+                    "exon_starts": exon_starts,
+                    "exon_ends": exon_ends,
+                }
+                genes_by_chrom[gene["chrom"]].append(gene)
+
+        for chrom in genes_by_chrom:
+            genes_by_chrom[chrom].sort(key=lambda g: g["tx_start"])
+
+        total_genes = sum(len(v) for v in genes_by_chrom.values())
+        print(f"Loaded {total_genes} gene annotations from {len(genes_by_chrom)} chromosomes")
+
+
+        def find_overlapping_genes(chrom, start, end, min_overlap=0.1):
+            """Find genes overlapping a region, return list of overlap dicts."""
+            overlaps = []
+            if chrom not in genes_by_chrom:
+                return overlaps
+
+            for gene in genes_by_chrom[chrom]:
+                if gene["tx_end"] < start:
+                    continue
+                if gene["tx_start"] > end:
+                    break
+
+                overlap_start = max(start, gene["tx_start"])
+                overlap_end = min(end, gene["tx_end"])
+                overlap_size = overlap_end - overlap_start
+
+                if overlap_size <= 0:
+                    continue
+
+                gene_size = gene["tx_end"] - gene["tx_start"]
+                if gene_size == 0:
+                    continue
+                percent_overlap = (overlap_size / gene_size) * 100
+
+                if percent_overlap < (min_overlap * 100):
+                    continue
+
+                # Determine overlap type
+                if start <= gene["tx_start"] and end >= gene["tx_end"]:
+                    overlap_type = "COMPLETE"
+                elif start > gene["tx_start"] and end < gene["tx_end"]:
+                    overlap_type = "INTERNAL"
+                elif gene["tx_start"] <= start and gene["tx_end"] >= end:
+                    overlap_type = "SPANNING"
+                elif gene["strand"] == "+":
+                    overlap_type = "PARTIAL_5PRIME" if end < gene["tx_end"] else "PARTIAL_3PRIME"
+                else:
+                    overlap_type = "PARTIAL_5PRIME" if start > gene["tx_start"] else "PARTIAL_3PRIME"
+
+                # Determine functional impact
+                if overlap_start < gene["cds_end"] and overlap_end > gene["cds_start"]:
+                    impact = "CDS_AFFECTED"
+                elif overlap_start < gene["tx_start"] - 2000:
+                    impact = "PROMOTER"
+                else:
+                    impact = "UTR_ONLY"
+
+                # Count affected exons
+                exons_affected = 0
+                for i in range(gene["exon_count"]):
+                    if overlap_start < gene["exon_ends"][i] and overlap_end > gene["exon_starts"][i]:
+                        exons_affected += 1
+
+                overlaps.append({
+                    "gene_name": gene["name"],
+                    "overlap_type": overlap_type,
+                    "impact": impact,
+                    "percent_overlap": percent_overlap,
+                    "exons_affected": exons_affected,
+                    "total_exons": gene["exon_count"],
+                })
+
+            return overlaps
+
+
+        def deduplicate_overlaps(overlaps):
+            """Keep best transcript per gene name."""
+            type_priority = {
+                "COMPLETE": 4, "SPANNING": 3,
+                "PARTIAL_5PRIME": 2, "PARTIAL_3PRIME": 2,
+                "INTERNAL": 1,
+            }
+            best = {}
+            for o in overlaps:
+                name = o["gene_name"]
+                if name not in best:
+                    best[name] = o
+                else:
+                    cur = best[name]
+                    cur_pri = type_priority.get(cur["overlap_type"], 0)
+                    new_pri = type_priority.get(o["overlap_type"], 0)
+                    if new_pri > cur_pri or (new_pri == cur_pri and o["percent_overlap"] > cur["percent_overlap"]):
+                        best[name] = o
+            return list(best.values())
+
+
+        def extract_info_value(info_str, key):
+            """Extract a value from VCF INFO field by key."""
+            for field in info_str.split(";"):
+                if field.startswith(key + "="):
+                    return field[len(key) + 1:]
+            return None
+
+        # --- Process VCF ---
+        print("Processing VCF...")
+        total_variants = 0
+        annotated_variants = 0
+
+        new_info_headers = [
+            '##INFO=<ID=GENES,Number=.,Type=String,Description="Comma-separated list of overlapping gene names">',
+            '##INFO=<ID=GENE_COUNT,Number=1,Type=Integer,Description="Number of overlapping genes">',
+            '##INFO=<ID=GENE_DETAILS,Number=.,Type=String,Description="Detailed gene overlap information (gene:overlap_type:impact:percent:exons)">',
+        ]
+
+        with open(INPUT_VCF, "r") as fin, open(OUTPUT_VCF, "w") as fout:
+            for line in fin:
+                if line.startswith("##"):
+                    fout.write(line)
+                    continue
+
+                if line.startswith("#CHROM"):
+                    # Insert new INFO headers before the #CHROM line
+                    for hdr in new_info_headers:
+                        fout.write(hdr + "\n")
+                    fout.write(line)
+                    continue
+
+                # Data line
+                total_variants += 1
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) < 8:
+                    fout.write(line)
+                    continue
+
+                chrom = parts[0]
+                pos = int(parts[1])
+                info = parts[7]
+
+                # Get END from INFO field
+                end_val = extract_info_value(info, "END")
+                end = int(end_val) if end_val else pos
+
+                overlaps = find_overlapping_genes(chrom, pos, end)
+
+                if overlaps:
+                    annotated_variants += 1
+                    unique_overlaps = deduplicate_overlaps(overlaps)
+                    gene_names = [o["gene_name"] for o in unique_overlaps]
+
+                    genes_str = ",".join(gene_names)
+                    gene_count = len(gene_names)
+                    details = "|".join(
+                        f'{o["gene_name"]}:{o["overlap_type"]}:{o["impact"]}:{o["percent_overlap"]:.0f}%:{o["exons_affected"]}/{o["total_exons"]}_exons'
+                        for o in unique_overlaps
+                    )
+
+                    parts[7] = f"{info};GENES={genes_str};GENE_COUNT={gene_count};GENE_DETAILS={details}"
+
+                fout.write("\t".join(parts) + "\n")
+
+        if total_variants > 0:
+            pct = 100 * annotated_variants / total_variants
+        else:
+            pct = 0
+
+        print(f"\nAnnotation complete:")
+        print(f"  Total variants:     {total_variants}")
+        print(f"  Annotated variants: {annotated_variants} ({pct:.1f}%)")
+        print(f"  Output: {OUTPUT_VCF}")
+      command:
+      - python3
+      - -c
+      image: python:3.11-slim
+      resources:
+        requests:
+          cpu: '1'
+          memory: 2Gi
+      volumeMounts:
+      - mountPath: /mnt/ref
+        name: ref-data
+        readOnly: true
+      - mountPath: /mnt/output
+        name: output-data
+    inputs:
+      parameters:
+      - name: sample-id
+    name: run-cnvkit-annotate

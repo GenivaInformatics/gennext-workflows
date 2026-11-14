@@ -1,0 +1,20 @@
+--- repo tasks/copy_temp_to_output.yaml (spec)
++++ live copy-temp-to-output (spec)
+@@ -23,7 +23,7 @@
+     image: eeacms/rsync:latest
+     source: |
+       #!/bin/sh
+-      rsync -r /mnt/temp/ /mnt/output/ && rm -r /mnt/temp/*
++      rsync -r /mnt/temp/ /mnt/output/ && find /mnt/temp -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+     volumeMounts:
+     - mountPath: /mnt/output/
+       name: output-rel-dir
+@@ -50,7 +50,7 @@
+     image: eeacms/rsync:latest
+     source: |
+       #!/bin/sh
+-      rsync -av --no-owner --no-group /mnt/temp/ /mnt/output/ && rm -r /mnt/temp/*
++      rsync -av --no-owner --no-group /mnt/temp/ /mnt/output/ && find /mnt/temp -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+     volumeMounts:
+     - mountPath: /mnt/output/
+       name: output-rel-dir

@@ -1,0 +1,49 @@
+--- repo workflows/somatic/v2/somatic-fusion-fastq.yaml (spec)
++++ live somatic-fusion-fastq-v2 (spec)
+@@ -253,33 +253,12 @@
+         parameters:
+         - name: sample-id
+           value: '{{inputs.parameters.sample-id}}'
+-        - name: input-bam
+-          value: '{{tasks.samtools-sort-index-arriba.outputs.parameters.output-bam}}'
+-        - name: starfusion-tsv
+-          value: '{{tasks.star-fusion.outputs.parameters.output-fusions-tsv}}'
+-        - name: arriba-tsv
+-          value: '{{tasks.arriba.outputs.parameters.output-fusions-tsv}}'
++        - name: fq-r1
++          value: '{{tasks.fastp.outputs.parameters.fq-r1}}'
++        - name: fq-r2
++          value: '{{tasks.fastp.outputs.parameters.fq-r2}}'
+         - name: fusion-list-tsv
+           value: '{{tasks.fusion-report.outputs.parameters.output-dir}}fusion_list.tsv'
+-        - name: output-dir
+-          value: '{{inputs.parameters.sample-scratch-dir}}extracted_reads/'
+-        - name: thread-count
+-          value: '{{inputs.parameters.thread-count}}'
+-      depends: samtools-sort-index-arriba && fusion-report
+-      name: extract-fusion-reads
+-      templateRef:
+-        name: extract-reads-for-fusion-inspector-template
+-        template: extract-reads-for-fusion-inspector
+-    - arguments:
+-        parameters:
+-        - name: sample-id
+-          value: '{{inputs.parameters.sample-id}}'
+-        - name: fq-r1
+-          value: '{{tasks.extract-fusion-reads.outputs.parameters.fq-r1}}'
+-        - name: fq-r2
+-          value: '{{tasks.extract-fusion-reads.outputs.parameters.fq-r2}}'
+-        - name: fusion-list-tsv
+-          value: '{{tasks.extract-fusion-reads.outputs.parameters.filtered-fusion-list-tsv}}'
+         - name: ctat-genome-lib-build-dir
+           value: '{{=jsonpath(inputs.parameters[''ref-paths''], ''$.rna.ctat-genome-lib-build-dir'')}}'
+         - name: output-dir
+@@ -290,7 +269,7 @@
+           value: '{{inputs.parameters.sample-scratch-dir}}fusion-inspector/'
+         - name: thread-count
+           value: '{{inputs.parameters.thread-count}}'
+-      depends: extract-fusion-reads
++      depends: fusion-report
+       name: fusion-inspector
+       templateRef:
+         name: fusion-inspector-template

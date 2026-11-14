@@ -1,0 +1,63 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: survivor
+  namespace: argo
+spec:
+  arguments: {}
+  templates:
+  - inputs:
+      parameters:
+      - name: input-manta-vcf
+      - name: input-gridss-vcf
+      - name: input-tiddit-vcf
+    metadata: {}
+    name: survivor
+    outputs:
+      parameters:
+      - name: output-vcf
+        valueFrom:
+          path: /mnt/output/merged_vcf/merged_results.vcf
+    script:
+      command:
+      - sh
+      image: quay.io/biocontainers/survivor:1.0.7--h077b44d_6
+      name: ''
+      resources: {}
+      source: |
+        gunzip -d -c /mnt/input/manta_targeted_vcf/{{=sprig.osBase(inputs.parameters['input-manta-vcf'])}} \
+        > /mnt/input/manta_targeted_vcf/{{=sprig.osBase(inputs.parameters['input-manta-vcf'])}}.decompressed
+
+        cat <<EOF > instructions.txt
+        /mnt/input/manta_targeted_vcf/{{=sprig.osBase(inputs.parameters['input-manta-vcf'])}}.decompressed
+        /mnt/input/gridss_targeted_vcf/{{=sprig.osBase(inputs.parameters['input-gridss-vcf'])}}
+        /mnt/input/tiddit_targeted_vcf/{{=sprig.osBase(inputs.parameters['input-tiddit-vcf'])}}
+        EOF
+
+        SURVIVOR merge instructions.txt 1000 2 1 1 0 30 /mnt/output/merged_vcf/merged_results.vcf
+      volumeMounts:
+      - mountPath: /mnt/input/manta_targeted_vcf/
+        name: input-manta-vcf
+      - mountPath: /mnt/input/gridss_targeted_vcf/
+        name: input-gridss-vcf
+      - mountPath: /mnt/input/tiddit_targeted_vcf/
+        name: input-tiddit-vcf
+      - mountPath: /mnt/output/merged_vcf/
+        name: output-vcf
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-manta-vcf''])}}'
+        type: Directory
+      name: input-manta-vcf
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-gridss-vcf''])}}'
+        type: Directory
+      name: input-gridss-vcf
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-tiddit-vcf''])}}'
+        type: Directory
+      name: input-tiddit-vcf
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-vcf''])}}'
+        type: Directory
+      name: output-vcf
