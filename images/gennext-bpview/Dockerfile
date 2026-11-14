@@ -10,10 +10,12 @@ RUN micromamba install -y -n base -c bioconda -c conda-forge \
 
 ENV PATH=/opt/conda/bin:$PATH
 
-COPY bpview.py /opt/bpview/bpview.py
+COPY bpview.py fusion_events.py /opt/bpview/
 COPY tests /opt/bpview/tests
 RUN python /opt/bpview/tests/test_bpview.py \
+    && python /opt/bpview/tests/test_fusion_events.py \
     && ln -s /opt/bpview/bpview.py /usr/local/bin/bpview \
-    && chmod +x /opt/bpview/bpview.py
+    && ln -s /opt/bpview/fusion_events.py /usr/local/bin/fusion-events \
+    && chmod +x /opt/bpview/bpview.py /opt/bpview/fusion_events.py
 
 # No ENTRYPOINT: the Argo template sets `command:`.

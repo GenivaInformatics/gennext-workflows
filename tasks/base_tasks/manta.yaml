@@ -99,7 +99,8 @@ spec:
           #                 uses the file for read groups it cannot estimate. SV calling
           #                 always uses the real BAM.
           #   failed        Manta did not complete, or an input BAM is missing, empty,
-          #                 unindexed or unreadable (checked before anything runs). With
+          #                 unindexed, unreadable or has no reads (checked before
+          #                 anything runs). With
           #                 on-failure=placeholder the step writes empty VCFs (marked
           #                 ##MantaStatus=FAILED) so the downstream SV chain can still
           #                 run; with on-failure=fail the step exits non-zero after
@@ -229,7 +230,7 @@ spec:
             esac
           }
 
-          # Missing, empty, unindexed or unreadable input BAMs: report them as such
+          # Missing, empty, unindexed, unreadable or read-less input BAMs: report them as such
           # instead of as an alignment-stats failure. Sets reason.
           check_inputs() {
             local bam
@@ -437,7 +438,8 @@ spec:
           #                 uses the file for read groups it cannot estimate. SV calling
           #                 always uses the real BAM.
           #   failed        Manta did not complete, or an input BAM is missing, empty,
-          #                 unindexed or unreadable (checked before anything runs). With
+          #                 unindexed, unreadable or has no reads (checked before
+          #                 anything runs). With
           #                 on-failure=placeholder the step writes empty VCFs (marked
           #                 ##MantaStatus=FAILED) so the downstream SV chain can still
           #                 run; with on-failure=fail the step exits non-zero after
@@ -567,7 +569,7 @@ spec:
             esac
           }
 
-          # Missing, empty, unindexed or unreadable input BAMs: report them as such
+          # Missing, empty, unindexed, unreadable or read-less input BAMs: report them as such
           # instead of as an alignment-stats failure. Sets reason.
           check_inputs() {
             local bam
