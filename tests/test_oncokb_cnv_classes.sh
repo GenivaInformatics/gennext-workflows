@@ -229,7 +229,7 @@ DUCKDB_IMAGE=$(build_db "$WORK/old" "$WORK/old/annot/cnv_oncokb_annot.tsv")
 build_db "$WORK/new" "$WORK/new/annot/cnv_oncokb_annot.tsv" >/dev/null
 
 q() { docker run --rm -v "$1/db:/mnt/output" "$DUCKDB_IMAGE" duckdb -csv /mnt/output/results.duckdb "$2"; }
-ONCOKB_VALUES="ONCOGENIC|MUTATION_EFFECT|MUTATION_EFFECT_CITATIONS|GENE_IN_ONCOKB|VARIANT_IN_ONCOKB|ANNOTATED|LEVEL_.*|HIGHEST_.*|TX_CITATIONS|DX_CITATIONS|PX_CITATIONS"
+ONCOKB_VALUES="ONCOGENIC|MUTATION_EFFECT|MUTATION_EFFECT_CITATIONS|GENE_IN_ONCOKB|VARIANT_IN_ONCOKB|ANNOTATED|LEVEL_.*|HIGHEST_.*|TX_CITATIONS|DX_CITATIONS|PX_CITATIONS|COPY_NUMBER_ALTERATION"
 for view in combined_cnv advanced_combined_cnv; do
   schema="SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '$view' ORDER BY ordinal_position"
   diff <(q "$WORK/old" "$schema") <(q "$WORK/new" "$schema") || fail "$view columns or types differ"
@@ -240,6 +240,41 @@ for view in combined_cnv advanced_combined_cnv; do
   [ "$(q "$WORK/new" "$count")" = "$(q "$WORK/old" "$count")" ] || fail "$view row count differs"
 done
 echo "ok  duckdb-cnv: same columns, types and rows apart from the OncoKB values"
+
+# The class sent to OncoKB: in both views, VARCHAR, NULL for the SV-path
+# layout (no Copy_Number_Alteration column, as before #39), and for the CNA
+# path the same class the annotator was asked about, row for row.
+for view in combined_cnv advanced_combined_cnv; do
+  for side in old new; do
+    t=$(q "$WORK/$side" "SELECT data_type FROM information_schema.columns
+      WHERE table_name = '$view' AND column_name = 'COPY_NUMBER_ALTERATION'" | tail -n +2)
+    [ "$t" = VARCHAR ] || fail "$view ($side): COPY_NUMBER_ALTERATION is '$t', expected VARCHAR"
+  done
+  [ "$(q "$WORK/old" "SELECT count(*) FROM $view WHERE COPY_NUMBER_ALTERATION IS NOT NULL" | tail -n +2)" = 0 ] \
+    || fail "$view: the SV-path layout should have no class"
+  bad=$(q "$WORK/new" "SELECT count(*) FROM $view WHERE COPY_NUMBER_ALTERATION IS NOT NULL
+    AND COPY_NUMBER_ALTERATION NOT IN ('Amplification', 'Gain', 'Loss', 'Deletion')" | tail -n +2)
+  [ "$bad" = 0 ] || fail "$view: $bad rows with a class OncoKB doesn't define"
+done
+got=$(q "$WORK/new" "SELECT ONCOKB_GENE || ':' || coalesce(COPY_NUMBER_ALTERATION, '-') FROM combined_cnv
+  WHERE ONCOKB_GENE IS NOT NULL ORDER BY ALL" | tail -n +2)
+want=$(python3 - "$WORK/new/annot/cnv_oncokb_annot.tsv" "$WORK/old/filtered/annotsv_cnv_filtered.tsv" <<'PY'
+import csv, sys
+onc = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+ann = list(csv.DictReader(open(sys.argv[2]), delimiter="\t"))
+# combined_cnv: every AnnotSV row, LEFT JOIN on AnnotSV_ID and Gene_name = GeneA.
+by_key = {}
+for r in onc:
+    by_key.setdefault((r["AnnotSV_ID"], r["GeneA"]), []).append(r)
+out = []
+for a in ann:
+    for r in by_key.get((a["AnnotSV_ID"], a["Gene_name"]), []):
+        out.append(f'{r["GeneA"]}:{r["Copy_Number_Alteration"] or "-"}')
+print("\n".join(sorted(out)))
+PY
+)
+[ "$got" = "$want" ] || { diff <(echo "$want") <(echo "$got") >&2; fail "combined_cnv classes differ from the ones sent to OncoKB"; }
+echo "ok  duckdb-cnv: COPY_NUMBER_ALTERATION carries the class sent to OncoKB, NULL for older inputs"
 
 # --- 4. Single-PMID citations --------------------------------------------------
 build_db "$WORK/pmid" "$FIXTURES/oncokb_cnv_single_pmid.tsv" >/dev/null
