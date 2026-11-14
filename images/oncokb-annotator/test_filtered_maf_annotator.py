@@ -14,7 +14,7 @@ import AnnotatorCore
 from AnnotatorCore import MutationStatus, append_headers, get_oncokb_annotation_column_headers
 from filtered_maf_annotator import (
     CHUNK_ROWS, annotate_maf, count_maf, is_genome_kit_regions_file, main,
-    maf_annotation_header, merge_maf)
+    maf_annotation_header, mask_output, merge_maf, run_masked)
 from filtered_sv_annotator import main as sv_main
 from backfill_filtered_maf import main as backfill_main
 
@@ -71,7 +71,7 @@ class FilteredMafTest(unittest.TestCase):
                     str(output), "--regions-file",
                     "/sample/hg38_canonical_chrom_contig_regions.valid.bed"]
             with patch.object(sys, "argv", argv), patch.dict(os.environ, {}, clear=True), \
-                    patch("filtered_sv_annotator.subprocess.run") as run:
+                    patch("filtered_sv_annotator.run_masked") as run:
                 sv_main()
                 run.assert_not_called()
             with output.open(newline="") as file:
@@ -215,7 +215,7 @@ class FilteredMafTest(unittest.TestCase):
             argv = ["backfill_filtered_maf.py", "--maf", str(maf), "--reference", "GRCh38"]
             with patch.object(sys, "argv", argv), \
                     patch.dict(os.environ, {"ONCOKB_API_TOKEN": "t"}, clear=True), \
-                    patch("backfill_filtered_maf.subprocess.run", side_effect=fake_annotator):
+                    patch("backfill_filtered_maf.run_masked", side_effect=lambda c: fake_annotator(c).returncode):
                 backfill_main()
             self.assertEqual(sent, rows[:2])
             with maf.open(newline="") as file:
@@ -251,7 +251,7 @@ class FilteredMafTest(unittest.TestCase):
             argv = ["backfill_filtered_maf.py", "--maf", str(maf), "--reference", "GRCh38"]
             with patch.object(sys, "argv", argv), \
                     patch.dict(os.environ, {"ONCOKB_API_TOKEN": "t"}, clear=True), \
-                    patch("backfill_filtered_maf.subprocess.run") as run:
+                    patch("backfill_filtered_maf.run_masked") as run:
                 with self.assertRaisesRegex(ValueError, "OncoKB annotation columns"):
                     backfill_main()
                 run.assert_not_called()
@@ -313,14 +313,73 @@ class FilteredMafTest(unittest.TestCase):
             err = io.StringIO()
             with patch.object(sys, "argv", argv), \
                     patch.dict(os.environ, {"ONCOKB_API_TOKEN": "secret-token"}, clear=True), \
-                    patch("filtered_sv_annotator.subprocess.run",
-                          side_effect=lambda command: subprocess.CompletedProcess(command, 3)), \
+                    patch("filtered_sv_annotator.run_masked", return_value=3), \
                     contextlib.redirect_stderr(err), contextlib.redirect_stdout(err):
                 with self.assertRaises(SystemExit) as exit_:
                     sv_main()
             self.assertEqual(exit_.exception.code, 3)
             self.assertIn("StructuralVariantAnnotator.py exited with status 3", err.getvalue())
             self.assertNotIn("secret-token", err.getvalue())
+
+
+    def test_upstream_output_is_masked(self):
+        # Upstream prints the token-validation URL in connection errors and
+        # urllib3 retry warnings.
+        script = ("import sys; print('GET /api/v1/tokens/secret-token failed');"
+                  "print('Traceback: secret-token', file=sys.stderr); sys.exit(4)")
+        out = io.StringIO()
+        with patch.dict(os.environ, {"ONCOKB_API_TOKEN": "secret-token "}), \
+                patch.object(sys, "stdout", out):
+            status = run_masked([sys.executable, "-c", script])
+        self.assertEqual(status, 4)
+        self.assertNotIn("secret-token", out.getvalue())
+        self.assertIn("/api/v1/tokens/*** failed", out.getvalue())
+        self.assertIn("Traceback: ***", out.getvalue())
+
+    def test_own_output_is_masked(self):
+        out, err = io.StringIO(), io.StringIO()
+        with patch.dict(os.environ, {"ONCOKB_API_TOKEN": "secret-token"}), \
+                patch.object(sys, "stdout", out), patch.object(sys, "stderr", err):
+            mask_output()
+            print("token secret-token in a message")
+            print("and secret-token in a traceback", file=sys.stderr)
+        self.assertEqual(out.getvalue(), "token *** in a message\n")
+        self.assertEqual(err.getvalue(), "and *** in a traceback\n")
+
+    def test_logging_is_masked(self):
+        # AnnotatorCore configures logging on import, before mask_output runs.
+        import logging
+        err = io.StringIO()
+        handler = logging.StreamHandler(err)
+        logging.root.addHandler(handler)
+        try:
+            with patch.dict(os.environ, {"ONCOKB_API_TOKEN": "secret-token"}), \
+                    patch.object(sys, "stdout", io.StringIO()), patch.object(sys, "stderr", err):
+                mask_output()
+                logging.getLogger("urllib3.connectionpool").warning(
+                    "Retrying after connection broken: /api/v1/tokens/secret-token")
+        finally:
+            logging.root.removeHandler(handler)
+        self.assertNotIn("secret-token", err.getvalue())
+        self.assertIn("/api/v1/tokens/***", err.getvalue())
+
+    def test_rejected_token_fails_the_maf_step(self):
+        # validate_oncokb_token calls exit() on a rejected token: SystemExit(None).
+        with tempfile.TemporaryDirectory() as temp:
+            source, output = [Path(temp) / name for name in ("in.maf", "out.maf")]
+            write_tsv(source, HEADER, ROWS)
+            argv = ["filtered_maf_annotator.py", "--input", str(source), "--output",
+                    str(output), "--reference", "GRCh38", "--regions-file", "/sample/panel.bed"]
+            err = io.StringIO()
+            with patch.object(sys, "argv", argv), \
+                    patch.dict(os.environ, {"ONCOKB_API_TOKEN": "t"}, clear=True), \
+                    patch("AnnotatorCore.validate_oncokb_token", side_effect=SystemExit(None)), \
+                    contextlib.redirect_stderr(err):
+                with self.assertRaises(SystemExit) as stop:
+                    main()
+            self.assertEqual(stop.exception.code, 1)
+            self.assertIn("token missing, rejected or expired", err.getvalue())
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

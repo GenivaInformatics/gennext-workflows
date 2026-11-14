@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 from AnnotatorCore import get_oncokb_annotation_column_headers
-from filtered_maf_annotator import is_genome_kit_regions_file, read_header
+from filtered_maf_annotator import is_genome_kit_regions_file, mask_output, read_header, run_masked
 
 
 csv.field_size_limit(sys.maxsize)
@@ -37,6 +37,7 @@ def write_empty_annotations(input_path, output_path):
 
 
 def main():
+    mask_output()
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
@@ -51,12 +52,12 @@ def main():
                "-o", str(args.output), "-b", os.environ["ONCOKB_API_TOKEN"]]
     if args.tumor_type != ".":
         command.extend(["-t", args.tumor_type])
-    # Not check=True: a CalledProcessError traceback prints the command,
-    # which holds the token. Report the exit status only.
-    result = subprocess.run(command)
-    if result.returncode:
-        print(f"{Path(command[1]).name} exited with status {result.returncode}", file=sys.stderr)
-        sys.exit(result.returncode)
+    # Upstream's output passes through with the token masked; the command,
+    # which holds the token, is never printed.
+    status = run_masked(command)
+    if status:
+        print(f"{Path(command[1]).name} exited with status {status}", file=sys.stderr)
+        sys.exit(status)
     if not args.output.is_file() or args.output.stat().st_size == 0:
         raise RuntimeError("OncoKB SV/CNV annotator produced no output")
 

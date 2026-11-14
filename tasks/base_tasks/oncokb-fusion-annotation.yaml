@@ -86,6 +86,12 @@ spec:
           # -------------------------------------------------------
           print("\n=== Step 2: Running OncoKB FusionAnnotator ===")
 
+          # Everything printed from here on, including FusionAnnotator's output,
+          # has the token masked.
+          sys.path.insert(0, "/app/oncokb")
+          from filtered_maf_annotator import mask_output
+          mask_output()
+
           oncokb_token = os.environ["ONCOKB_API_TOKEN"]
           max_attempts = 3
 

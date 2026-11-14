@@ -6,6 +6,7 @@ import csv
 import logging
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 
@@ -106,6 +107,68 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
         return state["sent"]
 
 
+TOKEN_MASK = "***"
+
+
+def _token():
+    return os.environ.get("ONCOKB_API_TOKEN", "").strip()
+
+
+def mask_token(text, token=None):
+    """The text with the OncoKB token replaced by ***."""
+    token = _token() if token is None else token
+    return text.replace(token, TOKEN_MASK) if token else text
+
+
+class _MaskingStream:
+    def __init__(self, stream, token):
+        self._stream, self._token = stream, token
+
+    def write(self, text):
+        return self._stream.write(mask_token(text, self._token))
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def mask_output():
+    """Masks the token in everything this process prints from here on.
+
+    The token reaches output in more ways than our own code: upstream validates
+    it with GET /tokens/<token>, so a connection error, urllib3's retry
+    warnings and a traceback all print that URL. Logging handlers already
+    writing to stdout or stderr are moved to the masked streams.
+    """
+    token = _token()
+    if not token or isinstance(sys.stdout, _MaskingStream):
+        return
+    original = {id(sys.stdout): None, id(sys.stderr): None}
+    sys.stdout = _MaskingStream(sys.stdout, token)
+    sys.stderr = _MaskingStream(sys.stderr, token)
+    original[id(sys.stdout._stream)] = sys.stdout
+    original[id(sys.stderr._stream)] = sys.stderr
+    # AnnotatorCore calls logging.basicConfig when imported, so the root
+    # handler already holds the unmasked stream: point it at the masked one.
+    for handler in logging.root.handlers:
+        stream = getattr(handler, "stream", None)
+        if isinstance(handler, logging.StreamHandler) and original.get(id(stream)):
+            handler.setStream(original[id(stream)])
+
+
+def run_masked(command):
+    """Runs an upstream script with its output, masked, on ours. Returns its exit status.
+
+    Upstream's scripts take the token as -b, so the command itself is never
+    printed either.
+    """
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True, bufsize=1) as process:
+        for line in process.stdout:
+            sys.stdout.write(mask_token(line))
+            sys.stdout.flush()
+    return process.returncode
+
+
 def oncokb_echo(row):
     # AnnotatorCore.append_annotation_to_file writes every row through
     # encode('ascii', 'ignore'), so its echo of the input drops non-ASCII
@@ -188,6 +251,7 @@ def main():
     # Only for tests against demo.oncokb.org; production uses upstream's default.
     parser.add_argument("--api-url", default=None)
     args = parser.parse_args()
+    mask_output()
     logging.basicConfig(level=logging.INFO)
     if is_genome_kit_regions_file(args.regions_file):
         with args.input.open(newline="") as source:
@@ -201,8 +265,17 @@ def main():
         header, total = count_maf(args.input)
         print(f"MAF rows: {total}; sending all to OncoKB", flush=True)
         if total:
-            sent = annotate_maf(args.input, annotated, os.environ["ONCOKB_API_TOKEN"].strip(),
-                                args.reference, args.tumor_type, args.api_url)
+            try:
+                sent = annotate_maf(args.input, annotated, os.environ["ONCOKB_API_TOKEN"].strip(),
+                                    args.reference, args.tumor_type, args.api_url)
+            except SystemExit as stop:
+                # Upstream's validate_oncokb_token calls exit() when it rejects
+                # the token, which is status 0 when called in-process.
+                if stop.code in (None, 0):
+                    print("OncoKB: upstream stopped (token missing, rejected or expired); failing",
+                          file=sys.stderr)
+                    sys.exit(1)
+                raise
             if sent != total:
                 # A record spanning lines would split across chunks.
                 raise ValueError(f"MAF has {total} records but {sent} data lines")

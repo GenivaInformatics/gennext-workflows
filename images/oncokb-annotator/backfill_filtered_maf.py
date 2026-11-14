@@ -22,7 +22,8 @@ import subprocess
 import sys
 import tempfile
 
-from filtered_maf_annotator import maf_annotation_header, oncokb_echo, read_header
+from filtered_maf_annotator import (
+    mask_output, maf_annotation_header, oncokb_echo, read_header, run_masked)
 
 
 csv.field_size_limit(sys.maxsize)
@@ -91,6 +92,7 @@ def merge_backfill(maf_path, annotated_path, output_path, header, n_input, func_
 
 
 def main():
+    mask_output()
     parser = argparse.ArgumentParser()
     parser.add_argument("--maf", required=True, type=Path, help="filtered *_oncokb.maf, updated in place")
     parser.add_argument("--reference", required=True)
@@ -110,12 +112,12 @@ def main():
                    "-b", os.environ["ONCOKB_API_TOKEN"]]
         if args.tumor_type != ".":
             command.extend(["-t", args.tumor_type])
-        # Not check=True: a CalledProcessError traceback prints the command,
-        # which holds the token. Report the exit status only.
-        result = subprocess.run(command)
-        if result.returncode:
-            print(f"{Path(command[1]).name} exited with status {result.returncode}", file=sys.stderr)
-            sys.exit(result.returncode)
+        # Upstream's output passes through with the token masked; the command,
+        # which holds the token, is never printed.
+        status = run_masked(command)
+        if status:
+            print(f"{Path(command[1]).name} exited with status {status}", file=sys.stderr)
+            sys.exit(status)
         filled = merge_backfill(args.maf, annotated, merged, header, n_input, func_index)
         if filled != skipped:
             raise ValueError(f"Filled {filled} rows, expected {skipped}")

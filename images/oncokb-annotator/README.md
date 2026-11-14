@@ -1,6 +1,6 @@
 # OncoKB annotator image
 
-`bergun/oncokb-annotator:0.3.2-upstream-v4.1.0` is upstream
+`bergun/oncokb-annotator:0.3.3-upstream-v4.1.0` is upstream
 [oncokb-annotator](https://github.com/oncokb/oncokb-annotator) at tag `v4.1.0`
 (commit `77521cd`), unmodified, plus the three wrapper scripts in this
 directory. The previous image, `0.2.0-upstream-v3.4.2`, is upstream `v3.4.2`
@@ -46,11 +46,22 @@ byte. The wrapper refuses a MAF whose records span lines. The token is no
 longer passed on a command line, so it doesn't show in a failed step's log.
 `0.3.0` lacks the chunking and isn't used.
 
-The SV wrapper and `backfill_filtered_maf.py` still run upstream's command-line
-scripts, which take the token as `-b`. When upstream exits non-zero they print
-only the script name and exit status, never the command (from `0.3.2`; before,
-an uncaught `CalledProcessError` printed it). The live `0.2.0` tasks still
-print it on such a failure.
+**The token in logs.** The token reaches output in more ways than a command
+line: upstream validates it with `GET /tokens/<token>`, so a connection error,
+urllib3's retry warnings and a traceback all print that URL. From `0.3.3`:
+
+- every wrapper masks the token (as `***`) in everything it prints, including
+  logging and tracebacks (`mask_output()`);
+- the SV wrapper and `backfill_filtered_maf.py`, which run upstream's
+  command-line scripts with `-b <token>`, pass upstream's output through the
+  same mask and report a failure by exit status only, never the command
+  (`run_masked()`);
+- the task scripts that call upstream directly (`oncokb-cnv`, `oncokb-fusions`,
+  `oncokb-fusion-annotation`) use the same helpers or a `sed` mask.
+
+Upstream's `validate_oncokb_token` calls `exit()` when it rejects a token,
+which is status 0 when the MAF wrapper calls it in-process; the wrapper turns
+that into exit 1. The live `0.2.0` tasks print the token on any such failure.
 Upstream writes each output row through `encode('ascii', 'ignore')`, which
 drops non-ASCII characters from echoed input columns (ClinVar `CLNDN`
 "Muir-Torré"); the merge checks the echo against the ASCII-folded input and
