@@ -86,20 +86,27 @@ def main():
         _, rows = run_build(d, "S1", arriba, sf, pairs, ["--pon", pon])
         assert len(rows) == 4, sorted(rows)
         alk = rows["ALK1--PART1@chr1:1000:+"]
-        assert alk["callers"] == "arriba,starfusion" and alk["n_callers"] == "2", alk
+        assert alk["callers"] == "arriba|starfusion" and alk["n_callers"] == "2", alk
+        assert alk["caller_arriba"] == "true" and alk["caller_starfusion"] == "true"
         assert alk["breakpoint3"] == "chr2:500:+" and alk["reading_frame"] == "in-frame"
         assert alk["arriba_split_reads"] == "7" and alk["starfusion_junction_reads"] == "6"
         assert alk["unique_molecules"] == "7" and alk["support_source"] == "caller" and alk["pcr_copies"] == ""
         assert alk["tier"] == "1" and alk["oncokb_highest_level"] == "LEVEL_1", alk["tier_reason"]
+        assert alk["tier_basis"] == "oncokb_actionable" and alk["tier_flags"] == "" and alk["pon_recurrent"] == "false"
         assert alk["pon_gene_pair_count"] == "1" and alk["pon_junction_count"] == "1" and alk["pon_size"] == "3"
         assert alk["event_id"] == "S1:E0001", alk["event_id"]  # tier 1 sorts first
 
         junk = rows["NTRKX--JUNK@chr3:1000:+"]
         assert junk["tier"] == "3" and "but one caller" in junk["tier_reason"], junk["tier_reason"]
+        assert junk["tier_basis"] == "none" and junk["tier_flags"] == "weak_caller_evidence", junk["tier_flags"]
+        assert junk["caller_arriba"] == "false" and junk["caller_starfusion"] == "true"
         known = rows["KNOWN--PAIR@chr7:1000:+"]
         assert known["tier"] == "2" and known["tier_reason"] == "known fusion: Mitelman", known["tier_reason"]
+        assert known["tier_basis"] == "curated_known" and known["curated_known"] == "true"
+        assert known["known_db"] == "Mitelman", known["known_db"]
         recur = rows["RECUR--PAIR@chr5:1000:+"]
         assert recur["pon_gene_pair_count"] == "3" and recur["tier"] == "3", recur
+        assert recur["pon_recurrent"] == "true" and recur["tier_flags"] == "pon_recurrent|pon_capped", recur["tier_flags"]
         assert "recurrent in PoN (3/3 samples): capped at tier 3" in recur["tier_reason"], recur["tier_reason"]
 
         # bpview counts replace the caller counts when bpview drew the event.
@@ -114,6 +121,8 @@ def main():
         assert alk["unique_molecules"] == "3" and alk["pcr_copies"] == "43" and alk["support_source"] == "bpview"
         assert alk["bpview_contig"] == "ALK1--PART1__chr1_1000__chr2_500"
         assert alk["tier"] == "2" and "(not tier 1: 3 unique molecule(s) < 4)" in alk["tier_reason"], alk["tier_reason"]
+        assert alk["tier_basis"] == "oncokb_actionable" and alk["tier_flags"] == "low_unique_molecules"
+        assert alk["pon_recurrent"] == "" and alk["pon_size"] == ""  # no PoN given
 
         # Empty caller outputs give an empty table with a header.
         _, rows = run_build(d, "S2", [], [], {})

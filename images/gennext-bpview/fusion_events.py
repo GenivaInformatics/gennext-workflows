@@ -47,23 +47,29 @@ ONCOGENIC = {"Oncogenic", "Likely Oncogenic"}
 CURATED_DB = {"Mitelman", "COSMIC", "CIViC"}
 
 # Column order and DuckDB types of the output; duckdb-fusion-events reads it with these types.
+# Every field a user may filter on is its own typed column. List columns (VARCHAR[]) are written
+# '|'-separated in the TSV and split on load; an empty cell is an empty list.
+TIER_FLAGS = ("out_of_frame", "weak_caller_evidence", "low_unique_molecules", "pon_recurrent", "pon_capped")
 COLUMNS = [
     ("sample_id", "VARCHAR"), ("event_id", "VARCHAR"), ("fusion", "VARCHAR"),
-    ("gene5", "VARCHAR"), ("gene3", "VARCHAR"), ("gene5_aliases", "VARCHAR"), ("gene3_aliases", "VARCHAR"),
+    ("gene5", "VARCHAR"), ("gene3", "VARCHAR"), ("gene5_aliases", "VARCHAR[]"), ("gene3_aliases", "VARCHAR[]"),
     ("breakpoint5", "VARCHAR"), ("breakpoint3", "VARCHAR"), ("orientation_known", "BOOLEAN"),
-    ("callers", "VARCHAR"), ("n_callers", "INTEGER"),
+    ("callers", "VARCHAR[]"), ("n_callers", "INTEGER"), ("caller_arriba", "BOOLEAN"), ("caller_starfusion", "BOOLEAN"),
     ("arriba_status", "VARCHAR"), ("arriba_confidence", "VARCHAR"), ("arriba_type", "VARCHAR"),
     ("arriba_split_reads", "INTEGER"), ("arriba_discordant_mates", "INTEGER"),
     ("starfusion_junction_reads", "INTEGER"), ("starfusion_spanning_frags", "INTEGER"),
     ("starfusion_ffpm", "DOUBLE"),
     ("reading_frame", "VARCHAR"), ("splice_type", "VARCHAR"),
     ("unique_molecules", "INTEGER"), ("pcr_copies", "INTEGER"), ("support_source", "VARCHAR"),
-    ("known_db", "VARCHAR"),
+    ("known_db", "VARCHAR[]"), ("curated_known", "BOOLEAN"),
     ("oncokb_oncogenic", "VARCHAR"), ("oncokb_mutation_effect", "VARCHAR"),
     ("oncokb_highest_level", "VARCHAR"), ("oncokb_highest_dx_level", "VARCHAR"),
     ("pair_clinical_tier", "VARCHAR"), ("pair_fii", "DOUBLE"),
     ("pon_gene_pair_count", "INTEGER"), ("pon_junction_count", "INTEGER"), ("pon_size", "INTEGER"),
-    ("tier", "INTEGER"), ("tier_reason", "VARCHAR"),
+    ("pon_recurrent", "BOOLEAN"),
+    # tier_basis: the rule that set the tier (oncokb_actionable | oncokb_oncogenic | curated_known | none);
+    # tier_flags: what held it back (TIER_FLAGS); tier_reason: the same in words.
+    ("tier", "INTEGER"), ("tier_basis", "VARCHAR"), ("tier_flags", "VARCHAR[]"), ("tier_reason", "VARCHAR"),
     ("bpview_contig", "VARCHAR"), ("builder_version", "VARCHAR"),
 ]
 PON_COLUMNS = ["sample_id", "gene5", "gene3", "chr5", "pos5", "keep5", "chr3", "pos3", "keep3"]
@@ -177,52 +183,62 @@ def evidence_fails(row, opts):
     """Why the fusion evidence is too weak to carry an OncoKB hit: (basic, support).
     basic: frame and caller evidence, needed for tiers 1 and 2 through OncoKB.
     support: unique molecules, needed for tier 1 only."""
-    basic = []
+    basic, support = {}, {}
     if row["reading_frame"] in ("out-of-frame", "stop-codon") and not opts.allow_out_of_frame:
-        basic.append(f"reading frame {row['reading_frame']}")
+        basic["out_of_frame"] = f"reading frame {row['reading_frame']}"
     if row["n_callers"] < 2 and row["arriba_confidence"] not in ("high", "medium"):
-        basic.append("one caller and Arriba confidence not high/medium")
-    support = []
+        basic["weak_caller_evidence"] = "one caller and Arriba confidence not high/medium"
     if row["unique_molecules"] < opts.tier1_min_unique_molecules:
-        support.append(f"{row['unique_molecules']} unique molecule(s) < {opts.tier1_min_unique_molecules}")
+        support["low_unique_molecules"] = (f"{row['unique_molecules']} unique molecule(s) < "
+                                           f"{opts.tier1_min_unique_molecules}")
     return basic, support
 
 
 def tier_event(row, opts):
     level, dx = row["oncokb_highest_level"] or "", row["oncokb_highest_dx_level"] or ""
     onc = row["oncokb_oncogenic"] or ""
-    curated = sorted(CURATED_DB & set(filter(None, (row["known_db"] or "").split(","))))
+    curated = sorted(CURATED_DB & set(row["known_db"]))
     basic, low = evidence_fails(row, opts)
     # OncoKB levels are often partner-agnostic (any NTRK or ALK fusion), so an OncoKB hit
     # only counts with fusion evidence; without it, only a curated known pair keeps tier 2.
     actionable = level in ACTIONABLE or dx in ACTIONABLE_DX
     oncogenic = actionable or onc in ONCOGENIC or level in ONCOGENIC_LEVELS or dx in ONCOGENIC_DX
     lab = "OncoKB " + ", ".join(x for x in (onc, level, dx) if x and x != "Unknown")
-    reasons = []
+    reasons, flags = [], []
     if actionable and not basic and not low:
-        tier = 1
+        tier, basis = 1, "oncokb_actionable"
         reasons.append(lab)
     elif oncogenic and not basic:
-        tier = 2
-        reasons.append(lab + (" (not tier 1: " + "; ".join(low) + ")" if actionable and low else ""))
+        tier, basis = 2, "oncokb_actionable" if actionable else "oncokb_oncogenic"
+        if actionable and low:
+            flags += list(low)
+        reasons.append(lab + (" (not tier 1: " + "; ".join(low.values()) + ")" if actionable and low else ""))
     elif curated:
-        tier = 2
+        tier, basis = 2, "curated_known"
         reasons.append("known fusion: " + ", ".join(curated))
         if oncogenic:
-            reasons.append(lab + ", but " + "; ".join(basic))
+            flags += list(basic)
+            reasons.append(lab + ", but " + "; ".join(basic.values()))
     else:
-        tier = 3
-        reasons.append(lab + ", but " + "; ".join(basic) if oncogenic else "not known or actionable")
+        tier, basis = 3, "none"
+        if oncogenic:
+            flags += list(basic)
+            reasons.append(lab + ", but " + "; ".join(basic.values()))
+        else:
+            reasons.append("not known or actionable")
     n, size = row["pon_gene_pair_count"], row["pon_size"]
-    if n is not None and size:
-        if n >= opts.pon_min_samples and n / size >= opts.pon_min_fraction:
-            capped = 2 if tier == 1 else 3
-            if capped != tier:
-                reasons.append(f"recurrent in PoN ({n}/{size} samples): capped at tier {capped}")
-                tier = capped
-            else:
-                reasons.append(f"recurrent in PoN ({n}/{size} samples)")
-    return tier, "; ".join(reasons)
+    recurrent = None if n is None or not size else (n >= opts.pon_min_samples and n / size >= opts.pon_min_fraction)
+    if recurrent:
+        flags.append("pon_recurrent")
+        capped = 2 if tier == 1 else 3
+        if capped != tier:
+            flags.append("pon_capped")
+            reasons.append(f"recurrent in PoN ({n}/{size} samples): capped at tier {capped}")
+            tier = capped
+        else:
+            reasons.append(f"recurrent in PoN ({n}/{size} samples)")
+    return dict(tier=tier, tier_basis=basis, tier_flags=flags, tier_reason="; ".join(reasons),
+                pon_recurrent=recurrent)
 
 
 def build_rows(opts):
@@ -244,11 +260,12 @@ def build_rows(opts):
             sample_id=opts.sample_id, event_id=None,
             fusion=fusion or f"{ev['gene1']}--{ev['gene2']}",
             gene5=ev["gene1"], gene3=ev["gene2"],
-            gene5_aliases=",".join(ev["names1"]), gene3_aliases=",".join(ev["names2"]),
+            gene5_aliases=list(ev["names1"]), gene3_aliases=list(ev["names2"]),
             breakpoint5=f"{ev['chr1']}:{ev['pos1']}:{strand5(ev)}",
             breakpoint3=f"{ev['chr2']}:{ev['pos2']}:{strand3(ev)}",
             orientation_known=bool(ev["oriented"]),
-            callers=",".join(ev["callers"]), n_callers=len(ev["callers"]),
+            callers=list(ev["callers"]), n_callers=len(ev["callers"]),
+            caller_arriba="arriba" in ev["callers"], caller_starfusion="starfusion" in ev["callers"],
             arriba_status="kept" if a else None,
             arriba_confidence=a.get("confidence"), arriba_type=a.get("type"),
             arriba_split_reads=(a.get("split_reads1", 0) + a.get("split_reads2", 0)) if a else None,
@@ -259,7 +276,7 @@ def build_rows(opts):
             reading_frame=(a.get("reading_frame") if a.get("reading_frame") not in (None, ".") else None),
             splice_type=bpview.splice_type(ev),
             unique_molecules=u, pcr_copies=dup, support_source=src,
-            known_db=",".join(known_dbs(ev, entry)) or None,
+            known_db=known_dbs(ev, entry),
             oncokb_oncogenic=onc.get("ONCOGENIC") or None,
             oncokb_mutation_effect=onc.get("MUTATION_EFFECT") or None,
             oncokb_highest_level=onc.get("HIGHEST_LEVEL") or None,
@@ -268,7 +285,8 @@ def build_rows(opts):
             pair_fii=(entry or {}).get("Fusion Indication Index (FII)"),
             pon_gene_pair_count=npair, pon_junction_count=njunc, pon_size=size,
             bpview_contig=b["contig"] if b else None, builder_version=__version__)
-        row["tier"], row["tier_reason"] = tier_event(row, opts)
+        row["curated_known"] = bool(CURATED_DB & set(row["known_db"]))
+        row.update(tier_event(row, opts))
         rows.append((row, bpview.priority(ev)))
     rows.sort(key=lambda x: x[1], reverse=True)
     rows.sort(key=lambda x: x[0]["tier"])  # stable: caller priority orders events within a tier
@@ -284,6 +302,8 @@ def fmt(v):
         return ""
     if isinstance(v, bool):
         return "true" if v else "false"
+    if isinstance(v, (list, tuple)):
+        return "|".join(str(x).replace("|", "/") for x in v)
     return str(v).replace("\t", " ").replace("\n", " ")
 
 
