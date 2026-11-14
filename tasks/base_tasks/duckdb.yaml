@@ -1880,14 +1880,18 @@ spec:
           # (Under `duckdb -init` a failed CREATE still exits 0: that is how the views below
           # went missing while the step reported Succeeded.)
           #
-          # The views read every field through to_json(row): a field this sample's JSON
-          # does not have (no Tools, no STAR-Fusion call anywhere, an empty fusion list)
-          # gives NULL instead of a binder error. advanced_combined_fusions carries the
-          # columns api-edge's fusion table reads, under the same names as duckdb-fusions.
+          # combined_fusions and advanced_combined_fusions are built here as plain tables, not
+          # views. They read every field through to_json(row), so a field this sample's JSON
+          # does not have (no Tools, no STAR-Fusion call anywhere, an empty fusion list) gives
+          # NULL instead of a binder error. The JSON functions exist only in this CLI: api-edge's
+          # bundled DuckDB has no json extension, so a view using them could not be read there.
+          # Every column is VARCHAR, BIGINT or DOUBLE (no JSON type, for the same reason).
+          # advanced_combined_fusions carries the columns api-edge's fusion table reads, under
+          # the same names as duckdb-fusions.
           duckdb "/mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}" <<'SQL'
           .bail on
           CREATE OR REPLACE TABLE fusions_with_oncokb AS FROM read_json_auto('/mnt/input/fusions.json', format='array');
-          CREATE OR REPLACE VIEW combined_fusions AS
+          CREATE OR REPLACE TABLE combined_fusions AS
           SELECT
               j ->> '$.Fusion' AS "Fusion",
               concat_ws(',',
@@ -1896,9 +1900,9 @@ spec:
               CAST(j ->> '$."Fusion Indication Index (FII)"' AS DOUBLE) AS "Fusion Indication Index (FII)",
               CAST(j ->> '$.order_weight' AS DOUBLE) AS "order_weight",
               j ->> '$.clinical_tier' AS "clinical_tier",
-              j -> '$.OncoKB' AS "OncoKB"
+              CAST(j -> '$.OncoKB' AS VARCHAR) AS "OncoKB"
           FROM (SELECT to_json(f) AS j FROM fusions_with_oncokb f);
-          CREATE OR REPLACE VIEW advanced_combined_fusions AS
+          CREATE OR REPLACE TABLE advanced_combined_fusions AS
           SELECT
               j ->> '$.Fusion' AS "Fusion",
               split_part(j ->> '$.Fusion', '--', 1) AS "LeftGene",
