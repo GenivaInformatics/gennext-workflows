@@ -265,7 +265,7 @@ spec:
         if avg_lengths_list:
             qc_data_dict['avgReadLength'] = str(f'{sum(avg_lengths_list) / len(avg_lengths_list):.2f}')
 
-        print(json.dumps({"runId": "{{inputs.parameters.run-id}}", "sampleId": "{{inputs.parameters.sample-id}}", "qcData": qc_data_dict, "token": token }))
+        print(json.dumps({"runId": "{{inputs.parameters.run-id}}", "sampleId": "{{inputs.parameters.sample-id}}", "qcData": qc_data_dict}))
 
         res = requests.post(url, json={"runId": "{{inputs.parameters.run-id}}", "sampleId": "{{inputs.parameters.sample-id}}", "qcData": qc_data_dict, "token": token })
         if res.status_code != 200:

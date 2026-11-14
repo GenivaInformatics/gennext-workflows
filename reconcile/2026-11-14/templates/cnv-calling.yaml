@@ -1,0 +1,161 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cnv-calling
+  namespace: argo
+  labels:
+    pipeline: cnv-calling
+  annotations:
+    workflows.argoproj.io/description: CNV calling pipeline using CNVkit for WES/WGS samples. Runs batch, call, export, gene annotation, and sigma-based filtering.
+spec:
+  arguments:
+    parameters:
+    - name: sample-id
+    - name: sample-base
+    - name: output-base
+    - name: ref-base
+      value: /runspace/gennext/data/ref/hg38
+    - name: node-selector
+      value: acurare-01
+  entrypoint: cnv-pipeline
+  nodeSelector:
+    kubernetes.io/hostname: '{{workflow.parameters.node-selector}}'
+  templates:
+  - dag:
+      tasks:
+      - arguments:
+          parameters:
+          - name: sample-id
+            value: '{{workflow.parameters.sample-id}}'
+        name: run-cnvkit-analysis
+        templateRef:
+          name: cnvkit-analysis
+          template: run-cnvkit-analysis
+      - arguments:
+          parameters:
+          - name: sample-id
+            value: '{{workflow.parameters.sample-id}}'
+        dependencies:
+        - run-cnvkit-analysis
+        name: run-cnvkit-export
+        templateRef:
+          name: cnvkit-export
+          template: run-cnvkit-export
+      - arguments:
+          parameters:
+          - name: sample-id
+            value: '{{workflow.parameters.sample-id}}'
+        dependencies:
+        - run-cnvkit-export
+        name: run-cnvkit-annotate
+        templateRef:
+          name: cnvkit-annotate
+          template: run-cnvkit-annotate
+      - arguments:
+          parameters:
+          - name: sample-id
+            value: '{{workflow.parameters.sample-id}}'
+        dependencies:
+        - run-cnvkit-annotate
+        name: run-cnvkit-filter
+        templateRef:
+          name: cnvkit-filter
+          template: run-cnvkit-filter
+      - arguments:
+          parameters:
+          - name: input-vcf-f
+            value: '{{workflow.parameters.output-base}}/results/cnv/{{workflow.parameters.sample-id}}.cnv.annotated.filtered.vcf'
+          - name: annotsv-ref-dir
+            value: '{{workflow.parameters.ref-base}}/other/AnnotSV/'
+          - name: ref-version
+            value: hg38
+          - name: sv-min-size
+            value: '20'
+          - name: output-annotsv-tsv-f
+            value: '{{workflow.parameters.output-base}}/results/cnv/{{workflow.parameters.sample-id}}_CNV_annot.tsv'
+        dependencies:
+        - run-cnvkit-filter
+        name: run-annotsv
+        templateRef:
+          name: annotsv-template
+          template: annotsv
+      - arguments:
+          parameters:
+          - name: sample-id
+            value: '{{workflow.parameters.sample-id}}'
+          - name: annotsv-tsv
+            value: '{{tasks.run-annotsv.outputs.parameters.output-annotsv-tsv-f}}'
+          - name: annotsv-filtered-out-tsv
+            value: '{{workflow.parameters.output-base}}/results/cnv/{{workflow.parameters.sample-id}}_CNV_annot_filtered.tsv'
+          - name: annotsv-oncokb-out-tsv
+            value: '{{workflow.parameters.output-base}}/results/cnv/{{workflow.parameters.sample-id}}_CNV_oncokb.tsv'
+        dependencies:
+        - run-annotsv
+        name: run-annotsv-to-oncokb
+        templateRef:
+          name: filter-annotsv-template
+          template: annotsv-to-oncokb-format
+      - arguments:
+          parameters:
+          - name: oncokb-sv-in-f
+            value: '{{tasks.run-annotsv-to-oncokb.outputs.parameters.annotsv-oncokb-out-tsv}}'
+          - name: oncokb-sv-out-f
+            value: '{{workflow.parameters.output-base}}/results/cnv/{{workflow.parameters.sample-id}}_CNV_oncokb_annot.tsv'
+        dependencies:
+        - run-annotsv-to-oncokb
+        name: run-oncokb-cnv
+        templateRef:
+          name: oncokb-templates
+          template: oncokb-sv
+      - arguments:
+          parameters:
+          - name: oncokb-tsv-f
+            value: '{{tasks.run-oncokb-cnv.outputs.parameters.oncokb-sv-out-f}}'
+          - name: annotsv-tsv-f
+            value: '{{tasks.run-annotsv-to-oncokb.outputs.parameters.annotsv-filtered-out-tsv}}'
+          - name: output-duckdb
+            value: '{{workflow.parameters.output-base}}/results/db/{{workflow.parameters.sample-id}}_results.duckdb'
+        dependencies:
+        - run-oncokb-cnv
+        name: run-duckdb-cnv
+        templateRef:
+          name: duckdb-template
+          template: duckdb-cnv
+      - arguments:
+          parameters:
+          - name: sample-id
+            value: '{{workflow.parameters.sample-id}}'
+        dependencies:
+        - run-cnvkit-analysis
+        name: run-scarhrd
+        templateRef:
+          name: scarhrd
+          template: run-scarhrd
+      - arguments:
+          parameters:
+          - name: run-id
+            value: '{{=sprig.osBase(workflow.parameters[''output-base''])}}'
+          - name: sample-id
+            value: '{{workflow.parameters.sample-id}}'
+          - name: hrd-json-f
+            value: '{{workflow.parameters.sample-base}}/metrics/hrd/{{workflow.parameters.sample-id}}_hrd.json'
+        dependencies:
+        - run-scarhrd
+        name: run-collect-hrd-data
+        templateRef:
+          name: collect-somatic-data-templates
+          template: collect-hrd-data
+    name: cnv-pipeline
+  volumes:
+  - hostPath:
+      path: '{{workflow.parameters.sample-base}}'
+    name: sample-data
+  - hostPath:
+      path: '{{workflow.parameters.ref-base}}'
+    name: ref-data
+  - hostPath:
+      path: '{{workflow.parameters.output-base}}/results/cnv'
+    name: output-data
+  - hostPath:
+      path: '{{workflow.parameters.sample-base}}/metrics/hrd'
+    name: hrd-output

@@ -1,0 +1,182 @@
+--- repo tasks/bed_split_v1.yaml (spec)
++++ live bed-split-workflow (spec)
+@@ -1,43 +1,59 @@
+ arguments:
+   parameters:
+-  - name: input_bed_f
+-  - name: output_dir
+-  - name: thread_count
+-  - name: node_name
++  - name: regions-file
++  - name: output-dir
++  - name: thread-count
++  - name: node-name
+ entrypoint: bed-split-workflow
+ nodeSelector:
+-  kubernetes.io/hostname: '{{workflow.parameters.node_name}}'
++  kubernetes.io/hostname: '{{workflow.parameters.node-name}}'
++podGC:
++  strategy: OnPodSuccess
+ templates:
+-- name: bed-split-workflow
++- arguments:
++    parameters:
++    - name: regions-file
++    - name: output-dir
++    - name: thread-count
++  name: bed-split-workflow
+   steps:
+   - - arguments:
+         parameters:
+-        - name: input_bed_f
+-          value: '{{workflow.parameters.input_bed_f}}'
+-        - name: output_dir
+-          value: '{{workflow.parameters.output_dir}}'
+-        - name: thread_count
+-          value: '{{workflow.parameters.thread_count}}'
++        - name: regions-file
++          value: '{{workflow.parameters.regions-file}}'
++        - name: output-dir
++          value: '{{workflow.parameters.output-dir}}'
++        - name: thread-count
++          value: '{{workflow.parameters.thread-count}}'
+       name: generate-beds-list
+       template: generate-beds-list
+   - - arguments:
+         parameters:
+-        - name: split_bed_f
++        - name: regions-file
+           value: '{{item}}'
++        - name: output-dir
++          value: '{{workflow.parameters.output-dir}}'
+       name: bgzip-tabix-bed
+       template: bgzip-tabix-bed
+       withParam: '{{steps.generate-beds-list.outputs.result}}'
+   - - arguments:
+         parameters:
+-        - name: split_bed_fs
++        - name: regions-files
+           value: '{{steps.bgzip-tabix-bed.outputs.parameters}}'
+       name: join-in
+       template: join-in
++  - - arguments:
++        parameters:
++        - name: index
++          value: '{{item.index}}'
++      name: post-join
++      template: post-join
++      withParam: '{{steps.join-in.outputs.parameters.regions-files}}'
+ - inputs:
+     parameters:
+-    - name: input_bed_f
+-    - name: output_dir
+-    - name: thread_count
++    - name: regions-file
++    - name: output-dir
++    - name: thread-count
+   name: generate-beds-list
+   script:
+     command:
+@@ -86,57 +102,70 @@
+ 
+       json.dump(
+           bed_split(
+-              Path('/mnt/input/{{=sprig.osBase(workflow.parameters.input_bed_f)}}'),
++              Path('/mnt/input/{{=sprig.osBase(inputs.parameters['regions-file'])}}'),
+               Path('/mnt/output/'),
+-              {{workflow.parameters.thread_count}}),
++              {{inputs.parameters.thread-count}}),
+           sys.stdout)
+     volumeMounts:
+-    - mountPath: /mnt/input/{{=sprig.osBase(workflow.parameters.input_bed_f)}}
++    - mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['regions-file'])}}
+       name: input
+     - mountPath: /mnt/output/
+       name: output
+-- container:
+-    args:
+-    - bgzip -k {{inputs.parameters.split_bed_f}}; tabix {{inputs.parameters.split_bed_f}}.gz
++- inputs:
++    parameters:
++    - name: regions-file
++    - name: output-dir
++  name: bgzip-tabix-bed
++  outputs:
++    parameters:
++    - name: index
++      value: '{{=sprig.last(sprig.splitList(''_'', inputs.parameters[''regions-file'']))}}'
++    - name: regions-file
++      value: '{{=sprig.osClean(inputs.parameters[''output-dir''])}}/{{=sprig.osBase(inputs.parameters[''regions-file''])}}'
++    - name: regions-file-gz
++      value: '{{=sprig.osClean(inputs.parameters[''output-dir''])}}/{{=sprig.osBase(inputs.parameters[''regions-file''])}}.gz'
++    - name: regions-file-gz-tbi
++      value: '{{=sprig.osClean(inputs.parameters[''output-dir''])}}/{{=sprig.osBase(inputs.parameters[''regions-file''])}}.gz.tbi'
++  script:
+     command:
+     - sh
+-    - -c
+     image: quay.io/biocontainers/htslib:1.17--h81da01d_2
++    source: |
++      bgzip -k {{inputs.parameters.regions-file}}; tabix {{inputs.parameters.regions-file}}.gz
+     volumeMounts:
+     - mountPath: /mnt/output/
+       name: output
+     workingDir: /mnt/output/
+-  inputs:
++- inputs:
+     parameters:
+-    - name: split_bed_f
+-  name: bgzip-tabix-bed
+-  outputs:
+-    parameters:
+-    - name: split_bed_f
+-      value: '{{=sprig.osDir(workflow.parameters.output_dir)}}/{{=sprig.osBase(inputs.parameters.split_bed_f)}}'
+-    - name: split_bed_f_gz
+-      value: '{{=sprig.osDir(workflow.parameters.output_dir)}}/{{=sprig.osBase(inputs.parameters.split_bed_f)}}.gz'
+-    - name: split_bed_f_gz_tbi
+-      value: '{{=sprig.osDir(workflow.parameters.output_dir)}}/{{=sprig.osBase(inputs.parameters.split_bed_f)}}.gz.tbi'
+-- container:
+-    args:
+-    - echo {{inputs.parameters.split_bed_fs}}
+-    command:
+-    - sh
+-    - -c
+-    image: alpine:latest
+-  inputs:
+-    parameters:
+-    - name: split_bed_fs
++    - name: regions-files
+   name: join-in
+   outputs:
+     parameters:
+-    - name: split_bed_fs
+-      value: '{{inputs.parameters.split_bed_fs}}'
++    - name: regions-files
++      value: '{{inputs.parameters.regions-files}}'
++  script:
++    command:
++    - sh
++    image: alpine:latest
++    source: |
++      echo {{inputs.parameters.regions-files}}
++- inputs:
++    parameters:
++    - name: index
++  name: post-join
++  script:
++    command:
++    - sh
++    image: alpine:latest
++    source: |
++      echo {{inputs.parameters.index}}
+ volumes:
+ - hostPath:
+-    path: '{{workflow.parameters.input_bed_f}}'
++    path: '{{inputs.parameters.regions-file}}'
++    type: File
+   name: input
+ - hostPath:
+-    path: '{{workflow.parameters.output_dir}}'
++    path: '{{inputs.parameters.output-dir}}'
++    type: DirectoryOrCreate
+   name: output

@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: update-run-status-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: run-id
+      - name: run-status
+    name: update-run-status
+    script:
+      command:
+      - python
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: python:alpine
+      name: update-run-status
+      source: |
+        import os
+        print(os.environ["GENNEXT_CLUSTER_TOKEN"])

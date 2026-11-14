@@ -1,0 +1,86 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: recompute-cds-coverage-workflow-template
+  namespace: argo
+spec:
+  arguments:
+    parameters:
+    - name: output-dir
+    - name: run-id
+    - name: sample-id
+    - name: regions-file
+    - name: node-name
+  entrypoint: recompute-cds-coverage-workflow
+  templates:
+  - dag:
+      tasks:
+      - arguments:
+          parameters:
+          - name: input-bed-file
+            value: '{{inputs.parameters.regions-file}}'
+          - name: gtf-file
+            value: '{{inputs.parameters.ref-base-dir}}/hg38/gene_annots/gencode.v49.basic.annotation.MANE_Select.gtf.gz'
+          - name: chains-dir
+            value: '{{inputs.parameters.ref-base-dir}}/hg38/other/chains/'
+          - name: output-dir
+            value: '{{inputs.parameters.output-dir}}/metrics/bed_validation/'
+        name: validate-bed-file
+        templateRef:
+          name: bed-validator-template
+          template: validate-bed-file
+      - arguments:
+          parameters:
+          - name: sample-id
+            value: '{{inputs.parameters.sample-id}}'
+          - name: thresholds
+            value: 1,5,10,30,50,100,500
+          - name: input-bam
+            value: '{{inputs.parameters.output-dir}}/bam/{{inputs.parameters.sample-id}}_recal.bam'
+          - name: output-dir
+            value: '{{inputs.parameters.output-dir}}/metrics/mosdepth/'
+          - name: regions-bed-f
+            value: '{{tasks.validate-bed-file.outputs.parameters.validated-bed-cds-only-file}}'
+        depends: validate-bed-file
+        name: mosdepth
+        templateRef:
+          name: mosdepth-template
+          template: mosdepth-exome
+      - arguments:
+          parameters:
+          - name: input-dir
+            value: '{{inputs.parameters.output-dir}}/'
+          - name: output-dir
+            value: '{{inputs.parameters.output-dir}}/metrics/'
+        depends: mosdepth
+        name: multiqc
+        templateRef:
+          name: multiqc-template
+          template: main
+      - arguments:
+          parameters:
+          - name: sample-id
+            value: '{{inputs.parameters.sample-id}}'
+          - name: run-id
+            value: '{{inputs.parameters.run-id}}'
+          - name: metrics-dir
+            value: '{{inputs.parameters.output-dir}}/metrics/'
+        depends: multiqc
+        name: collect-qc-data
+        templateRef:
+          name: collect-qc-data-v2-templates
+          template: collect-qc-data-v2-bam
+    inputs:
+      parameters:
+      - name: output-dir
+      - name: run-id
+      - name: sample-id
+      - name: ref-base-dir
+        value: /runspace/gennext/data/ref/
+      - name: regions-file
+      - name: node-name
+    metadata: {}
+    name: recompute-cds-coverage-workflow
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.node-name}}'
+    outputs: {}

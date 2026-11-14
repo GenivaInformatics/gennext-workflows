@@ -1,0 +1,14 @@
+--- repo tasks/base_tasks/trim-galore.yaml (spec)
++++ live trim-galore-template (spec)
+@@ -20,9 +20,9 @@
+     name: trim-galore
+     source: |
+       trim_galore \
+-      --cores {{=sprig.min(sprig.int(inputs.parameters['thread-count']), 16)}} \
++      --cores {{inputs.parameters.thread-count}} \
+       --paired \
+-      --basename "{{inputs.parameters.sample-name}}" \
++      --basename {{inputs.parameters.sample-name}} \
+       --phred33 \
+       "/mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}" \
+       "/mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}" \

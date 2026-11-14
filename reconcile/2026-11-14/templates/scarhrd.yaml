@@ -1,0 +1,54 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: scarhrd
+  namespace: argo
+  labels:
+    pipeline: cnv-calling
+    tool: scarhrd
+spec:
+  templates:
+  - container:
+      args:
+      - |
+        set -euo pipefail
+        mkdir -p /mnt/hrd-output
+
+        SAMPLE_ID="{{inputs.parameters.sample-id}}"
+        BAM_STEM="${SAMPLE_ID}_recal"
+
+        echo "=== scarHRD Analysis ==="
+        echo "  Sample: ${SAMPLE_ID}"
+        echo "  Input:  /mnt/output/${BAM_STEM}.call.cns"
+
+        scarhrd-cli \
+            --input "/mnt/output/${BAM_STEM}.call.cns" \
+            --sample-id "$SAMPLE_ID" \
+            --sequenza-output "/mnt/hrd-output/${SAMPLE_ID}_sequenza.txt" \
+            --hrd-tsv-output "/mnt/hrd-output/${SAMPLE_ID}_hrd.tsv" \
+            --hrd-json-output "/mnt/hrd-output/${SAMPLE_ID}_hrd.json"
+
+        echo "=== scarHRD Analysis complete ==="
+        ls -la /mnt/hrd-output/
+      command:
+      - bash
+      - -euo
+      - pipefail
+      - -c
+      image: bergun/gennext-scarhrd-cli:0.1.0
+      resources:
+        requests:
+          cpu: '1'
+          memory: 2Gi
+      securityContext:
+        runAsUser: 0
+      volumeMounts:
+      - mountPath: /mnt/output
+        name: output-data
+        readOnly: true
+      - mountPath: /mnt/hrd-output
+        name: hrd-output
+    inputs:
+      parameters:
+      - name: sample-id
+    name: run-scarhrd

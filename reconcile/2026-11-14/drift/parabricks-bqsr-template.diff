@@ -1,0 +1,48 @@
+--- repo tasks/base_tasks/gpu_tasks/parabricks-bqsr.yaml (spec)
++++ live parabricks-bqsr-template (spec)
+@@ -72,12 +72,22 @@
+         echo "No regions file specified"
+       fi
+ 
++      # Workflows submitted before the hg38 reference map update still pass
++      # dbSNP155. Both releases live in the same mounted directory.
++      if [ "$dbsnpKnownSites" = "GRCh38.dbSNP155.vcf.gz" ]; then
++        dbsnpKnownSites="GRCh38.dbSNP157.vcf.gz"
++      fi
++
+       # Set known sites - prefer gnomAD when present, else fall back to dbSNP
+       knownSitesArg=""
+       if [ ! "." = "$gnomadFile" ] && [ -f "/mnt/ref/known-sites-gnomad/$gnomadFile" ]; then
+         echo "Using gnomAD known sites: /mnt/ref/known-sites-gnomad/$gnomadFile"
+         knownSitesArg="--knownSites /mnt/ref/known-sites-gnomad/$gnomadFile"
+       else
++        if [ ! -s "/mnt/ref/known-sites/$dbsnpKnownSites" ] || [ ! -s "/mnt/ref/known-sites/$dbsnpKnownSites.tbi" ]; then
++          echo "Missing dbSNP known sites or index: /mnt/ref/known-sites/$dbsnpKnownSites" >&2
++          exit 1
++        fi
+         echo "Using dbSNP known sites: /mnt/ref/known-sites/$dbsnpKnownSites"
+         knownSitesArg="--knownSites /mnt/ref/known-sites/$dbsnpKnownSites"
+       fi
+@@ -207,12 +217,22 @@
+         echo "No regions file specified"
+       fi
+ 
++      # Workflows submitted before the hg38 reference map update still pass
++      # dbSNP155. Both releases live in the same mounted directory.
++      if [ "$dbsnpKnownSites" = "GRCh38.dbSNP155.vcf.gz" ]; then
++        dbsnpKnownSites="GRCh38.dbSNP157.vcf.gz"
++      fi
++
+       # Set known sites - prefer gnomAD when present, else fall back to dbSNP
+       knownSitesArg=""
+       if [ ! "." = "$gnomadFile" ] && [ -f "/mnt/ref/known-sites-gnomad/$gnomadFile" ]; then
+         echo "Using gnomAD known sites: /mnt/ref/known-sites-gnomad/$gnomadFile"
+         knownSitesArg="--knownSites /mnt/ref/known-sites-gnomad/$gnomadFile"
+       else
++        if [ ! -s "/mnt/ref/known-sites/$dbsnpKnownSites" ] || [ ! -s "/mnt/ref/known-sites/$dbsnpKnownSites.tbi" ]; then
++          echo "Missing dbSNP known sites or index: /mnt/ref/known-sites/$dbsnpKnownSites" >&2
++          exit 1
++        fi
+         echo "Using dbSNP known sites: /mnt/ref/known-sites/$dbsnpKnownSites"
+         knownSitesArg="--knownSites /mnt/ref/known-sites/$dbsnpKnownSites"
+       fi

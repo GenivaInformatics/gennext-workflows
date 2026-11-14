@@ -1,0 +1,105 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: arriba-fusion-detection
+  namespace: argo
+  labels:
+    pipeline: fusion-detection
+    tool: arriba
+spec:
+  templates:
+  - container:
+      args:
+      - |
+        set -euo pipefail
+
+        # Resolve bundled resource files dynamically (handles v2.5.0 vs v2.5.1)
+        ARRIBA_DATA=/usr/local/var/lib/arriba
+        BLACKLIST=$(ls ${ARRIBA_DATA}/blacklist_hg38_GRCh38_v2.5.*.tsv.gz 2>/dev/null | head -1)
+        KNOWN_FUSIONS=$(ls ${ARRIBA_DATA}/known_fusions_hg38_GRCh38_v2.5.*.tsv.gz 2>/dev/null | head -1)
+        PROTEIN_DOMAINS=$(ls ${ARRIBA_DATA}/protein_domains_hg38_GRCh38_v2.5.*.gff3 2>/dev/null | head -1)
+
+        if [ -z "$BLACKLIST" ] || [ -z "$KNOWN_FUSIONS" ] || [ -z "$PROTEIN_DOMAINS" ]; then
+          echo "ERROR: Could not find arriba bundled resource files in ${ARRIBA_DATA}"
+          ls -la ${ARRIBA_DATA}/ || true
+          exit 1
+        fi
+
+        echo "Resolved arriba resources:"
+        echo "  Blacklist:        ${BLACKLIST}"
+        echo "  Known fusions:    ${KNOWN_FUSIONS}"
+        echo "  Protein domains:  ${PROTEIN_DOMAINS}"
+
+        mkdir -p /mnt/output/arriba
+
+        SAMPLE_ID="{{inputs.parameters.sample-id}}"
+        SENSITIVITY="{{inputs.parameters.sensitivity}}"
+        THREADS="{{inputs.parameters.threads}}"
+
+        BAM="/mnt/input/bam/${SAMPLE_ID}_RNA.bam"
+        GENOME="/mnt/ref/genome/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set.fa"
+        GTF="/mnt/ref/gene_annots/gencode.v48.basic.annotation.gtf"
+
+        ARRIBA_ARGS="-x ${BAM}"
+        ARRIBA_ARGS="${ARRIBA_ARGS} -o /mnt/output/arriba/${SAMPLE_ID}_fusions.tsv"
+        ARRIBA_ARGS="${ARRIBA_ARGS} -O /mnt/output/arriba/${SAMPLE_ID}_fusions.discarded.tsv"
+        ARRIBA_ARGS="${ARRIBA_ARGS} -a ${GENOME}"
+        ARRIBA_ARGS="${ARRIBA_ARGS} -g ${GTF}"
+        ARRIBA_ARGS="${ARRIBA_ARGS} -b ${BLACKLIST}"
+        ARRIBA_ARGS="${ARRIBA_ARGS} -k ${KNOWN_FUSIONS}"
+        ARRIBA_ARGS="${ARRIBA_ARGS} -t ${KNOWN_FUSIONS}"
+        ARRIBA_ARGS="${ARRIBA_ARGS} -p ${PROTEIN_DOMAINS}"
+
+        case "${SENSITIVITY}" in
+          ultra_sensitivity)
+            echo "Using ultra_sensitivity mode"
+            ARRIBA_ARGS="${ARRIBA_ARGS} -f blacklist,duplicates,low_entropy,multimappers,small_insert_size,hairpin,homopolymer,mismatches,relative_support,homologs"
+            ARRIBA_ARGS="${ARRIBA_ARGS} -S 1 -E 5.0 -V 0.2 -A 10 -K 0.95 -R 1000"
+            ;;
+          max_sensitivity)
+            echo "Using max_sensitivity mode"
+            ARRIBA_ARGS="${ARRIBA_ARGS} -f blacklist,duplicates,low_entropy,multimappers"
+            ARRIBA_ARGS="${ARRIBA_ARGS} -S 1 -E 1.0 -V 0.05 -A 15 -K 0.8 -R 5000"
+            ;;
+          *)
+            echo "ERROR: Unknown arriba sensitivity mode: ${SENSITIVITY}"
+            echo "Valid modes: ultra_sensitivity, max_sensitivity"
+            exit 1
+            ;;
+        esac
+
+        # Use -@ for threads (NOT -T which sets top_viral_contigs)
+        ARRIBA_ARGS="${ARRIBA_ARGS} -@ ${THREADS}"
+
+        echo "Running: arriba ${ARRIBA_ARGS}"
+        arriba ${ARRIBA_ARGS}
+
+        echo "arriba completed successfully"
+        ls -la /mnt/output/arriba/
+      command:
+      - bash
+      - -euo
+      - pipefail
+      - -c
+      image: quay.io/biocontainers/arriba:2.5.1--h87b9561_0
+      resources:
+        requests:
+          cpu: '4'
+          memory: 8Gi
+      volumeMounts:
+      - mountPath: /mnt/input
+        name: sample-data
+        readOnly: true
+      - mountPath: /mnt/ref
+        name: ref-data
+        readOnly: true
+      - mountPath: /mnt/output
+        name: output-data
+    inputs:
+      parameters:
+      - name: sample-id
+      - default: ultra_sensitivity
+        name: sensitivity
+      - default: '20'
+        name: threads
+    name: run-arriba

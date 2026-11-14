@@ -1,0 +1,11 @@
+--- repo workflows/wrapper-workflow-prs.yaml (spec)
++++ live wrapper-workflow-prs (spec)
+@@ -33,6 +33,8 @@
+           value: '{{workflow.parameters.job-id}}'
+         - name: product-id
+           value: '{{workflow.parameters.product-id}}'
++        - name: genotype-file-name
++          value: '{{workflow.parameters.product-id}}.tsv.gz'
+         - name: input-rel-dir
+           value: '{{tasks.get-node-config.outputs.parameters.input-rel-dir}}'
+         - name: temp-rel-dir

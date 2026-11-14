@@ -1,0 +1,40 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: get-rel-dirs
+  namespace: argo
+spec:
+  arguments:
+    parameters:
+    - name: node-name
+    - name: ref-ver
+  entrypoint: get-rel-dirs
+  nodeSelector:
+    kubernetes.io/hostname: '{{workflow.parameters.node-name}}'
+  serviceAccountName: gennext-workflows
+  templates:
+  - container:
+      image: alpine:3.18
+      volumeMounts:
+      - mountPath: /tmp/ref-configmap
+        name: gennext-references
+    inputs:
+      parameters:
+      - name: ref-ver
+        value: '{{workflow.parameters.ref-ver}}'
+    name: get-rel-dirs
+    outputs:
+      parameters:
+      - name: ref-genome-f
+        valueFrom:
+          path: /tmp/ref-configmap/{{inputs.parameters.ref-ver}}.genome
+      - name: ref-dbsnp-f
+        valueFrom:
+          path: /tmp/ref-configmap/{{inputs.parameters.ref-ver}}.dbsnp
+      - name: regions-bed-f
+        valueFrom:
+          path: /tmp/ref-configmap/{{inputs.parameters.ref-ver}}.regions.exome
+  volumes:
+  - configMap:
+      name: gennext-references
+    name: gennext-references

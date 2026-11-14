@@ -1,0 +1,22 @@
+--- repo workflows/msi_tmb_coverage_workflow.yaml (spec)
++++ live msi-tmb-coverage-workflow-template (spec)
+@@ -47,8 +47,6 @@
+           value: '0.95'
+         - name: output-dir
+           value: '{{inputs.parameters.base-dir}}/{{inputs.parameters.user-id}}/{{inputs.parameters.run-id}}/results/metrics/tmb/'
+-        - name: cosmic-vcf
+-          value: '{{inputs.parameters.ref-base-dir}}/hg38/other/cosmic/Cosmic_CompleteTargetedScreensMutant_v103_GRCh38.vcf.gz'
+         - name: filter-common-variants
+           value: 'true'
+         - name: gnomad-vcf
+@@ -57,6 +55,10 @@
+           value: '{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/turkish_variome/turkish_variome_1pct.vcf.gz'
+         - name: common-af-threshold
+           value: '0.01'
++        - name: filter-multihit
++          value: 'true'
++        - name: multihit-method
++          value: poisson
+       name: collect-tmb-data
+       templateRef:
+         name: collect-tmb-data-template

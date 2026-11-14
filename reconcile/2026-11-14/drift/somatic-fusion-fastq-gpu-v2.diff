@@ -1,0 +1,11 @@
+--- repo workflows/somatic/v2/somatic-fusion-fastq-gpu.yaml (spec)
++++ live somatic-fusion-fastq-gpu-v2 (spec)
+@@ -253,6 +253,8 @@
+           value: '{{tasks.arriba.outputs.parameters.output-fusions-tsv}}'
+         - name: fusion-list-tsv
+           value: '{{tasks.filter-artifact-fusions.outputs.parameters.output-fi-fusion-list-tsv}}'
++        - name: artifact-filter-mode
++          value: passthrough
+         - name: output-dir
+           value: '{{inputs.parameters.sample-scratch-dir}}extracted_reads/'
+         - name: thread-count

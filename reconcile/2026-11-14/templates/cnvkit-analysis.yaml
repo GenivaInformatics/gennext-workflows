@@ -1,0 +1,76 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cnvkit-analysis
+  namespace: argo
+  labels:
+    pipeline: cnv-calling
+    tool: cnvkit
+spec:
+  templates:
+  - container:
+      args:
+      - |
+        set -euo pipefail
+        mkdir -p /mnt/output
+
+        SAMPLE_ID="{{inputs.parameters.sample-id}}"
+        BAM="/mnt/sample/bam/${SAMPLE_ID}_recal.bam"
+        REFERENCE="/mnt/ref/other/cnvkit/A3416642_tumor_pooled_reference.cnn"
+        VCF="/mnt/sample/results/snv/${SAMPLE_ID}_mutect2_vlod.vcf.gz"
+
+        echo "=== CNVkit Analysis ==="
+        echo "  Sample:    ${SAMPLE_ID}"
+        echo "  BAM:       ${BAM}"
+        echo "  Reference: ${REFERENCE}"
+        echo "  VCF:       ${VCF}"
+
+        # Step 1: cnvkit.py batch (coverage, fix, segment, scatter, diagram)
+        echo "--- Step 1: cnvkit.py batch ---"
+        cnvkit.py batch "$BAM" \
+            -r "$REFERENCE" \
+            -d /mnt/output \
+            --scatter --diagram --drop-low-coverage
+
+        BAM_STEM="${SAMPLE_ID}_recal"
+
+        # Step 2: cnvkit.py call with BAF from VCF
+        echo "--- Step 2: cnvkit.py call ---"
+        cnvkit.py call "/mnt/output/${BAM_STEM}.cns" \
+            -v "$VCF" \
+            -i "$SAMPLE_ID" \
+            --ploidy 2 \
+            -o "/mnt/output/${BAM_STEM}.call.cns"
+
+        # Step 3: Regenerate scatter with BAF track
+        echo "--- Step 3: cnvkit.py scatter ---"
+        cnvkit.py scatter "/mnt/output/${BAM_STEM}.cnr" \
+            -s "/mnt/output/${BAM_STEM}.call.cns" \
+            -v "$VCF" \
+            -o "/mnt/output/${BAM_STEM}-scatter.png"
+
+        echo "=== CNVkit Analysis complete ==="
+        ls -la /mnt/output/
+      command:
+      - bash
+      - -euo
+      - pipefail
+      - -c
+      image: quay.io/biocontainers/cnvkit:0.9.12--pyhdfd78af_1
+      resources:
+        requests:
+          cpu: '4'
+          memory: 8Gi
+      volumeMounts:
+      - mountPath: /mnt/sample
+        name: sample-data
+        readOnly: true
+      - mountPath: /mnt/ref
+        name: ref-data
+        readOnly: true
+      - mountPath: /mnt/output
+        name: output-data
+    inputs:
+      parameters:
+      - name: sample-id
+    name: run-cnvkit-analysis

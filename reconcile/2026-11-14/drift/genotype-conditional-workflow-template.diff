@@ -1,0 +1,11 @@
+--- repo tasks/prs/genotype_conditional_workflow.yaml (spec)
++++ live genotype-conditional-workflow-template (spec)
+@@ -127,7 +127,7 @@
+     command:
+     - sh
+     image: alpine:3.14
+-    source: |-
++    source: |
+       #!/bin/sh
+       # Use a simple string comparison to check for {{ characters
+       first_two_chars=$(echo "{{inputs.parameters.gvcf-output}}" | cut -c1-2)
