@@ -1,0 +1,5 @@
+# Transitive packages upstream leaves unpinned, held at the versions
+# bergun/oncokb-annotator:0.1.7-unfiltered shipped.
+certifi==2025.11.12
+charset-normalizer==3.4.4
+idna==3.11
