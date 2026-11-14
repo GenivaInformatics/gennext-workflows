@@ -65,7 +65,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: "manta"
-        image: quay.io/biocontainers/manta:1.6.0--h9ee0642_2
+        image: quay.io/biocontainers/manta:1.6.0--h9ee0642_2@sha256:021aabe5f7314e02e60722c559f6f3c4bb6b1118c2e2ec0eb3095a8c7e431f26
         command: [bash]
         volumeMounts:
           - name: normal-bam
@@ -88,12 +88,16 @@ spec:
           # Status is always recorded in /mnt/output/stats/${sampleId}_manta_status.json
           # and in the `manta-status` output parameter:
           #   ok            Manta ran with its own alignment stats.
-          #   ok_clipstats  The BAM has no unclipped read pairs for Manta's
-          #                 alignment-stats step (UMI kits mask the inline UMI to N,
-          #                 so every read is soft-clipped). Stats were estimated on a 10%
-          #                 subsample with soft clips stripped and passed to Manta
-          #                 as --existingAlignStatsFile; SV calling still uses the
-          #                 real BAM.
+          #   ok_clipstats  Manta could not estimate alignment stats from the BAM
+          #                 itself (UMI kits mask the inline UMI to N, so every read is
+          #                 soft-clipped and Manta finds no high-confidence pairs) and
+          #                 used fallback stats instead. The fallback is estimated here
+          #                 from properly paired reads with soft clips stripped (a 10%
+          #                 subsample, or all reads if that is too few) and passed as
+          #                 --existingAlignStatsFile. In Manta 1.6.0 that file is only
+          #                 --default-stats-file: Manta's own stats step always runs and
+          #                 uses the file for read groups it cannot estimate. SV calling
+          #                 always uses the real BAM.
           #   failed        Manta did not complete. With on-failure=placeholder the
           #                 step writes empty VCFs (marked ##MantaStatus=FAILED) so
           #                 the downstream SV chain can still run; with on-failure=fail
@@ -115,8 +119,13 @@ spec:
           statsBams=()
           # sprig.osBase returns "." if the path is empty
           # mind the whitespace before '--'
+          # Fallback stats: Manta applies the FIRST entry of the fallback file to every
+          # read group it cannot estimate, so the tumor goes first. In a tumor+normal
+          # run where both fail, the normal would also get the tumor's distribution;
+          # no live caller runs Manta with a normal BAM today.
+          if [ ! "." = "$tumorBam" ]; then statsBams+=("/mnt/input/tumor_bam/$tumorBam"); fi
           if [ ! "." = "$normalBam" ]; then options+=" --normalBam=/mnt/input/normal_bam/$normalBam"; statsBams+=("/mnt/input/normal_bam/$normalBam"); fi
-          if [ ! "." = "$tumorBam" ]; then options+=" --tumorBam=/mnt/input/tumor_bam/$tumorBam"; statsBams+=("/mnt/input/tumor_bam/$tumorBam"); fi
+          if [ ! "." = "$tumorBam" ]; then options+=" --tumorBam=/mnt/input/tumor_bam/$tumorBam"; fi
           if [ ! "." = "$regionsFile" ]; then options+=" --exome --callRegions=/mnt/ref/regions/$regionsFile.gz"; fi
 
           echo "Sample ID: $sampleId"
@@ -125,7 +134,7 @@ spec:
 
           mkdir -p /mnt/output/stats
           MANTA_TMP_DIR=$(mktemp -p /mnt/scratch/ -d manta.XXXXXXXX)
-          trap 'rm -rf "$MANTA_TMP_DIR"' EXIT
+          trap 'rm -rf "$MANTA_TMP_DIR"' EXIT  # failure logs are copied to stats/ before exit
           LOG=$MANTA_TMP_DIR/manta.log
 
           run_manta() {  # $1 = run dir, rest = extra configManta.py args
@@ -134,32 +143,18 @@ spec:
               && $runDir/runWorkflow.py -m local -j $threads
           }
 
-          # Alignment stats from a subsample with soft clips removed (POS and TLEN
-          # are unchanged; only clipped bases are dropped from CIGAR/SEQ/QUAL).
+          # Alignment stats from properly paired reads with soft clips removed (POS
+          # and TLEN are unchanged; only clipped bases are dropped from CIGAR/SEQ/QUAL).
+          # A 10% subsample first; all reads if that has too few pairs (small panels).
           clip_stripped_stats() {
-            local out=$1 i=0
+            local out=$1 i=0 frac ok
             for bam in ${statsBams[@]+"${statsBams[@]}"}; do
-              local sb=$MANTA_TMP_DIR/clipstats.$i.bam
-              local region=()
-              if [ ! "." = "$regionsFile" ] && [ -s "/mnt/ref/regions/$regionsFile" ]; then region=(-L "/mnt/ref/regions/$regionsFile"); fi
-              $SAMTOOLS view -h -f 0x2 -F 0xF0C -s 7.10 ${region[@]+"${region[@]}"} "$bam" \
-                | awk 'BEGIN { OFS = "\t" }
-                       /^@/ { print; next }
-                       {
-                         c = $6
-                         if (match(c, /^[0-9]+S/)) {
-                           n = substr(c, 1, RLENGTH - 1) + 0; c = substr(c, RLENGTH + 1)
-                           $10 = substr($10, n + 1); if ($11 != "*") $11 = substr($11, n + 1)
-                         }
-                         if (match(c, /[0-9]+S$/)) {
-                           n = substr(c, RSTART, RLENGTH - 1) + 0; c = substr(c, 1, RSTART - 1)
-                           $10 = substr($10, 1, length($10) - n); if ($11 != "*") $11 = substr($11, 1, length($11) - n)
-                         }
-                         $6 = c; print
-                       }' \
-                | $SAMTOOLS view -b -o "$sb" - || return 1
-              $SAMTOOLS index "$sb" || return 1
-              $MANTA_HOME/libexec/GetAlignmentStats --ref $REF --output-file $MANTA_TMP_DIR/clipstats.$i.xml --align-file "$sb" || return 1
+              ok=0
+              for frac in 7.10 all; do
+                if clip_stripped_stats_one "$bam" "$frac" "$i"; then ok=1; break; fi
+                echo "Clip-stripped stats on $(basename $bam) failed with subsample '$frac'"
+              done
+              [ "$ok" = 1 ] || return 1
               i=$((i + 1))
             done
             local merge=($MANTA_HOME/libexec/MergeAlignmentStats --output-file "$out")
@@ -167,10 +162,48 @@ spec:
             "${merge[@]}"
           }
 
+          clip_stripped_stats_one() {  # $1 = bam, $2 = samtools -s value or "all", $3 = index
+            local bam=$1 i=$3 sb=$MANTA_TMP_DIR/clipstats.$3.bam
+            local region=() sub=()
+            if [ ! "." = "$regionsFile" ] && [ -s "/mnt/ref/regions/$regionsFile" ]; then region=(-L "/mnt/ref/regions/$regionsFile"); fi
+            if [ "$2" != all ]; then sub=(-s "$2"); fi
+            $SAMTOOLS view -h -f 0x2 -F 0xF0C ${sub[@]+"${sub[@]}"} ${region[@]+"${region[@]}"} "$bam" \
+              | awk -F'\t' -v OFS='\t' '
+                     /^@/ { print; next }
+                     {
+                       c = $6
+                       if (match(c, /^[0-9]+S/)) {
+                         n = substr(c, 1, RLENGTH - 1) + 0; c = substr(c, RLENGTH + 1)
+                         $10 = substr($10, n + 1); if ($11 != "*") $11 = substr($11, n + 1)
+                       }
+                       if (match(c, /[0-9]+S$/)) {
+                         n = substr(c, RSTART, RLENGTH - 1) + 0; c = substr(c, 1, RSTART - 1)
+                         $10 = substr($10, 1, length($10) - n); if ($11 != "*") $11 = substr($11, 1, length($11) - n)
+                       }
+                       $6 = c; print
+                     }' \
+              | $SAMTOOLS view -b -o "$sb" - || return 1
+            $SAMTOOLS index "$sb" || return 1
+            $MANTA_HOME/libexec/GetAlignmentStats --ref $REF --output-file $MANTA_TMP_DIR/clipstats.$i.xml --align-file "$sb" || return 1
+          }
+
+          json_safe() {  # drop quotes, backslashes and control characters (tabs, newlines)
+            printf '%s' "$1" | tr -d '"\\\000-\037'
+          }
+
           write_status() {  # $1 = status, $2 = reason
             printf '{"sample_id": "%s", "status": "%s", "reason": "%s", "manta_version": "1.6.0"}\n' \
-              "$sampleId" "$1" "$2" > "/mnt/output/stats/${sampleId}_manta_status.json"
+              "$(json_safe "$sampleId")" "$1" "$(json_safe "$2")" > "/mnt/output/stats/${sampleId}_manta_status.json"
             echo "$1" > /tmp/manta_status
+          }
+
+          # Did Manta's own stats step fall back to the supplied stats for a read
+          # group? GetAlignmentStats then prints "Using existing stats as default"
+          # (pyflow collects task stderr); "Too few high-confidence read pairs" is
+          # only printed when no fallback file is given. Checked on the run that
+          # succeeded.
+          used_fallback_stats() {
+            grep -qs "Using existing stats as default" "$1/workspace/pyflow.data/logs/pyflow_tasks_stderr_log.txt"
           }
 
           create_empty_vcf() {
@@ -190,13 +223,14 @@ spec:
           }
 
           # UMI libraries with the inline UMI masked to N have no unclipped reads at
-          # all; Manta's own stats step then retries for ~30 min before failing. Detect
-          # that up front from the first 20k properly paired primary reads.
+          # all, and Manta's own stats estimate then fails. Detect that up front from
+          # the first 20k properly paired primary reads, so the fallback stats are
+          # supplied on the first run instead of after a failed one.
           needs_clipstats() {
             local bam n
             for bam in ${statsBams[@]+"${statsBams[@]}"}; do
               n=$( { $SAMTOOLS view -f 0x2 -F 0xF0C "$bam" || true; } | head -n 20000 \
-                   | awk '$6 ~ /^[0-9]+M$/ { c++ } END { print c + 0 }')
+                   | awk -F'\t' '$6 != "*" && $6 !~ /[SH]/ { c++ } END { print c + 0 }')
               echo "Unclipped reads in first 20k of $(basename $bam): $n"
               if [ "$n" -eq 0 ]; then return 0; fi
             done
@@ -205,21 +239,20 @@ spec:
 
           status=failed
           reason=""
-          okStatus=ok
           extra=()
           runDir=$MANTA_TMP_DIR/run
           if needs_clipstats; then
-            echo "No unclipped read pairs; estimating alignment stats on clip-stripped reads"
+            echo "No unclipped read pairs; estimating fallback alignment stats on clip-stripped reads"
             if clip_stripped_stats $MANTA_TMP_DIR/clipstats.xml 2>&1 | tee -a "$LOG"; then
               extra=(--existingAlignStatsFile=$MANTA_TMP_DIR/clipstats.xml)
-              okStatus=ok_clipstats
             else
               reason="clip-stripped alignment stats failed"
             fi
           fi
 
           if [ -z "$reason" ] && run_manta $runDir ${extra[@]+"${extra[@]}"} 2>&1 | tee -a "$LOG"; then
-            status=$okStatus
+            status=ok
+            if [ ${#extra[@]} -gt 0 ] && used_fallback_stats $runDir; then status=ok_clipstats; fi
           elif [ -z "$reason" ] && [ ${#extra[@]} -eq 0 ] \
                && grep -rqs "Too few high-confidence read pairs" "$LOG" "$runDir/workspace/pyflow.data/logs"; then
             echo "Manta could not estimate alignment stats; retrying with clip-stripped stats"
@@ -231,7 +264,9 @@ spec:
               reason="alignment stats: too few high-confidence read pairs; clip-stripped retry failed"
             fi
           elif [ -z "$reason" ]; then
-            reason=$(grep -hE "ERROR|Error|error" "$LOG" | grep -v "^\s*$" | tail -1 | tr -d '"\\' | cut -c1-300)
+            # `|| true`: a log without an error line must not end the step under
+            # set -e before the placeholders and the status are written.
+            reason=$( { grep -hE "ERROR|Error|error" "$LOG" || true; } | awk 'NF { l = $0 } END { print l }' | cut -c1-300)
             reason=${reason:-"unknown (see step log)"}
           fi
 
@@ -250,6 +285,14 @@ spec:
           fi
 
           echo "MANTA FAILED: $reason"
+          # Keep the logs: the EXIT trap removes the run directories.
+          {
+            echo "== manta.log (last 200 lines)"; tail -n 200 "$LOG" 2>/dev/null || true
+            for f in $MANTA_TMP_DIR/run*/workspace/pyflow.data/logs/pyflow_log.txt; do
+              [ -f "$f" ] || continue
+              echo "== $(basename $(dirname $(dirname $(dirname $(dirname $f)))))/pyflow_log.txt (last 100 lines)"; tail -n 100 "$f" || true
+            done
+          } > "/mnt/output/stats/${sampleId}_manta_failure.log"
           create_empty_vcf "/mnt/output/${sampleId}_tumorSV.vcf.gz" "$reason"
           create_empty_vcf "/mnt/output/${sampleId}_diploidSV.vcf.gz" "$reason"
           echo "Manta run failed - empty output files created: $reason" > "/mnt/output/stats/${sampleId}_manta_failed.txt"
@@ -317,7 +360,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: "manta"
-        image: quay.io/biocontainers/manta:1.6.0--h9ee0642_2
+        image: quay.io/biocontainers/manta:1.6.0--h9ee0642_2@sha256:021aabe5f7314e02e60722c559f6f3c4bb6b1118c2e2ec0eb3095a8c7e431f26
         command: [bash]
         volumeMounts:
           - name: normal-bam
@@ -340,12 +383,16 @@ spec:
           # Status is always recorded in /mnt/output/stats/${sampleId}_manta_status.json
           # and in the `manta-status` output parameter:
           #   ok            Manta ran with its own alignment stats.
-          #   ok_clipstats  The BAM has no unclipped read pairs for Manta's
-          #                 alignment-stats step (UMI kits mask the inline UMI to N,
-          #                 so every read is soft-clipped). Stats were estimated on a 10%
-          #                 subsample with soft clips stripped and passed to Manta
-          #                 as --existingAlignStatsFile; SV calling still uses the
-          #                 real BAM.
+          #   ok_clipstats  Manta could not estimate alignment stats from the BAM
+          #                 itself (UMI kits mask the inline UMI to N, so every read is
+          #                 soft-clipped and Manta finds no high-confidence pairs) and
+          #                 used fallback stats instead. The fallback is estimated here
+          #                 from properly paired reads with soft clips stripped (a 10%
+          #                 subsample, or all reads if that is too few) and passed as
+          #                 --existingAlignStatsFile. In Manta 1.6.0 that file is only
+          #                 --default-stats-file: Manta's own stats step always runs and
+          #                 uses the file for read groups it cannot estimate. SV calling
+          #                 always uses the real BAM.
           #   failed        Manta did not complete. With on-failure=placeholder the
           #                 step writes empty VCFs (marked ##MantaStatus=FAILED) so
           #                 the downstream SV chain can still run; with on-failure=fail
@@ -367,8 +414,13 @@ spec:
           statsBams=()
           # sprig.osBase returns "." if the path is empty
           # mind the whitespace before '--'
+          # Fallback stats: Manta applies the FIRST entry of the fallback file to every
+          # read group it cannot estimate, so the tumor goes first. In a tumor+normal
+          # run where both fail, the normal would also get the tumor's distribution;
+          # no live caller runs Manta with a normal BAM today.
+          if [ ! "." = "$tumorBam" ]; then statsBams+=("/mnt/input/tumor_bam/$tumorBam"); fi
           if [ ! "." = "$normalBam" ]; then options+=" --normalBam=/mnt/input/normal_bam/$normalBam"; statsBams+=("/mnt/input/normal_bam/$normalBam"); fi
-          if [ ! "." = "$tumorBam" ]; then options+=" --tumorBam=/mnt/input/tumor_bam/$tumorBam"; statsBams+=("/mnt/input/tumor_bam/$tumorBam"); fi
+          if [ ! "." = "$tumorBam" ]; then options+=" --tumorBam=/mnt/input/tumor_bam/$tumorBam"; fi
           if [ ! "." = "$regionsFile" ]; then options+=" --exome --callRegions=/mnt/ref/regions/$regionsFile.gz"; fi
 
           echo "Sample ID: $sampleId"
@@ -377,7 +429,7 @@ spec:
 
           mkdir -p /mnt/output/stats
           MANTA_TMP_DIR=$(mktemp -p /mnt/scratch/ -d manta.XXXXXXXX)
-          trap 'rm -rf "$MANTA_TMP_DIR"' EXIT
+          trap 'rm -rf "$MANTA_TMP_DIR"' EXIT  # failure logs are copied to stats/ before exit
           LOG=$MANTA_TMP_DIR/manta.log
 
           run_manta() {  # $1 = run dir, rest = extra configManta.py args
@@ -386,32 +438,18 @@ spec:
               && $runDir/runWorkflow.py -m local -j $threads
           }
 
-          # Alignment stats from a subsample with soft clips removed (POS and TLEN
-          # are unchanged; only clipped bases are dropped from CIGAR/SEQ/QUAL).
+          # Alignment stats from properly paired reads with soft clips removed (POS
+          # and TLEN are unchanged; only clipped bases are dropped from CIGAR/SEQ/QUAL).
+          # A 10% subsample first; all reads if that has too few pairs (small panels).
           clip_stripped_stats() {
-            local out=$1 i=0
+            local out=$1 i=0 frac ok
             for bam in ${statsBams[@]+"${statsBams[@]}"}; do
-              local sb=$MANTA_TMP_DIR/clipstats.$i.bam
-              local region=()
-              if [ ! "." = "$regionsFile" ] && [ -s "/mnt/ref/regions/$regionsFile" ]; then region=(-L "/mnt/ref/regions/$regionsFile"); fi
-              $SAMTOOLS view -h -f 0x2 -F 0xF0C -s 7.10 ${region[@]+"${region[@]}"} "$bam" \
-                | awk 'BEGIN { OFS = "\t" }
-                       /^@/ { print; next }
-                       {
-                         c = $6
-                         if (match(c, /^[0-9]+S/)) {
-                           n = substr(c, 1, RLENGTH - 1) + 0; c = substr(c, RLENGTH + 1)
-                           $10 = substr($10, n + 1); if ($11 != "*") $11 = substr($11, n + 1)
-                         }
-                         if (match(c, /[0-9]+S$/)) {
-                           n = substr(c, RSTART, RLENGTH - 1) + 0; c = substr(c, 1, RSTART - 1)
-                           $10 = substr($10, 1, length($10) - n); if ($11 != "*") $11 = substr($11, 1, length($11) - n)
-                         }
-                         $6 = c; print
-                       }' \
-                | $SAMTOOLS view -b -o "$sb" - || return 1
-              $SAMTOOLS index "$sb" || return 1
-              $MANTA_HOME/libexec/GetAlignmentStats --ref $REF --output-file $MANTA_TMP_DIR/clipstats.$i.xml --align-file "$sb" || return 1
+              ok=0
+              for frac in 7.10 all; do
+                if clip_stripped_stats_one "$bam" "$frac" "$i"; then ok=1; break; fi
+                echo "Clip-stripped stats on $(basename $bam) failed with subsample '$frac'"
+              done
+              [ "$ok" = 1 ] || return 1
               i=$((i + 1))
             done
             local merge=($MANTA_HOME/libexec/MergeAlignmentStats --output-file "$out")
@@ -419,10 +457,48 @@ spec:
             "${merge[@]}"
           }
 
+          clip_stripped_stats_one() {  # $1 = bam, $2 = samtools -s value or "all", $3 = index
+            local bam=$1 i=$3 sb=$MANTA_TMP_DIR/clipstats.$3.bam
+            local region=() sub=()
+            if [ ! "." = "$regionsFile" ] && [ -s "/mnt/ref/regions/$regionsFile" ]; then region=(-L "/mnt/ref/regions/$regionsFile"); fi
+            if [ "$2" != all ]; then sub=(-s "$2"); fi
+            $SAMTOOLS view -h -f 0x2 -F 0xF0C ${sub[@]+"${sub[@]}"} ${region[@]+"${region[@]}"} "$bam" \
+              | awk -F'\t' -v OFS='\t' '
+                     /^@/ { print; next }
+                     {
+                       c = $6
+                       if (match(c, /^[0-9]+S/)) {
+                         n = substr(c, 1, RLENGTH - 1) + 0; c = substr(c, RLENGTH + 1)
+                         $10 = substr($10, n + 1); if ($11 != "*") $11 = substr($11, n + 1)
+                       }
+                       if (match(c, /[0-9]+S$/)) {
+                         n = substr(c, RSTART, RLENGTH - 1) + 0; c = substr(c, 1, RSTART - 1)
+                         $10 = substr($10, 1, length($10) - n); if ($11 != "*") $11 = substr($11, 1, length($11) - n)
+                       }
+                       $6 = c; print
+                     }' \
+              | $SAMTOOLS view -b -o "$sb" - || return 1
+            $SAMTOOLS index "$sb" || return 1
+            $MANTA_HOME/libexec/GetAlignmentStats --ref $REF --output-file $MANTA_TMP_DIR/clipstats.$i.xml --align-file "$sb" || return 1
+          }
+
+          json_safe() {  # drop quotes, backslashes and control characters (tabs, newlines)
+            printf '%s' "$1" | tr -d '"\\\000-\037'
+          }
+
           write_status() {  # $1 = status, $2 = reason
             printf '{"sample_id": "%s", "status": "%s", "reason": "%s", "manta_version": "1.6.0"}\n' \
-              "$sampleId" "$1" "$2" > "/mnt/output/stats/${sampleId}_manta_status.json"
+              "$(json_safe "$sampleId")" "$1" "$(json_safe "$2")" > "/mnt/output/stats/${sampleId}_manta_status.json"
             echo "$1" > /tmp/manta_status
+          }
+
+          # Did Manta's own stats step fall back to the supplied stats for a read
+          # group? GetAlignmentStats then prints "Using existing stats as default"
+          # (pyflow collects task stderr); "Too few high-confidence read pairs" is
+          # only printed when no fallback file is given. Checked on the run that
+          # succeeded.
+          used_fallback_stats() {
+            grep -qs "Using existing stats as default" "$1/workspace/pyflow.data/logs/pyflow_tasks_stderr_log.txt"
           }
 
           create_empty_vcf() {
@@ -442,13 +518,14 @@ spec:
           }
 
           # UMI libraries with the inline UMI masked to N have no unclipped reads at
-          # all; Manta's own stats step then retries for ~30 min before failing. Detect
-          # that up front from the first 20k properly paired primary reads.
+          # all, and Manta's own stats estimate then fails. Detect that up front from
+          # the first 20k properly paired primary reads, so the fallback stats are
+          # supplied on the first run instead of after a failed one.
           needs_clipstats() {
             local bam n
             for bam in ${statsBams[@]+"${statsBams[@]}"}; do
               n=$( { $SAMTOOLS view -f 0x2 -F 0xF0C "$bam" || true; } | head -n 20000 \
-                   | awk '$6 ~ /^[0-9]+M$/ { c++ } END { print c + 0 }')
+                   | awk -F'\t' '$6 != "*" && $6 !~ /[SH]/ { c++ } END { print c + 0 }')
               echo "Unclipped reads in first 20k of $(basename $bam): $n"
               if [ "$n" -eq 0 ]; then return 0; fi
             done
@@ -457,21 +534,20 @@ spec:
 
           status=failed
           reason=""
-          okStatus=ok
           extra=()
           runDir=$MANTA_TMP_DIR/run
           if needs_clipstats; then
-            echo "No unclipped read pairs; estimating alignment stats on clip-stripped reads"
+            echo "No unclipped read pairs; estimating fallback alignment stats on clip-stripped reads"
             if clip_stripped_stats $MANTA_TMP_DIR/clipstats.xml 2>&1 | tee -a "$LOG"; then
               extra=(--existingAlignStatsFile=$MANTA_TMP_DIR/clipstats.xml)
-              okStatus=ok_clipstats
             else
               reason="clip-stripped alignment stats failed"
             fi
           fi
 
           if [ -z "$reason" ] && run_manta $runDir ${extra[@]+"${extra[@]}"} 2>&1 | tee -a "$LOG"; then
-            status=$okStatus
+            status=ok
+            if [ ${#extra[@]} -gt 0 ] && used_fallback_stats $runDir; then status=ok_clipstats; fi
           elif [ -z "$reason" ] && [ ${#extra[@]} -eq 0 ] \
                && grep -rqs "Too few high-confidence read pairs" "$LOG" "$runDir/workspace/pyflow.data/logs"; then
             echo "Manta could not estimate alignment stats; retrying with clip-stripped stats"
@@ -483,7 +559,9 @@ spec:
               reason="alignment stats: too few high-confidence read pairs; clip-stripped retry failed"
             fi
           elif [ -z "$reason" ]; then
-            reason=$(grep -hE "ERROR|Error|error" "$LOG" | grep -v "^\s*$" | tail -1 | tr -d '"\\' | cut -c1-300)
+            # `|| true`: a log without an error line must not end the step under
+            # set -e before the placeholders and the status are written.
+            reason=$( { grep -hE "ERROR|Error|error" "$LOG" || true; } | awk 'NF { l = $0 } END { print l }' | cut -c1-300)
             reason=${reason:-"unknown (see step log)"}
           fi
 
@@ -502,6 +580,14 @@ spec:
           fi
 
           echo "MANTA FAILED: $reason"
+          # Keep the logs: the EXIT trap removes the run directories.
+          {
+            echo "== manta.log (last 200 lines)"; tail -n 200 "$LOG" 2>/dev/null || true
+            for f in $MANTA_TMP_DIR/run*/workspace/pyflow.data/logs/pyflow_log.txt; do
+              [ -f "$f" ] || continue
+              echo "== $(basename $(dirname $(dirname $(dirname $(dirname $f)))))/pyflow_log.txt (last 100 lines)"; tail -n 100 "$f" || true
+            done
+          } > "/mnt/output/stats/${sampleId}_manta_failure.log"
           create_empty_vcf "/mnt/output/${sampleId}_tumorSV.vcf.gz" "$reason"
           create_empty_vcf "/mnt/output/${sampleId}_diploidSV.vcf.gz" "$reason"
           echo "Manta run failed - empty output files created: $reason" > "/mnt/output/stats/${sampleId}_manta_failed.txt"

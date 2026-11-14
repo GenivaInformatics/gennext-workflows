@@ -16,6 +16,10 @@ spec:
           - name: output-fusions-discarded-tsv
           - name: sensitivity
             default: max_sensitivity
+          # auto: use the BAM's duplicate flags (-u) when it has any, otherwise
+          # let Arriba mark duplicates itself. true/false force either way.
+          - name: use-dup-flags
+            default: auto
           - name: thread-count
             default: "20"
       outputs:
@@ -47,7 +51,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: arriba-fusion-detection
-        image: quay.io/biocontainers/arriba:2.5.1--h87b9561_0
+        image: quay.io/biocontainers/arriba:2.5.1--h87b9561_0@sha256:702a3e8db8a9f6e227c0154c460f54fc2dc4c46f16d9e3f53b82edf43f05e881
         command: [sh]
         source: |
           set -euo pipefail
@@ -86,16 +90,38 @@ spec:
           ARRIBA_ARGS="${ARRIBA_ARGS} -k ${KNOWN_FUSIONS}"
           ARRIBA_ARGS="${ARRIBA_ARGS} -t ${KNOWN_FUSIONS}"
           ARRIBA_ARGS="${ARRIBA_ARGS} -p ${PROTEIN_DOMAINS}"
-          # -u: honor upstream BAM_FDUP (0x400) flags instead of running
-          # Arriba's internal coordinate-based dedup.
+          # Duplicates. Arriba's `duplicates` filter must stay ON, so
+          # `duplicates` must never appear in the -f (disable filters) lists
+          # below; disabling it counts every PCR duplicate as support.
           #
-          # In the RNA fusion DAG the upstream is `fgbio-mark-duplicates`
-          # which sets 0x400 via UMI-aware Adjacency clustering (=
-          # umi_tools' "directional"). The flags only take effect while
-          # Arriba's `duplicates` filter is ON, so `duplicates` must never
-          # appear in the -f (disable filters) lists below: -u together
-          # with `-f duplicates` counts every PCR duplicate as support.
-          ARRIBA_ARGS="${ARRIBA_ARGS} -u"
+          # -u makes that filter trust the BAM's BAM_FDUP (0x400) flags
+          # instead of Arriba's own coordinate-based marking. Only DAGs that
+          # run `fgbio-mark-duplicates` (UMI-aware, = umi_tools "directional")
+          # before Arriba have those flags: somatic-rna-fastq-v2 and
+          # somatic-fusion-fastq-gpu-v2. somatic-fusion-fastq-v2 and
+          # somatic-rna-bam-v2 pass a BAM without them, where -u would mean
+          # no deduplication at all. `auto` therefore looks for 0x400 flags
+          # in the first 1M primary records and uses -u only if it finds any.
+          USE_DUP_FLAGS="{{inputs.parameters.use-dup-flags}}"
+          if [ "${USE_DUP_FLAGS}" = "auto" ]; then
+            NDUP=$( { samtools view -F 0x900 "${BAM}" || true; } | head -n 1000000 \
+                    | awk -F'\t' 'int($2 / 1024) % 2 == 1 { c++ } END { print c + 0 }')
+            echo "Duplicate-flagged reads in the first 1M primary records: ${NDUP}"
+            if [ "${NDUP}" -gt 0 ]; then USE_DUP_FLAGS=true; else USE_DUP_FLAGS=false; fi
+          fi
+          case "${USE_DUP_FLAGS}" in
+            true)
+              echo "Using the BAM's duplicate flags (-u)"
+              ARRIBA_ARGS="${ARRIBA_ARGS} -u"
+              ;;
+            false)
+              echo "No duplicate flags used: Arriba marks duplicates itself"
+              ;;
+            *)
+              echo "ERROR: use-dup-flags must be auto, true or false (got: ${USE_DUP_FLAGS})"
+              exit 1
+              ;;
+          esac
 
           case "${SENSITIVITY}" in
             ultra_sensitivity)
