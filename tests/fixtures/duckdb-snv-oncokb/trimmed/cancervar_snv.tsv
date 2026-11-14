@@ -1,0 +1,2 @@
+#Chr	Alt	CancerVar: CancerVar and Evidence	Diag_list	End	ExonicFunc.refGene	Func.refGene	OMIM	Orpha	OrphaNumber	Pathway	Phenotype_MIM	Prog_list	Ref	Ref.Gene	Start	Therap_list	clinvar: Clinvar	cosmic91	row_id
+7	T	CancerVar: 1#Tier_I_strong EVS=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]	x	140753336	x	exonic	x	x	x	x	x	x	A	x	140753336	x	x	x	x

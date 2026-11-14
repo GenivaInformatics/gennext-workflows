@@ -181,7 +181,7 @@ spec:
 
       script:
         name: "duckdb-snv-script"
-        image: qldrsc/duckdb:latest
+        image: qldrsc/duckdb@sha256:fe7b9397f8f65b96c1920c4e5ca66dc71bc30a6872893572a643442d2379fa3d
         command: ["sh"]
         source: |
           set -eu
@@ -198,7 +198,7 @@ spec:
           DROP TABLE IF EXISTS cancervar_snv;
           CREATE TABLE oncokb_snv AS FROM read_csv_auto('/mnt/input/oncokb_snv.tsv', header=True, sep='\t', sample_size=20000);
           -- OncoKB columns read by the views below; an older MAF without one gets it as NULL.
-          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "VARIANT_IN_ONCOKB" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "VARIANT_IN_ONCOKB" BOOLEAN;
           ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "MUTATION_EFFECT" VARCHAR;
           ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "MUTATION_EFFECT_CITATIONS" VARCHAR;
           ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "LEVEL_Dx1" VARCHAR;
@@ -324,7 +324,7 @@ spec:
               oncokb_snv."HIGHEST_SENSITIVE_LEVEL",
               oncokb_snv."HIGHEST_RESISTANCE_LEVEL",
               CAST(oncokb_snv."TX_CITATIONS" AS VARCHAR) AS TX_CITATIONS,
-              oncokb_snv."VARIANT_IN_ONCOKB",
+              TRY_CAST(oncokb_snv."VARIANT_IN_ONCOKB" AS BOOLEAN) AS "VARIANT_IN_ONCOKB",
               oncokb_snv."MUTATION_EFFECT",
               CAST(oncokb_snv."MUTATION_EFFECT_CITATIONS" AS VARCHAR) AS MUTATION_EFFECT_CITATIONS,
               oncokb_snv."LEVEL_Dx1",
@@ -1443,7 +1443,7 @@ spec:
 
       script:
         name: "duckdb-snv-vcf-only-script"
-        image: qldrsc/duckdb:latest
+        image: qldrsc/duckdb@sha256:fe7b9397f8f65b96c1920c4e5ca66dc71bc30a6872893572a643442d2379fa3d
         command: ["sh"]
         source: |
           set -eu
@@ -1457,7 +1457,7 @@ spec:
           DROP TABLE IF EXISTS cancervar_snv;
           CREATE TABLE oncokb_snv AS FROM read_csv_auto('/mnt/input/oncokb_snv.tsv', header=True, sep='\t', sample_size=-1);
           -- OncoKB columns read by the views below; an older MAF without one gets it as NULL.
-          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "VARIANT_IN_ONCOKB" VARCHAR;
+          ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "VARIANT_IN_ONCOKB" BOOLEAN;
           ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "MUTATION_EFFECT" VARCHAR;
           ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "MUTATION_EFFECT_CITATIONS" VARCHAR;
           ALTER TABLE oncokb_snv ADD COLUMN IF NOT EXISTS "LEVEL_Dx1" VARCHAR;
@@ -1580,7 +1580,7 @@ spec:
               oncokb_snv."HIGHEST_SENSITIVE_LEVEL",
               oncokb_snv."HIGHEST_RESISTANCE_LEVEL",
               CAST(oncokb_snv."TX_CITATIONS" AS VARCHAR) AS TX_CITATIONS,
-              oncokb_snv."VARIANT_IN_ONCOKB",
+              TRY_CAST(oncokb_snv."VARIANT_IN_ONCOKB" AS BOOLEAN) AS "VARIANT_IN_ONCOKB",
               oncokb_snv."MUTATION_EFFECT",
               CAST(oncokb_snv."MUTATION_EFFECT_CITATIONS" AS VARCHAR) AS MUTATION_EFFECT_CITATIONS,
               oncokb_snv."LEVEL_Dx1",
