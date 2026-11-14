@@ -7,6 +7,10 @@ left the other rows' OncoKB columns empty. This takes such an *_oncokb.maf,
 sends only the skipped rows to MafAnnotator, and fills their OncoKB columns.
 Rows that were already annotated are left untouched. The input is replaced
 atomically; the original is kept as <name>.filtered.bak.
+
+Those MAFs have the v3 annotator's columns. Since 0.3.0 (upstream v4.1.0) the
+expected MAF header has three more germline columns, so this refuses them
+("MAF does not end with the OncoKB annotation columns"); run it from the 0.2.0-upstream-v3.4.2 image instead.
 """
 
 import argparse
@@ -18,8 +22,8 @@ import subprocess
 import sys
 import tempfile
 
-from AnnotatorCore import get_oncokb_annotation_column_headers
-from filtered_maf_annotator import oncokb_echo, read_header
+from filtered_maf_annotator import (
+    mask_output, maf_annotation_header, oncokb_echo, read_header, run_masked)
 
 
 csv.field_size_limit(sys.maxsize)
@@ -37,7 +41,7 @@ def was_skipped(row, func_index):
 
 
 def split_skipped(maf_path, query_path):
-    annotation_header = get_oncokb_annotation_column_headers(False, True)
+    annotation_header = maf_annotation_header()
     with maf_path.open(newline="") as source, query_path.open("w", newline="") as target:
         reader = csv.reader(source, delimiter="\t")
         writer = csv.writer(target, delimiter="\t", lineterminator="\n")
@@ -88,6 +92,7 @@ def merge_backfill(maf_path, annotated_path, output_path, header, n_input, func_
 
 
 def main():
+    mask_output()
     parser = argparse.ArgumentParser()
     parser.add_argument("--maf", required=True, type=Path, help="filtered *_oncokb.maf, updated in place")
     parser.add_argument("--reference", required=True)
@@ -107,7 +112,12 @@ def main():
                    "-b", os.environ["ONCOKB_API_TOKEN"]]
         if args.tumor_type != ".":
             command.extend(["-t", args.tumor_type])
-        subprocess.run(command, check=True)
+        # Upstream's output passes through with the token masked; the command,
+        # which holds the token, is never printed.
+        status = run_masked(command)
+        if status:
+            print(f"{Path(command[1]).name} exited with status {status}", file=sys.stderr)
+            sys.exit(status)
         filled = merge_backfill(args.maf, annotated, merged, header, n_input, func_index)
         if filled != skipped:
             raise ValueError(f"Filled {filled} rows, expected {skipped}")

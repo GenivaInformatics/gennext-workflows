@@ -34,7 +34,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-snv-script
-        image: bergun/oncokb-annotator:0.2.0-upstream-v3.4.2@sha256:c73fb7dd9228d282889d4965b695474526f36d2f8bbe7b4715cf9d7d4e9cebeb
+        image: bergun/oncokb-annotator:0.3.3-upstream-v4.1.0@sha256:efbe90fe1924c485a929f6d6fe16e2355571b31b7a248320459a76cfc1bc44eb
         workingDir: /app/oncokb/
         command: [sh]
         source: |
@@ -55,16 +55,22 @@ spec:
           
           annotation_log=/tmp/oncokb-annotation.log
           rc_file=/tmp/oncokb-annotation.rc
+          # Upstream prints the token-validation URL (/tokens/<token>) in
+          # connection errors, retry warnings and tracebacks: mask it.
+          oncokb_token=$(printf '%s' "$ONCOKB_API_TOKEN" | tr -d '[:space:]')
+          mask_token() {
+              if [ -n "$oncokb_token" ]; then sed "s#${oncokb_token}#***#g"; else cat; fi
+          }
 
           # Function to run annotation
           run_annotation() {
               echo "Running OncoKB annotation (attempt $1)..."
               if [ "$tumor_type" != "." ]; then
                   echo "Using tumor type parameter: $tumor_type"
-                  { python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version" --regions-file "{{inputs.parameters.regions-file}}" --tumor-type "$tumor_type"; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
+                  { python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version" --regions-file "{{inputs.parameters.regions-file}}" --tumor-type "$tumor_type"; echo $? > "$rc_file"; } 2>&1 | mask_token | tee "$annotation_log"
               else
                   echo "No tumor type specified (using default)"
-                  { python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version" --regions-file "{{inputs.parameters.regions-file}}"; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
+                  { python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version" --regions-file "{{inputs.parameters.regions-file}}"; echo $? > "$rc_file"; } 2>&1 | mask_token | tee "$annotation_log"
               fi
               return "$(cat "$rc_file")"
           }
@@ -190,7 +196,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-sv-script
-        image: bergun/oncokb-annotator:0.2.0-upstream-v3.4.2@sha256:c73fb7dd9228d282889d4965b695474526f36d2f8bbe7b4715cf9d7d4e9cebeb
+        image: bergun/oncokb-annotator:0.3.3-upstream-v4.1.0@sha256:efbe90fe1924c485a929f6d6fe16e2355571b31b7a248320459a76cfc1bc44eb
         command: [sh]
         source: |
           input_file="/mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-sv-in-f'])}}"
@@ -200,16 +206,22 @@ spec:
           
           annotation_log=/tmp/oncokb-annotation.log
           rc_file=/tmp/oncokb-annotation.rc
+          # Upstream prints the token-validation URL (/tokens/<token>) in
+          # connection errors, retry warnings and tracebacks: mask it.
+          oncokb_token=$(printf '%s' "$ONCOKB_API_TOKEN" | tr -d '[:space:]')
+          mask_token() {
+              if [ -n "$oncokb_token" ]; then sed "s#${oncokb_token}#***#g"; else cat; fi
+          }
 
           # Function to run annotation
           run_annotation() {
               echo "Running OncoKB SV annotation (attempt $1)..."
               if [ "$tumor_type" != "." ]; then
                   echo "Using tumor type parameter: $tumor_type"
-                  { python ./filtered_sv_annotator.py --input "$input_file" --output "$output_file" --regions-file "{{inputs.parameters.regions-file}}" --tumor-type "$tumor_type"; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
+                  { python ./filtered_sv_annotator.py --input "$input_file" --output "$output_file" --regions-file "{{inputs.parameters.regions-file}}" --tumor-type "$tumor_type"; echo $? > "$rc_file"; } 2>&1 | mask_token | tee "$annotation_log"
               else
                   echo "No tumor type specified (using default)"
-                  { python ./filtered_sv_annotator.py --input "$input_file" --output "$output_file" --regions-file "{{inputs.parameters.regions-file}}"; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
+                  { python ./filtered_sv_annotator.py --input "$input_file" --output "$output_file" --regions-file "{{inputs.parameters.regions-file}}"; echo $? > "$rc_file"; } 2>&1 | mask_token | tee "$annotation_log"
               fi
               return "$(cat "$rc_file")"
           }
@@ -333,7 +345,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-fusions-script
-        image: bergun/oncokb-annotator:0.2.0-upstream-v3.4.2@sha256:c73fb7dd9228d282889d4965b695474526f36d2f8bbe7b4715cf9d7d4e9cebeb
+        image: bergun/oncokb-annotator:0.3.3-upstream-v4.1.0@sha256:efbe90fe1924c485a929f6d6fe16e2355571b31b7a248320459a76cfc1bc44eb
         command: [sh]
         source: |
           input_file="/mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-fusions-in-f'])}}"
@@ -343,16 +355,22 @@ spec:
           
           annotation_log=/tmp/oncokb-annotation.log
           rc_file=/tmp/oncokb-annotation.rc
+          # Upstream prints the token-validation URL (/tokens/<token>) in
+          # connection errors, retry warnings and tracebacks: mask it.
+          oncokb_token=$(printf '%s' "$ONCOKB_API_TOKEN" | tr -d '[:space:]')
+          mask_token() {
+              if [ -n "$oncokb_token" ]; then sed "s#${oncokb_token}#***#g"; else cat; fi
+          }
 
           # Function to run annotation
           run_annotation() {
               echo "Running OncoKB Fusion annotation (attempt $1)..."
               if [ "$tumor_type" != "." ]; then
                   echo "Using tumor type parameter: $tumor_type"
-                  { python ./FusionAnnotator.py -i "$input_file" -o "$output_file" -b ${ONCOKB_API_TOKEN} -t "$tumor_type"; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
+                  { python ./FusionAnnotator.py -i "$input_file" -o "$output_file" -b ${ONCOKB_API_TOKEN} -t "$tumor_type"; echo $? > "$rc_file"; } 2>&1 | mask_token | tee "$annotation_log"
               else
                   echo "No tumor type specified (using default)"
-                  { python ./FusionAnnotator.py -i "$input_file" -o "$output_file" -b ${ONCOKB_API_TOKEN}; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
+                  { python ./FusionAnnotator.py -i "$input_file" -o "$output_file" -b ${ONCOKB_API_TOKEN}; echo $? > "$rc_file"; } 2>&1 | mask_token | tee "$annotation_log"
               fi
               return "$(cat "$rc_file")"
           }
@@ -482,7 +500,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-snv-script
-        image: bergun/oncokb-annotator:0.2.0-upstream-v3.4.2@sha256:c73fb7dd9228d282889d4965b695474526f36d2f8bbe7b4715cf9d7d4e9cebeb
+        image: bergun/oncokb-annotator:0.3.3-upstream-v4.1.0@sha256:efbe90fe1924c485a929f6d6fe16e2355571b31b7a248320459a76cfc1bc44eb
         workingDir: /app/oncokb/
         command: [sh]
         source: |
@@ -503,16 +521,22 @@ spec:
           
           annotation_log=/tmp/oncokb-annotation.log
           rc_file=/tmp/oncokb-annotation.rc
+          # Upstream prints the token-validation URL (/tokens/<token>) in
+          # connection errors, retry warnings and tracebacks: mask it.
+          oncokb_token=$(printf '%s' "$ONCOKB_API_TOKEN" | tr -d '[:space:]')
+          mask_token() {
+              if [ -n "$oncokb_token" ]; then sed "s#${oncokb_token}#***#g"; else cat; fi
+          }
 
           # Function to run annotation
           run_annotation() {
               echo "Running OncoKB annotation on node (attempt $1)..."
               if [ "$tumor_type" != "." ]; then
                   echo "Using tumor type parameter: $tumor_type"
-                  { python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version" --regions-file "{{inputs.parameters.regions-file}}" --tumor-type "$tumor_type"; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
+                  { python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version" --regions-file "{{inputs.parameters.regions-file}}" --tumor-type "$tumor_type"; echo $? > "$rc_file"; } 2>&1 | mask_token | tee "$annotation_log"
               else
                   echo "No tumor type specified (using default)"
-                  { python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version" --regions-file "{{inputs.parameters.regions-file}}"; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
+                  { python ./filtered_maf_annotator.py --input "$input_file" --output "$output_file" --reference "$grch_ref_version" --regions-file "{{inputs.parameters.regions-file}}"; echo $? > "$rc_file"; } 2>&1 | mask_token | tee "$annotation_log"
               fi
               return "$(cat "$rc_file")"
           }
@@ -641,7 +665,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-sv-script
-        image: bergun/oncokb-annotator:0.2.0-upstream-v3.4.2@sha256:c73fb7dd9228d282889d4965b695474526f36d2f8bbe7b4715cf9d7d4e9cebeb
+        image: bergun/oncokb-annotator:0.3.3-upstream-v4.1.0@sha256:efbe90fe1924c485a929f6d6fe16e2355571b31b7a248320459a76cfc1bc44eb
         command: [sh]
         source: |
           input_file="/mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-sv-in-f'])}}"
@@ -651,16 +675,22 @@ spec:
           
           annotation_log=/tmp/oncokb-annotation.log
           rc_file=/tmp/oncokb-annotation.rc
+          # Upstream prints the token-validation URL (/tokens/<token>) in
+          # connection errors, retry warnings and tracebacks: mask it.
+          oncokb_token=$(printf '%s' "$ONCOKB_API_TOKEN" | tr -d '[:space:]')
+          mask_token() {
+              if [ -n "$oncokb_token" ]; then sed "s#${oncokb_token}#***#g"; else cat; fi
+          }
 
           # Function to run annotation
           run_annotation() {
               echo "Running OncoKB SV annotation on node (attempt $1)..."
               if [ "$tumor_type" != "." ]; then
                   echo "Using tumor type parameter: $tumor_type"
-                  { python ./filtered_sv_annotator.py --input "$input_file" --output "$output_file" --regions-file "{{inputs.parameters.regions-file}}" --tumor-type "$tumor_type"; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
+                  { python ./filtered_sv_annotator.py --input "$input_file" --output "$output_file" --regions-file "{{inputs.parameters.regions-file}}" --tumor-type "$tumor_type"; echo $? > "$rc_file"; } 2>&1 | mask_token | tee "$annotation_log"
               else
                   echo "No tumor type specified (using default)"
-                  { python ./filtered_sv_annotator.py --input "$input_file" --output "$output_file" --regions-file "{{inputs.parameters.regions-file}}"; echo $? > "$rc_file"; } 2>&1 | tee "$annotation_log"
+                  { python ./filtered_sv_annotator.py --input "$input_file" --output "$output_file" --regions-file "{{inputs.parameters.regions-file}}"; echo $? > "$rc_file"; } 2>&1 | mask_token | tee "$annotation_log"
               fi
               return "$(cat "$rc_file")"
           }
@@ -791,7 +821,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-cnv-script
-        image: bergun/oncokb-annotator:0.2.0-upstream-v3.4.2@sha256:c73fb7dd9228d282889d4965b695474526f36d2f8bbe7b4715cf9d7d4e9cebeb
+        image: bergun/oncokb-annotator:0.3.3-upstream-v4.1.0@sha256:efbe90fe1924c485a929f6d6fe16e2355571b31b7a248320459a76cfc1bc44eb
         command: [python3]
         source: |
           import csv
@@ -804,8 +834,12 @@ spec:
 
           sys.path.insert(0, "/app/oncokb")
           from AnnotatorCore import get_oncokb_annotation_column_headers
-          from filtered_maf_annotator import is_genome_kit_regions_file
+          from filtered_maf_annotator import is_genome_kit_regions_file, mask_output
           from filtered_sv_annotator import write_empty_annotations
+
+          # Everything printed from here on, including CnaAnnotator's output and
+          # any error, has the token masked.
+          mask_output()
 
           csv.field_size_limit(sys.maxsize)
 

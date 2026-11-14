@@ -29,7 +29,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-fusion-annotation
-        image: bergun/oncokb-annotator:0.2.0-upstream-v3.4.2@sha256:c73fb7dd9228d282889d4965b695474526f36d2f8bbe7b4715cf9d7d4e9cebeb
+        image: bergun/oncokb-annotator:0.3.3-upstream-v4.1.0@sha256:efbe90fe1924c485a929f6d6fe16e2355571b31b7a248320459a76cfc1bc44eb
         command: [python3]
         source: |
           import json
@@ -85,6 +85,12 @@ spec:
           # Step 2: Annotate via OncoKB FusionAnnotator
           # -------------------------------------------------------
           print("\n=== Step 2: Running OncoKB FusionAnnotator ===")
+
+          # Everything printed from here on, including FusionAnnotator's output,
+          # has the token masked.
+          sys.path.insert(0, "/app/oncokb")
+          from filtered_maf_annotator import mask_output
+          mask_output()
 
           oncokb_token = os.environ["ONCOKB_API_TOKEN"]
           max_attempts = 3
