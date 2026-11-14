@@ -1,0 +1,117 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: fusion-events-template
+  namespace: argo
+spec:
+  templates:
+    # One row per fusion breakpoint event (F4, #30): Arriba and STAR-Fusion calls merged by
+    # breakpoint with bpview's merge (+-10 bp), annotated by gene pair from
+    # oncokb-fusion-annotation's fusions_with_oncokb.json (no second OncoKB query), with
+    # recurrence against a panel (PoN) and tiers 1-3. See images/gennext-bpview/fusion_events.py.
+    #
+    # Output: {output-dir}{sample-id}_fusion_events.tsv, loaded by duckdb-template's
+    # duckdb-fusion-events into the table fusion_events of the sample's fusions DuckDB.
+    # Optional inputs take "." for "not available":
+    #   bpview-events-json  bpview's events.json; without it support comes from the callers
+    #   pon-tsv             recurrence panel; without it the pon_* columns are empty
+    # Older samples have no event table; readers must treat it as absent.
+    - name: fusion-events
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: arriba-tsv
+          - name: starfusion-tsv
+          - name: oncokb-json
+          - name: output-dir
+          - name: bpview-events-json
+            default: "."
+          - name: pon-tsv
+            default: "."
+          - name: tier1-min-unique-molecules
+            default: "2"
+          - name: pon-min-samples
+            default: "3"
+          - name: pon-min-fraction
+            default: "0.10"
+      outputs:
+        parameters:
+          - name: events-tsv
+            value: "{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_fusion_events.tsv"
+      volumes:
+        - name: arriba-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['arriba-tsv'])}}"
+            type: Directory
+        - name: starfusion-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['starfusion-tsv'])}}"
+            type: Directory
+        - name: oncokb-json
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['oncokb-json'])}}"
+            type: Directory
+        - name: bpview-events-json
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['bpview-events-json'])}}"
+            type: Directory
+        - name: pon-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['pon-tsv'])}}"
+            type: Directory
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+      script:
+        name: fusion-events
+        # Pin by digest when the tag is pushed.
+        image: bergun/gennext-bpview:0.3.0
+        command: [bash]
+        source: |
+          set -euo pipefail
+          SAMPLE_ID="{{inputs.parameters.sample-id}}"
+          BPVIEW_EVENTS="{{=sprig.osBase(inputs.parameters['bpview-events-json'])}}"
+          PON="{{=sprig.osBase(inputs.parameters['pon-tsv'])}}"
+          fusion-events --version
+          args=(build
+            --sample-id "${SAMPLE_ID}"
+            --arriba-tsv "/mnt/input/arriba/{{=sprig.osBase(inputs.parameters['arriba-tsv'])}}"
+            --starfusion-tsv "/mnt/input/starfusion/{{=sprig.osBase(inputs.parameters['starfusion-tsv'])}}"
+            --oncokb-json "/mnt/input/oncokb/{{=sprig.osBase(inputs.parameters['oncokb-json'])}}"
+            --tier1-min-unique-molecules "{{inputs.parameters.tier1-min-unique-molecules}}"
+            --pon-min-samples "{{inputs.parameters.pon-min-samples}}"
+            --pon-min-fraction "{{inputs.parameters.pon-min-fraction}}"
+            --out-tsv "/mnt/output/${SAMPLE_ID}_fusion_events.tsv")
+          if [ "${BPVIEW_EVENTS}" != "." ]; then
+            args+=(--bpview-events "/mnt/input/bpview/${BPVIEW_EVENTS}")
+          fi
+          # A configured but missing PoN must not stop the sample: warn and leave pon_* empty.
+          if [ "${PON}" != "." ]; then
+            if [ -s "/mnt/ref/pon/${PON}" ]; then
+              args+=(--pon "/mnt/ref/pon/${PON}")
+            else
+              echo "WARNING: PoN ${PON} not found or empty; pon_* columns will be empty"
+            fi
+          fi
+          fusion-events "${args[@]}"
+        volumeMounts:
+          - name: arriba-tsv
+            mountPath: /mnt/input/arriba/
+          - name: starfusion-tsv
+            mountPath: /mnt/input/starfusion/
+          - name: oncokb-json
+            mountPath: /mnt/input/oncokb/
+          - name: bpview-events-json
+            mountPath: /mnt/input/bpview/
+          - name: pon-tsv
+            mountPath: /mnt/ref/pon/
+            readOnly: true
+          - name: output-dir
+            mountPath: /mnt/output/
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "1"
+          limits:
+            memory: "4Gi"
