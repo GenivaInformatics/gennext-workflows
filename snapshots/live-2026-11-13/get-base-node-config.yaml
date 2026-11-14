@@ -1,0 +1,52 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: get-base-node-config
+  namespace: argo
+spec:
+  arguments:
+    parameters:
+    - name: node-name
+  entrypoint: get-base-node-config
+  serviceAccountName: gennext-workflows
+  templates:
+  - inputs:
+      parameters:
+      - name: node-name
+    name: get-base-node-config
+    outputs:
+      parameters:
+      - name: input-base-dir
+        valueFrom:
+          path: /tmp/INPUT_BASE_DIR
+      - name: output-base-dir
+        valueFrom:
+          path: /tmp/OUTPUT_BASE_DIR
+      - name: ref-base-dir
+        valueFrom:
+          path: /tmp/REF_BASE_DIR
+      - name: temp-base-dir
+        valueFrom:
+          path: /tmp/TEMP_BASE_DIR
+      - name: scratch-base-dir
+        valueFrom:
+          path: /tmp/SCRATCH_BASE_DIR
+      - name: modules-base-dir
+        valueFrom:
+          path: /tmp/MODULES_BASE_DIR
+      - name: annots-base-dir
+        valueFrom:
+          path: /tmp/ANNOTS_BASE_DIR
+      - name: thread-count
+        valueFrom:
+          path: /tmp/THREAD_COUNT
+    script:
+      command:
+      - sh
+      image: alpine/kubectl
+      source: "NODE_NAME=\"{{inputs.parameters.node-name}}\"\nclean_path() {\nsed -E 's#/+#/#g; s#([^/])$#\\1/#';\n}\njoin_paths() {\necho \"${1:+$1/}$2\" | clean_path\n}\nkubectl get node $NODE_NAME -o\
+        \ jsonpath='\n{\"INPUT_BASE_DIR=\"}{.metadata.annotations.gennext\\.bio/input-base-dir}\n{\"\\nOUTPUT_BASE_DIR=\"}{.metadata.annotations.gennext\\.bio/output-base-dir}\n{\"\\nREF_BASE_DIR=\"}{.metadata.annotations.gennext\\\
+        .bio/ref-base-dir}\n{\"\\nTEMP_BASE_DIR=\"}{.metadata.annotations.gennext\\.bio/temp-base-dir}\n{\"\\nSCRATCH_BASE_DIR=\"}{.metadata.annotations.gennext\\.bio/scratch-base-dir}\n{\"\\nMODULES_BASE_DIR=\"\
+        }{.metadata.annotations.gennext\\.bio/modules-base-dir}\n{\"\\nANNOTS_BASE_DIR=\"}{.metadata.annotations.gennext\\.bio/annots-base-dir}\n{\"\\nTHREAD_COUNT=\"}{.metadata.annotations.gennext\\.bio/thread-count}\n\
+        ' > /tmp/keypaths_tmp0\nwhile IFS='=' read -r key val\ndo\n  if [[ $key = \"THREAD_COUNT\" ]]\n  then\n    echo \"$val\" > \"/tmp/$key\"\n  else\n    echo \"$val\" | clean_path > \"/tmp/$key\"\n\
+        \  fi\ndone < /tmp/keypaths_tmp0\n"

@@ -1,0 +1,326 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: collect-tmb-data-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: run-id
+      - name: sample-id
+      - name: duckdb-file
+      - name: target-bed-file
+      - name: af-lower-threshold
+        value: '0.05'
+      - name: af-upper-threshold
+        value: '0.95'
+      - name: output-dir
+      - name: filter-dets
+        value: 'true'
+      - name: dets-threshold
+        value: '2.5'
+      - name: blacklist-genes
+        value: PHOX2B,CHEK2
+      - name: cosmic-vcf
+        value: ''
+      - name: filter-common-variants
+        value: 'true'
+      - name: gnomad-vcf
+        value: ''
+      - name: turkish-variome-vcf
+        value: ''
+      - name: common-af-threshold
+        value: '0.01'
+    name: collect-tmb-data
+    script:
+      command:
+      - /bin/bash
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: bergun/gennext-tmb-calc:0.5.0
+      name: tmb-calculator
+      resources:
+        limits:
+          cpu: 1000m
+          memory: 16Gi
+        requests:
+          cpu: 500m
+          memory: 4Gi
+      source: "target_bed=\"/mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}\"\ncase \"{{=sprig.osBase(inputs.parameters['target-bed-file'])}}\" in\n  hg38_canonical_chrom_contig_regions.bed|hg38_canonical_chrom_contig_regions.valid.bed)\n\
+        \    target_bed=\"/app/data/gencode_v48_canonical_cds.bed\"\n    echo \"Genome kit: using CDS target for TMB\"\n    ;;\nesac\n# Build base TMB calculation command\nCMD=\"python /app/calculate_tmb.py\
+        \ \\\n  --duckdb \\\"/mnt/input/{{=sprig.osBase(inputs.parameters['duckdb-file'])}}\\\" \\\n  --target-bed \\\"$target_bed\\\" \\\n  --cds-bed \\\"/app/data/gencode_v48_canonical_cds.bed\\\" \\\n\
+        \  --af-lower-threshold \\\"{{inputs.parameters.af-lower-threshold}}\\\" \\\n  --af-upper-threshold \\\"{{inputs.parameters.af-upper-threshold}}\\\" \\\n  --output-dir \\\"/mnt/output/\\\" \\\n\
+        \  --api-endpoint \\\"http://gennext-backend.gennext-prod.svc.cluster.local:3030/api/v0/runs/{{inputs.parameters.run-id}}/somatic\\\" \\\n  --api-token \\\"$GENNEXT_CLUSTER_TOKEN\\\" \\\n  --run-id\
+        \ \\\"{{inputs.parameters.run-id}}\\\" \\\n  --sample-id \\\"{{inputs.parameters.sample-id}}\\\"\"\n\n# Add DETS filtering if enabled\nif [ \"{{inputs.parameters.filter-dets}}\" = \"true\" ]; then\n\
+        \  CMD=\"$CMD --filter-dets --dets-threshold {{inputs.parameters.dets-threshold}}\"\nfi\n\n# Add gene blacklist\nif [ -n \"{{inputs.parameters.blacklist-genes}}\" ]; then\n  CMD=\"$CMD --blacklist-genes\
+        \ {{inputs.parameters.blacklist-genes}}\"\nfi\n\n# Add COSMIC filtering if VCF provided\nif [ -n \"{{inputs.parameters.cosmic-vcf}}\" ]; then\n  CMD=\"$CMD --filter-cosmic --cosmic-vcf /mnt/cosmic/{{=sprig.osBase(inputs.parameters['cosmic-vcf'])}}\"\
+        \nfi\n\n# Add common variant filtering if enabled\nif [ \"{{inputs.parameters.filter-common-variants}}\" = \"true\" ]; then\n  CMD=\"$CMD --filter-common-variants\"\n  if [ -n \"{{inputs.parameters.gnomad-vcf}}\"\
+        \ ]; then\n    CMD=\"$CMD --common-vcf /mnt/gnomad/{{=sprig.osBase(inputs.parameters['gnomad-vcf'])}}:AF\"\n  fi\n  if [ -n \"{{inputs.parameters.turkish-variome-vcf}}\" ]; then\n    CMD=\"$CMD\
+        \ --common-vcf /mnt/turkish/{{=sprig.osBase(inputs.parameters['turkish-variome-vcf'])}}:TR_AF\"\n  fi\n  CMD=\"$CMD --common-af-threshold {{inputs.parameters.common-af-threshold}}\"\nfi\n\necho\
+        \ \"Running TMB calculation for sample {{inputs.parameters.sample-id}}\"\nset -o pipefail\nif ! eval \"$CMD\" 2>&1 | tee /tmp/tmb-calculation.log; then\n  exit 1\nfi\nif grep -q \"Failed to post\
+        \ TMB results\" /tmp/tmb-calculation.log; then\n  echo \"TMB results were rejected by the backend\" >&2\n  exit 1\nfi\n"
+      volumeMounts:
+      - mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['duckdb-file'])}}
+        name: duckdb-file
+        readOnly: true
+      - mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}
+        name: target-bed-file
+        readOnly: true
+      - mountPath: /mnt/output
+        name: output-dir
+      - mountPath: /mnt/cosmic
+        name: cosmic-vcf-dir
+        readOnly: true
+      - mountPath: /mnt/gnomad
+        name: gnomad-vcf-dir
+        readOnly: true
+      - mountPath: /mnt/turkish
+        name: turkish-variome-vcf-dir
+        readOnly: true
+      workingDir: /mnt/input
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.duckdb-file}}'
+        type: File
+      name: duckdb-file
+    - hostPath:
+        path: '{{inputs.parameters.target-bed-file}}'
+        type: File
+      name: target-bed-file
+    - hostPath:
+        path: '{{inputs.parameters.output-dir}}'
+        type: DirectoryOrCreate
+      name: output-dir
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''cosmic-vcf''])}}'
+        type: Directory
+      name: cosmic-vcf-dir
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''gnomad-vcf''])}}'
+        type: Directory
+      name: gnomad-vcf-dir
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''turkish-variome-vcf''])}}'
+        type: Directory
+      name: turkish-variome-vcf-dir
+  - inputs:
+      parameters:
+      - name: run-id
+      - name: sample-id
+      - name: duckdb-file
+      - name: target-bed-file
+      - name: af-lower-threshold
+        value: '0.05'
+      - name: af-upper-threshold
+        value: '0.95'
+      - name: output-dir
+      - name: node-name
+      - name: filter-dets
+        value: 'true'
+      - name: dets-threshold
+        value: '2.5'
+      - name: blacklist-genes
+        value: PHOX2B,CHEK2
+      - name: cosmic-vcf
+        value: ''
+      - name: filter-common-variants
+        value: 'true'
+      - name: gnomad-vcf
+        value: ''
+      - name: turkish-variome-vcf
+        value: ''
+      - name: common-af-threshold
+        value: '0.01'
+    name: collect-tmb-data-on-node
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.node-name}}'
+    script:
+      command:
+      - /bin/bash
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: bergun/gennext-tmb-calc:0.5.0
+      name: tmb-calculator
+      resources:
+        limits:
+          cpu: 1000m
+          memory: 16Gi
+        requests:
+          cpu: 500m
+          memory: 4Gi
+      source: "target_bed=\"/mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}\"\ncase \"{{=sprig.osBase(inputs.parameters['target-bed-file'])}}\" in\n  hg38_canonical_chrom_contig_regions.bed|hg38_canonical_chrom_contig_regions.valid.bed)\n\
+        \    target_bed=\"/app/data/gencode_v48_canonical_cds.bed\"\n    echo \"Genome kit: using CDS target for TMB\"\n    ;;\nesac\n# Build base TMB calculation command\nCMD=\"python /app/calculate_tmb.py\
+        \ \\\n  --duckdb \\\"/mnt/input/{{=sprig.osBase(inputs.parameters['duckdb-file'])}}\\\" \\\n  --target-bed \\\"$target_bed\\\" \\\n  --cds-bed \\\"/app/data/gencode_v48_canonical_cds.bed\\\" \\\n\
+        \  --af-lower-threshold \\\"{{inputs.parameters.af-lower-threshold}}\\\" \\\n  --af-upper-threshold \\\"{{inputs.parameters.af-upper-threshold}}\\\" \\\n  --output-dir \\\"/mnt/output/\\\" \\\n\
+        \  --api-endpoint \\\"http://gennext-backend.gennext-prod.svc.cluster.local:3030/api/v0/runs/{{inputs.parameters.run-id}}/somatic\\\" \\\n  --api-token \\\"$GENNEXT_CLUSTER_TOKEN\\\" \\\n  --run-id\
+        \ \\\"{{inputs.parameters.run-id}}\\\" \\\n  --sample-id \\\"{{inputs.parameters.sample-id}}\\\"\"\n\n# Add DETS filtering if enabled\nif [ \"{{inputs.parameters.filter-dets}}\" = \"true\" ]; then\n\
+        \  CMD=\"$CMD --filter-dets --dets-threshold {{inputs.parameters.dets-threshold}}\"\nfi\n\n# Add gene blacklist\nif [ -n \"{{inputs.parameters.blacklist-genes}}\" ]; then\n  CMD=\"$CMD --blacklist-genes\
+        \ {{inputs.parameters.blacklist-genes}}\"\nfi\n\n# Add COSMIC filtering if VCF provided\nif [ -n \"{{inputs.parameters.cosmic-vcf}}\" ]; then\n  CMD=\"$CMD --filter-cosmic --cosmic-vcf /mnt/cosmic/{{=sprig.osBase(inputs.parameters['cosmic-vcf'])}}\"\
+        \nfi\n\n# Add common variant filtering if enabled\nif [ \"{{inputs.parameters.filter-common-variants}}\" = \"true\" ]; then\n  CMD=\"$CMD --filter-common-variants\"\n  if [ -n \"{{inputs.parameters.gnomad-vcf}}\"\
+        \ ]; then\n    CMD=\"$CMD --common-vcf /mnt/gnomad/{{=sprig.osBase(inputs.parameters['gnomad-vcf'])}}:AF\"\n  fi\n  if [ -n \"{{inputs.parameters.turkish-variome-vcf}}\" ]; then\n    CMD=\"$CMD\
+        \ --common-vcf /mnt/turkish/{{=sprig.osBase(inputs.parameters['turkish-variome-vcf'])}}:TR_AF\"\n  fi\n  CMD=\"$CMD --common-af-threshold {{inputs.parameters.common-af-threshold}}\"\nfi\n\necho\
+        \ \"Running TMB calculation for sample {{inputs.parameters.sample-id}}\"\nset -o pipefail\nif ! eval \"$CMD\" 2>&1 | tee /tmp/tmb-calculation.log; then\n  exit 1\nfi\nif grep -q \"Failed to post\
+        \ TMB results\" /tmp/tmb-calculation.log; then\n  echo \"TMB results were rejected by the backend\" >&2\n  exit 1\nfi\n"
+      volumeMounts:
+      - mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['duckdb-file'])}}
+        name: duckdb-file
+        readOnly: true
+      - mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}
+        name: target-bed-file
+        readOnly: true
+      - mountPath: /mnt/output
+        name: output-dir
+      - mountPath: /mnt/cosmic
+        name: cosmic-vcf-dir
+        readOnly: true
+      - mountPath: /mnt/gnomad
+        name: gnomad-vcf-dir
+        readOnly: true
+      - mountPath: /mnt/turkish
+        name: turkish-variome-vcf-dir
+        readOnly: true
+      workingDir: /mnt/input
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.duckdb-file}}'
+        type: File
+      name: duckdb-file
+    - hostPath:
+        path: '{{inputs.parameters.target-bed-file}}'
+        type: File
+      name: target-bed-file
+    - hostPath:
+        path: '{{inputs.parameters.output-dir}}'
+        type: DirectoryOrCreate
+      name: output-dir
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''cosmic-vcf''])}}'
+        type: Directory
+      name: cosmic-vcf-dir
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''gnomad-vcf''])}}'
+        type: Directory
+      name: gnomad-vcf-dir
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''turkish-variome-vcf''])}}'
+        type: Directory
+      name: turkish-variome-vcf-dir
+  - inputs:
+      parameters:
+      - name: run-id
+      - name: sample-id
+      - name: duckdb-file
+      - name: target-bed-file
+      - name: cds-bed-file
+      - name: af-lower-threshold
+        value: '0.05'
+      - name: af-upper-threshold
+        value: '0.95'
+      - name: output-dir
+      - name: filter-dets
+        value: 'true'
+      - name: dets-threshold
+        value: '2.5'
+      - name: blacklist-genes
+        value: PHOX2B,CHEK2
+      - name: cosmic-vcf
+        value: ''
+      - name: filter-common-variants
+        value: 'true'
+      - name: gnomad-vcf
+        value: ''
+      - name: turkish-variome-vcf
+        value: ''
+      - name: common-af-threshold
+        value: '0.01'
+    name: collect-tmb-data-custom-cds
+    script:
+      command:
+      - /bin/bash
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: bergun/gennext-tmb-calc:0.5.0
+      name: tmb-calculator
+      resources:
+        limits:
+          cpu: 1000m
+          memory: 2Gi
+        requests:
+          cpu: 500m
+          memory: 1Gi
+      source: "# Build base TMB calculation command\nCMD=\"python /app/calculate_tmb.py \\\n  --duckdb \\\"/mnt/input/{{=sprig.osBase(inputs.parameters['duckdb-file'])}}\\\" \\\n  --target-bed \\\"/mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}\\\
+        \" \\\n  --cds-bed \\\"/mnt/input/{{=sprig.osBase(inputs.parameters['cds-bed-file'])}}\\\" \\\n  --af-lower-threshold \\\"{{inputs.parameters.af-lower-threshold}}\\\" \\\n  --af-upper-threshold\
+        \ \\\"{{inputs.parameters.af-upper-threshold}}\\\" \\\n  --output-dir \\\"/mnt/output/\\\" \\\n  --api-endpoint \\\"http://gennext-backend.gennext-prod.svc.cluster.local:3030/api/v0/runs/{{inputs.parameters.run-id}}/somatic\\\
+        \" \\\n  --api-token \\\"$GENNEXT_CLUSTER_TOKEN\\\" \\\n  --run-id \\\"{{inputs.parameters.run-id}}\\\" \\\n  --sample-id \\\"{{inputs.parameters.sample-id}}\\\"\"\n\n# Add DETS filtering if enabled\n\
+        if [ \"{{inputs.parameters.filter-dets}}\" = \"true\" ]; then\n  CMD=\"$CMD --filter-dets --dets-threshold {{inputs.parameters.dets-threshold}}\"\nfi\n\n# Add gene blacklist\nif [ -n \"{{inputs.parameters.blacklist-genes}}\"\
+        \ ]; then\n  CMD=\"$CMD --blacklist-genes {{inputs.parameters.blacklist-genes}}\"\nfi\n\n# Add COSMIC filtering if VCF provided\nif [ -n \"{{inputs.parameters.cosmic-vcf}}\" ]; then\n  CMD=\"$CMD\
+        \ --filter-cosmic --cosmic-vcf /mnt/cosmic/{{=sprig.osBase(inputs.parameters['cosmic-vcf'])}}\"\nfi\n\n# Add common variant filtering if enabled\nif [ \"{{inputs.parameters.filter-common-variants}}\"\
+        \ = \"true\" ]; then\n  CMD=\"$CMD --filter-common-variants\"\n  if [ -n \"{{inputs.parameters.gnomad-vcf}}\" ]; then\n    CMD=\"$CMD --common-vcf /mnt/gnomad/{{=sprig.osBase(inputs.parameters['gnomad-vcf'])}}:AF\"\
+        \n  fi\n  if [ -n \"{{inputs.parameters.turkish-variome-vcf}}\" ]; then\n    CMD=\"$CMD --common-vcf /mnt/turkish/{{=sprig.osBase(inputs.parameters['turkish-variome-vcf'])}}:TR_AF\"\n  fi\n  CMD=\"\
+        $CMD --common-af-threshold {{inputs.parameters.common-af-threshold}}\"\nfi\n\necho \"Running TMB calculation for sample {{inputs.parameters.sample-id}}\"\nset -o pipefail\nif ! eval \"$CMD\" 2>&1\
+        \ | tee /tmp/tmb-calculation.log; then\n  exit 1\nfi\nif grep -q \"Failed to post TMB results\" /tmp/tmb-calculation.log; then\n  echo \"TMB results were rejected by the backend\" >&2\n  exit 1\n\
+        fi\n"
+      volumeMounts:
+      - mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['duckdb-file'])}}
+        name: duckdb-file
+        readOnly: true
+      - mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}
+        name: target-bed-file
+        readOnly: true
+      - mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['cds-bed-file'])}}
+        name: cds-bed-file
+        readOnly: true
+      - mountPath: /mnt/output
+        name: output-dir
+      - mountPath: /mnt/cosmic
+        name: cosmic-vcf-dir
+        readOnly: true
+      - mountPath: /mnt/gnomad
+        name: gnomad-vcf-dir
+        readOnly: true
+      - mountPath: /mnt/turkish
+        name: turkish-variome-vcf-dir
+        readOnly: true
+      workingDir: /mnt/input
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.duckdb-file}}'
+        type: File
+      name: duckdb-file
+    - hostPath:
+        path: '{{inputs.parameters.target-bed-file}}'
+        type: File
+      name: target-bed-file
+    - hostPath:
+        path: '{{inputs.parameters.cds-bed-file}}'
+        type: File
+      name: cds-bed-file
+    - hostPath:
+        path: '{{inputs.parameters.output-dir}}'
+        type: DirectoryOrCreate
+      name: output-dir
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''cosmic-vcf''])}}'
+        type: Directory
+      name: cosmic-vcf-dir
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''gnomad-vcf''])}}'
+        type: Directory
+      name: gnomad-vcf-dir
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''turkish-variome-vcf''])}}'
+        type: Directory
+      name: turkish-variome-vcf-dir

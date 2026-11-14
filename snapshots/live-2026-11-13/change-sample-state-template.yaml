@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: change-sample-state-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: run-id
+      - name: sample-uuid
+      - name: sample-state
+    name: change-sample-state
+    script:
+      command:
+      - python
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: blairy/requests
+      name: change-sample-state
+      source: "import os\ntoken = os.environ[\"GENNEXT_CLUSTER_TOKEN\"]\naddr = \"gennext-backend.gennext-prod.svc.cluster.local:3030\"\nurl = f\"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/samples/{{inputs.parameters.sample-uuid}}/state\"\
+        \nimport requests\nres = requests.post(url, json={\"state\": \"{{inputs.parameters.sample-state}}\", \"token\": token })\nif res.status_code != 200:\n  raise Exception(res.text)\n"

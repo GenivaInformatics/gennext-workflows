@@ -1,0 +1,50 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: starfusion-detection
+  namespace: argo
+  labels:
+    pipeline: fusion-detection
+    tool: star-fusion
+spec:
+  templates:
+  - container:
+      args:
+      - "set -euo pipefail\n\n# Clean stale checkpoints/output from any previous run to avoid\n# STAR-Fusion skipping steps whose outputs no longer match current params\nrm -rf /mnt/output/star-fusion\n\
+        mkdir -p /mnt/output/star-fusion\n\nSAMPLE_ID=\"{{inputs.parameters.sample-id}}\"\nSENSITIVITY=\"{{inputs.parameters.sensitivity}}\"\nTHREADS=\"{{inputs.parameters.threads}}\"\n\nJUNCTION=\"/mnt/input/results/fusions/${SAMPLE_ID}_Chimeric.out.junction\"\
+        \nCTAT_LIB=\"/mnt/ref/rna/ctat_genome_lib_build_dir/\"\n\nSTARFUSION_ARGS=\"--genome_lib_dir ${CTAT_LIB}\"\nSTARFUSION_ARGS=\"${STARFUSION_ARGS} -J ${JUNCTION}\"\nSTARFUSION_ARGS=\"${STARFUSION_ARGS}\
+        \ --output_dir /mnt/output/star-fusion\"\nSTARFUSION_ARGS=\"${STARFUSION_ARGS} --CPU ${THREADS}\"\n\n# Sensitivity modes are expanded manually to avoid --skip_FFPM\n# (which drops the FFPM column\
+        \ that fusion-report v4.0.1 requires)\ncase \"${SENSITIVITY}\" in\n  full_Monty)\n    echo \"Using full_Monty mode (expanded, FFPM preserved)\"\n    STARFUSION_ARGS=\"${STARFUSION_ARGS} \\\n   \
+        \   --min_junction_reads 0 --min_sum_frags 1 --require_LDAS 0 \\\n      --min_spanning_frags_only 1 --min_novel_junction_support 1 \\\n      --no_single_fusion_per_breakpoint --skip_EM \\\n    \
+        \  --max_promiscuity 1000000 --min_pct_dom_promiscuity 1 \\\n      --min_alt_pct_junction 1e-3 \\\n      --no_annotation_filter --no_RT_artifact_filter \\\n      --min_FFPM 0\"\n    ;;\n  max_sensitivity)\n\
+        \    echo \"Using max_sensitivity mode (expanded, FFPM preserved)\"\n    STARFUSION_ARGS=\"${STARFUSION_ARGS} \\\n      --min_junction_reads 0 --min_sum_frags 1 --require_LDAS 0 \\\n      --min_spanning_frags_only\
+        \ 1 --min_novel_junction_support 1 \\\n      --no_single_fusion_per_breakpoint --skip_EM \\\n      --min_FFPM 0\"\n    ;;\n  *)\n    echo \"ERROR: Unknown STAR-Fusion sensitivity mode: ${SENSITIVITY}\"\
+        \n    echo \"Valid modes: full_Monty, max_sensitivity\"\n    exit 1\n    ;;\nesac\n\necho \"Running: STAR-Fusion ${STARFUSION_ARGS}\"\nSTAR-Fusion ${STARFUSION_ARGS}\n\necho \"STAR-Fusion completed\
+        \ successfully\"\nls -la /mnt/output/star-fusion/\n"
+      command:
+      - bash
+      - -euo
+      - pipefail
+      - -c
+      image: quay.io/biocontainers/star-fusion:1.15.1--hdfd78af_1
+      resources:
+        requests:
+          cpu: '16'
+          memory: 32Gi
+      volumeMounts:
+      - mountPath: /mnt/input
+        name: sample-data
+        readOnly: true
+      - mountPath: /mnt/ref
+        name: ref-data
+        readOnly: true
+      - mountPath: /mnt/output
+        name: output-data
+    inputs:
+      parameters:
+      - name: sample-id
+      - default: full_Monty
+        name: sensitivity
+      - default: '20'
+        name: threads
+    name: run-star-fusion

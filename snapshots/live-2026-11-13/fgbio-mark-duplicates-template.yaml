@@ -1,0 +1,90 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: fgbio-mark-duplicates-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: input-bam
+      - name: output-bam
+      - name: output-metrics
+      - default: '8'
+        name: thread-count
+    name: fgbio-mark-duplicates
+    outputs:
+      parameters:
+      - name: output-bam
+        value: '{{inputs.parameters.output-bam}}'
+      - name: output-metrics
+        value: '{{inputs.parameters.output-metrics}}'
+    script:
+      command:
+      - bash
+      image: bergun/fgbio-mark-duplicates:0.1.0
+      name: fgbio-mark-duplicates
+      resources:
+        requests:
+          cpu: '8'
+          memory: 24Gi
+      source: "set -euo pipefail\n\nBAM_IN=\"/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}\"\nBAM_OUT=\"/mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}\"\nMETRICS_OUT=\"\
+        /mnt/output/metrics/{{=sprig.osBase(inputs.parameters['output-metrics'])}}\"\nTHREADS=\"{{inputs.parameters.thread-count}}\"\n\nPRIMARIES=\"/tmp/primaries.bam\"\nPRIMARIES_RX=\"/tmp/primaries_rx.bam\"\
+        \nPRIMARIES_MARKED=\"/tmp/primaries_marked.bam\"\nSUPPS=\"/tmp/supps.bam\"\nSUPPS_PROCESSED=\"/tmp/supps_processed.bam\"\nDUP_QNAMES=\"/tmp/dup_qnames.txt\"\n\n# Cap each samtools sort's threads\
+        \ so concurrent sorts fit in\n# the pod's 24Gi memory budget.\nSORT_THREADS=$(( THREADS / 2 < 4 ? 4 : THREADS / 2 ))\n\n# Stage 1: SAM prep + name-sort + fixmate + coord-sort, then\n# split into\
+        \ primaries-only and supplementaries-only. The\n# split is critical: fgbio GroupReadsByUmi requires every\n# record to have a primary mate of the opposite read, but\n# our `-F 268` upstream filter\
+        \ (drop 0x4|0x8|0x100) can leave\n# supplementaries orphaned when their primary was filtered\n# (e.g., one mate unmapped). We mark-dup primaries only, then\n# propagate dup flags by QNAME to supplementaries.\n\
+        #\n#   - Strip the literal `UMI_` prefix from the QNAME so the\n#     suffix becomes a clean `:<R1>_<R2>` token (consumed by\n#     fgbio CopyUmiFromReadName in stage 3).\n#   - Drop bogus per-record\
+        \ SM/PL/LB/PU aux tags. STAR's\n#     `--outSAMattrRGline` (in star-align.yaml) injects @RG\n#     header fields into EVERY record as additional tags;\n#     samtools parses e.g. `LB:NULL` as TAG=LB\
+        \ / TYPE=N /\n#     VALUE=ULL \u2192 \"unrecognized type 'N'\" \u2192 BAM round-trip\n#     fails. We strip them at the dedup input boundary.\n#   - `-F 268`: drop unmapped self (0x4) + mate-unmapped\n\
+        #     singletons (0x8) + secondary alignments (0x100). For\n#     mate/self-unmapped pairs, fgbio can't compute MQ from\n#     the partner. For secondaries, fixmate doesn't write\n#     MQ. Supplementary\
+        \ (0x800) is KEPT \u2014 fusion evidence.\n#     Robust against both old STAR BAMs (with secondaries)\n#     and new ones (--outSAMmultNmax 1, none).\necho \"Stage 1/5: filter + UMI prep + name-sort\
+        \ + fixmate + coord-sort\"\nsamtools view -h -@ \"${THREADS}\" -F 268 \"${BAM_IN}\" \\\n  | python3 -c '\nimport re, sys\nUMI_PREFIX = re.compile(r\":UMI_\")\n# Match \\t<TAG>:<rest-of-field> where\
+        \ TAG in {SM,PL,LB,PU}.\n# `[^\\t\\n]*` is critical: `[^\\t]*` would also consume the\n# trailing newline when the bogus tag is the last field on a\n# line, merging records and breaking samtools\
+        \ view -b.\nBOGUS_RG_TAGS = re.compile(r\"\\t(?:SM|PL|LB|PU):[^\\t\\n]*\")\nfor line in sys.stdin:\n    if line.startswith(\"@\"):\n        sys.stdout.write(line)\n        continue\n    line = UMI_PREFIX.sub(\"\
+        :\", line, count=1)\n    line = BOGUS_RG_TAGS.sub(\"\", line)\n    sys.stdout.write(line)\n' \\\n  | samtools sort -n -@ \"${SORT_THREADS}\" -O bam - \\\n  | samtools fixmate -m -@ \"${SORT_THREADS}\"\
+        \ - - \\\n  | samtools sort -@ \"${SORT_THREADS}\" -o /tmp/reformat.bam -\nsamtools index -@ \"${THREADS}\" /tmp/reformat.bam\n\necho \"Stage 2/5: split into primaries (-F 0x800) and supplementaries\
+        \ (-f 0x800)\"\nsamtools view -b -F 2048 -@ \"${THREADS}\" -o \"${PRIMARIES}\" /tmp/reformat.bam\nsamtools view -b -f 2048 -@ \"${THREADS}\" -o \"${SUPPS}\" /tmp/reformat.bam\nsamtools index -@\
+        \ \"${THREADS}\" \"${PRIMARIES}\"\nrm -f /tmp/reformat.bam /tmp/reformat.bam.bai\n\n# Stage 3/5: fgbio CopyUmiFromReadName on primaries\n# --field-delimiter=: : split QNAME on ':', take last field\
+        \ as UMI\n# --umi-delimiter=_   : within the UMI string, split on '_' to\n#                       recognise R1/R2 paired UMIs; output joined\n#                       with '-' (canonical paired-UMI\
+        \ form for\n#                       fgbio downstream tools).\n# --remove-umi=true   : strip the UMI suffix from QNAME after copy.\necho \"Stage 3/5: fgbio CopyUmiFromReadName on primaries\"\nfgbio\
+        \ CopyUmiFromReadName \\\n  --input=\"${PRIMARIES}\" \\\n  --output=\"${PRIMARIES_RX}\" \\\n  --field-delimiter=: \\\n  --umi-delimiter=_ \\\n  --remove-umi=true\nsamtools index -@ \"${THREADS}\"\
+        \ \"${PRIMARIES_RX}\"\nrm -f \"${PRIMARIES}\" \"${PRIMARIES}.bai\"\n\n# Stage 4/5: fgbio GroupReadsByUmi --mark-duplicates on primaries\n# --strategy=Adjacency : directed-graph UMI clustering (=\
+        \ umi_tools \"directional\")\n# --edits=1            : tolerate 1-base UMI sequencing errors\n# --raw-tag=RX         : input UMI tag (set by CopyUmiFromReadName)\n# --assign-tag=MI      : output\
+        \ molecular identifier per read group\n# --mark-duplicates    : set 0x400 on all but representative per group\n# --threads            : Adjacency is parallelizable\necho \"Stage 4/5: fgbio GroupReadsByUmi\
+        \ --mark-duplicates on primaries\"\nfgbio GroupReadsByUmi \\\n  --input=\"${PRIMARIES_RX}\" \\\n  --output=\"${PRIMARIES_MARKED}\" \\\n  --strategy=Adjacency \\\n  --edits=1 \\\n  --raw-tag=RX \\\
+        \n  --assign-tag=MI \\\n  --mark-duplicates=true \\\n  --threads=\"${THREADS}\" \\\n  --family-size-histogram=\"${METRICS_OUT}\"\nrm -f \"${PRIMARIES_RX}\" \"${PRIMARIES_RX}.bai\"\n\n# Stage 5a/5:\
+        \ build dup-QNAME set, propagate flags +\n# CopyUmiFromReadName-equivalent to supplementaries.\necho \"Stage 5a/5: extract dup QNAMEs from marked primaries\"\nsamtools view -f 1024 -@ \"${THREADS}\"\
+        \ \"${PRIMARIES_MARKED}\" \\\n  | cut -f1 | sort -u > \"${DUP_QNAMES}\"\necho \"  dup primary QNAMEs: $(wc -l < \"${DUP_QNAMES}\")\"\n\necho \"Stage 5b/5: process supplementaries \u2014 strip UMI\
+        \ from QNAME, set RX, propagate 0x400 by QNAME\"\npython3 -c '\nimport pysam, re\ndup_qnames = set()\nwith open(\"'\"${DUP_QNAMES}\"'\") as f:\n    for line in f:\n        dup_qnames.add(line.rstrip())\n\
+        # Match the trailing `:<5+>_<5+>` UMI suffix that survived\n# the python prep stage (the literal `UMI_` prefix was\n# already stripped, leaving e.g. `:TCTCT_CTTCT`).\nUMI_TAIL = re.compile(r\":([ACGTN]+)_([ACGTN]+)$\"\
+        )\ninb = pysam.AlignmentFile(\"'\"${SUPPS}\"'\", \"rb\")\noutb = pysam.AlignmentFile(\"'\"${SUPPS_PROCESSED}\"'\", \"wb\", template=inb)\nn_in = n_dup = n_no_umi = 0\nfor rec in inb:\n    n_in +=\
+        \ 1\n    qn = rec.query_name\n    m = UMI_TAIL.search(qn)\n    if m:\n        rec.set_tag(\"RX\", m.group(1) + \"-\" + m.group(2), value_type=\"Z\")\n        rec.query_name = qn[:m.start()]\n  \
+        \  else:\n        n_no_umi += 1\n    if rec.query_name in dup_qnames:\n        rec.flag |= 1024\n        n_dup += 1\n    outb.write(rec)\noutb.close(); inb.close()\nprint(\"  supps processed:\"\
+        , n_in, \"marked dup:\", n_dup, \"no UMI suffix:\", n_no_umi)\n'\nrm -f \"${SUPPS}\" \"${DUP_QNAMES}\"\n\necho \"Stage 5c/5: merge primaries_marked + supps_processed -> coord-sort -> ${BAM_OUT}\"\
+        \n# Merge the two coord-sorted BAMs in one shot. samtools merge\n# requires both inputs to be the same sort order; both are\n# coord-sorted (PRIMARIES_MARKED from fgbio's TemplateCoord\n# output\
+        \ is template-coord, but we re-sort it to coord here\n# via the final pipe). To keep it simple, sort each side and\n# then merge \u2192 already coord-sorted output.\nsamtools sort -@ \"${SORT_THREADS}\"\
+        \ -o /tmp/primaries_marked_coord.bam \"${PRIMARIES_MARKED}\"\nsamtools sort -@ \"${SORT_THREADS}\" -o /tmp/supps_processed_coord.bam \"${SUPPS_PROCESSED}\"\nrm -f \"${PRIMARIES_MARKED}\" \"${SUPPS_PROCESSED}\"\
+        \nsamtools merge -@ \"${THREADS}\" -f -c -p \"${BAM_OUT}\" \\\n  /tmp/primaries_marked_coord.bam /tmp/supps_processed_coord.bam\nsamtools index -@ \"${THREADS}\" \"${BAM_OUT}\"\nrm -f /tmp/primaries_marked_coord.bam\
+        \ /tmp/supps_processed_coord.bam\n\necho \"fgbio-mark-duplicates completed\"\nls -la \"${BAM_OUT}\" \"${BAM_OUT}.bai\" \"${METRICS_OUT}\" 2>&1 || true\n"
+      volumeMounts:
+      - mountPath: /mnt/input/bam/
+        name: input-bam
+      - mountPath: /mnt/output/bam/
+        name: output-bam
+      - mountPath: /mnt/output/metrics/
+        name: output-metrics
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-bam''])}}'
+        type: Directory
+      name: input-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-bam''])}}'
+        type: DirectoryOrCreate
+      name: output-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-metrics''])}}'
+        type: DirectoryOrCreate
+      name: output-metrics

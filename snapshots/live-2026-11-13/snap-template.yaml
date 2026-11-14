@@ -1,0 +1,72 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: snap-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: fq-r1
+      - name: fq-r2
+      - name: genome-ref
+      - name: bam
+      - name: thread-count
+      - name: read-group-str
+    name: snap
+    outputs:
+      parameters:
+      - name: bam
+        value: '{{inputs.parameters.bam}}'
+    script:
+      command:
+      - sh
+      image: bergun/snap-aligner:v2.0.3
+      name: snap
+      source: 'snap-aligner \
+
+        paired \
+
+        /mnt/ref/ \
+
+        /mnt/input/r1/{{=sprig.osBase(inputs.parameters[''fq-r1''])}} \
+
+        /mnt/input/r2/{{=sprig.osBase(inputs.parameters[''fq-r2''])}} \
+
+        -hc \
+
+        -so \
+
+        -t {{inputs.parameters.thread-count}} \
+
+        -R "{{inputs.parameters.read-group-str}}" \
+
+        -o "/mnt/output/{{=sprig.osBase(inputs.parameters[''bam''])}}"
+
+        '
+      volumeMounts:
+      - mountPath: /mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}
+        name: fq-r1
+      - mountPath: /mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}
+        name: fq-r2
+      - mountPath: /mnt/output/
+        name: bam
+      - mountPath: /mnt/ref/
+        name: genome-ref
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.fq-r1}}'
+        type: File
+      name: fq-r1
+    - hostPath:
+        path: '{{inputs.parameters.fq-r2}}'
+        type: File
+      name: fq-r2
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters.bam)}}'
+        type: DirectoryOrCreate
+      name: bam
+    - hostPath:
+        path: '{{inputs.parameters.genome-ref}}'
+        type: Directory
+      name: genome-ref

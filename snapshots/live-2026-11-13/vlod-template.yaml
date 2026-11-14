@@ -1,0 +1,58 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: vlod-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: input-bam
+      - name: input-vcf
+      - name: vlod-output-vcf
+      - name: thread-count
+    name: vlod
+    outputs:
+      parameters:
+      - name: vlod-output-vcf
+        value: '{{inputs.parameters.vlod-output-vcf}}.gz'
+    script:
+      command:
+      - bash
+      image: bergun/vlod-rs:0.1.0
+      name: vlod-script
+      source: 'vlod \
+
+        --input-vcf "/mnt/input/vcf/{{=sprig.osBase(inputs.parameters[''input-vcf''])}}" \
+
+        --input-bam "/mnt/input/bam/{{=sprig.osBase(inputs.parameters[''input-bam''])}}" \
+
+        --output "/mnt/output/{{=sprig.osBase(inputs.parameters[''vlod-output-vcf''])}}" \
+
+        --num-processes {{inputs.parameters.thread-count}};
+
+        bgzip -f "/mnt/output/{{=sprig.osBase(inputs.parameters[''vlod-output-vcf''])}}";
+
+        tabix -f -p vcf "/mnt/output/{{=sprig.osBase(inputs.parameters[''vlod-output-vcf''])}}.gz";
+
+        '
+      volumeMounts:
+      - mountPath: /mnt/input/vcf/
+        name: input-vcf
+      - mountPath: /mnt/input/bam/
+        name: input-bam
+      - mountPath: /mnt/output/
+        name: vlod-output-vcf
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-bam''])}}'
+        type: Directory
+      name: input-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-vcf''])}}'
+        type: Directory
+      name: input-vcf
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''vlod-output-vcf''])}}'
+        type: DirectoryOrCreate
+      name: vlod-output-vcf

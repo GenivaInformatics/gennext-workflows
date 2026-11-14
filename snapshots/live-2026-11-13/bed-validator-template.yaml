@@ -1,0 +1,133 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: bed-validator-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: input-bed-file
+      - name: gtf-file
+      - name: reference-fai-file
+        value: /tmp/unused-reference.fai
+      - name: chains-dir
+      - name: output-dir
+      - name: canonical-only
+        value: 'true'
+      - name: padding
+        value: '100'
+      - name: generate-padded-artifacts
+        value: 'false'
+    name: validate-bed-file
+    outputs:
+      parameters:
+      - name: validated-bed-file
+        valueFrom:
+          path: /tmp/validated_bed_file
+      - name: validated-bed-gz-file
+        valueFrom:
+          path: /tmp/validated_bed_gz_file
+      - name: validation-report
+        valueFrom:
+          path: /tmp/validation_report
+      - name: validated-bed-cds-only-file
+        valueFrom:
+          path: /tmp/validated_bed_cds_only_file
+      - name: validated-bed-analysis-file
+        valueFrom:
+          path: /tmp/validated_bed_analysis_file
+      - name: validated-bed-igv-file
+        valueFrom:
+          path: /tmp/validated_bed_igv_file
+    script:
+      command:
+      - sh
+      image: bergun/gennext-bed-validator:0.2.1
+      name: bed-validator-script
+      source: "set -e\n\ninputBedFile=\"{{=sprig.osBase(inputs.parameters['input-bed-file'])}}\"\ncanonicalOnly=\"{{inputs.parameters.canonical-only}}\"\npadding=\"{{inputs.parameters.padding}}\"\ngeneratePaddedArtifacts=\"\
+        {{inputs.parameters.generate-padded-artifacts}}\"\ncontainerOutputDir=\"/mnt/output\"\nhostOutputDir=\"{{inputs.parameters.output-dir}}\"\ngtfFile=\"/mnt/gtf/{{=sprig.osBase(inputs.parameters['gtf-file'])}}\"\
+        \nreferenceFaiFile=\"/mnt/reference/{{=sprig.osBase(inputs.parameters['reference-fai-file'])}}\"\n\n# Derive output filenames from input: {stem}.valid.bed\nstem=\"${inputBedFile%.*}\"\nvalidBedName=\"\
+        ${stem}.valid.bed\"\nvalidCdsBedName=\"${stem}.valid.cds_only.bed\"\nvalidAnalysisBedName=\"${stem}.valid.analysis.bed\"\nvalidIgvBedName=\"${stem}.valid.igv.bed\"\n\n# Check if input file is a\
+        \ placeholder (empty or \".\")\nif [ \"$inputBedFile\" = \".\" ] || [ -z \"$inputBedFile\" ]; then\n  echo \"No BED file provided (placeholder detected). Skipping validation.\"\n  touch \"${containerOutputDir}/${validBedName}\"\
+        \ \"${containerOutputDir}/${validCdsBedName}\" \"${containerOutputDir}/${validAnalysisBedName}\" \"${containerOutputDir}/${validIgvBedName}\"\n  echo '{\"skipped\": true, \"reason\": \"No input\
+        \ file provided\"}' > \"${containerOutputDir}/validation_report.json\"\n  # Write host output paths. Emit \".\" for validated-bed-file so\n  # downstream copy-regions-file-to-scratch falls through\
+        \ to the\n  # enrichment-kit / default regions BED instead of copying the\n  # empty placeholder file.\n  echo -n \".\" > /tmp/validated_bed_file\n  echo -n \"\" > /tmp/validated_bed_gz_file\n \
+        \ echo -n \"${hostOutputDir}/validation_report.json\" > /tmp/validation_report\n  echo -n \"${hostOutputDir}/${validCdsBedName}\" > /tmp/validated_bed_cds_only_file\n  echo -n \".\" > /tmp/validated_bed_analysis_file\n\
+        \  echo -n \".\" > /tmp/validated_bed_igv_file\n  exit 0\nfi\n\n# Build canonical flag\ncanonicalFlag=\"\"\nif [ \"$canonicalOnly\" = \"true\" ]; then\n  canonicalFlag=\"--canonical-only\"\nfi\n\
+        \necho \"Running BED validator on: $inputBedFile\"\n\npython /app/main.py \\\n  /mnt/input/\"$inputBedFile\" \\\n  --gtf \"$gtfFile\" \\\n  --chains-dir /mnt/chains/ \\\n  --output \"${containerOutputDir}/${validBedName}\"\
+        \ \\\n  --output-report \"${containerOutputDir}/validation_report.json\" \\\n  --output-cds-bed \"${containerOutputDir}/${validCdsBedName}\" \\\n  $canonicalFlag || {\n    exitCode=$?\n    echo\
+        \ \"WARNING: BED validation failed with exit code $exitCode\"\n    echo \"Continuing workflow with original file...\"\n    cp /mnt/input/\"$inputBedFile\" \"${containerOutputDir}/${validBedName}\"\
+        \n    # Fall back the CDS-only output to the full panel BED rather\n    # than an empty file. Downstream mosdepth-exome runs against\n    # this; an empty BED would silently produce zero-coverage\n\
+        \    # numbers that the QC collector posts to Gennext. Whole-panel\n    # coverage (degraded from CDS-only) is far better than zeros.\n    cp /mnt/input/\"$inputBedFile\" \"${containerOutputDir}/${validCdsBedName}\"\
+        \n    echo \"{\\\"error\\\": true, \\\"exit_code\\\": $exitCode, \\\"message\\\": \\\"Validation failed, using original file\\\"}\" > \"${containerOutputDir}/validation_report.json\"\n  }\n\nanalysisBedOutput=\"\
+        .\"\nigvBedOutput=\".\"\n\nif [ \"$generatePaddedArtifacts\" = \"true\" ]; then\n  echo \"Generating analysis and IGV BED artifacts with ${padding}bp padding...\"\n  if ! python3 - \\\n    \"${containerOutputDir}/${validBedName}\"\
+        \ \\\n    \"$referenceFaiFile\" \\\n    \"${containerOutputDir}/${validAnalysisBedName}\" \\\n    \"${containerOutputDir}/${validIgvBedName}\" \\\n    \"$padding\" <<'PYTHON_SCRIPT'\n# BEGIN PADDED_BED_PYTHON\n\
+        import sys\n\n\ndef read_fai(fai_path):\n    chrom_sizes = {}\n    chrom_order = {}\n    with open(fai_path, \"r\") as fai:\n        for line_number, line in enumerate(fai, 1):\n            fields\
+        \ = line.rstrip(\"\\n\").split(\"\\t\")\n            if len(fields) < 2:\n                raise ValueError(\n                    f\"Malformed FASTA index at {fai_path}:{line_number}\"\n        \
+        \        )\n            chrom = fields[0]\n            length = int(fields[1])\n            if not chrom or length < 1:\n                raise ValueError(\n                    f\"Invalid FASTA index\
+        \ bounds at {fai_path}:{line_number}\"\n                )\n            if chrom in chrom_sizes and chrom_sizes[chrom] != length:\n                raise ValueError(f\"Conflicting lengths for {chrom}\
+        \ in {fai_path}\")\n            if chrom not in chrom_order:\n                chrom_order[chrom] = len(chrom_order)\n            chrom_sizes[chrom] = length\n    if not chrom_sizes:\n        raise\
+        \ ValueError(f\"No contig bounds found in FASTA index {fai_path}\")\n    return chrom_sizes, chrom_order\n\n\ndef read_bed3(path, chrom_sizes):\n    intervals = []\n    with open(path, \"r\") as\
+        \ bed:\n        for line_number, line in enumerate(bed, 1):\n            stripped = line.strip()\n            if not stripped or stripped.startswith(\"#\") or stripped.startswith(\"track\"):\n \
+        \               continue\n            fields = stripped.split(\"\\t\")\n            if len(fields) < 3:\n                raise ValueError(f\"Expected at least 3 BED columns at {path}:{line_number}\"\
+        )\n            chrom = fields[0]\n            try:\n                start = int(fields[1])\n                end = int(fields[2])\n            except ValueError as error:\n                raise ValueError(f\"\
+        Non-integer BED coordinates at {path}:{line_number}\") from error\n            if chrom not in chrom_sizes:\n                raise ValueError(f\"BED contig {chrom} has no FASTA index entry\")\n\
+        \            if start < 0 or end <= start or end > chrom_sizes[chrom]:\n                raise ValueError(\n                    f\"Out-of-bounds BED interval at {path}:{line_number}: {chrom}:{start}-{end}\"\
+        \n                )\n            intervals.append((chrom, start, end))\n    if not intervals:\n        raise ValueError(f\"No intervals found in {path}\")\n    return intervals\n\n\ndef merge_intervals(intervals,\
+        \ chrom_order):\n    ordered = sorted(intervals, key=lambda item: (chrom_order[item[0]], item[1], item[2]))\n    merged = []\n    for chrom, start, end in ordered:\n        if merged and chrom ==\
+        \ merged[-1][0] and start <= merged[-1][2]:\n            previous_chrom, previous_start, previous_end = merged[-1]\n            merged[-1] = (previous_chrom, previous_start, max(previous_end, end))\n\
+        \        else:\n            merged.append((chrom, start, end))\n    return merged\n\n\ndef subtract_intervals(analysis_intervals, target_intervals, chrom_order):\n    targets_by_chrom = {}\n   \
+        \ for chrom, start, end in target_intervals:\n        targets_by_chrom.setdefault(chrom, []).append((start, end))\n\n    padding_only = []\n    for chrom, analysis_start, analysis_end in analysis_intervals:\n\
+        \        cursor = analysis_start\n        for target_start, target_end in targets_by_chrom.get(chrom, []):\n            if target_end <= cursor:\n                continue\n            if target_start\
+        \ >= analysis_end:\n                break\n            clipped_start = max(target_start, analysis_start)\n            clipped_end = min(target_end, analysis_end)\n            if cursor < clipped_start:\n\
+        \                padding_only.append((chrom, cursor, clipped_start))\n            cursor = max(cursor, clipped_end)\n            if cursor >= analysis_end:\n                break\n        if cursor\
+        \ < analysis_end:\n            padding_only.append((chrom, cursor, analysis_end))\n    return sorted(\n        padding_only,\n        key=lambda item: (chrom_order[item[0]], item[1], item[2]),\n\
+        \    )\n\n\ndef main():\n    if len(sys.argv) != 6:\n        raise ValueError(\n            \"Usage: padding.py VALIDATED_BED REFERENCE_FAI ANALYSIS_BED IGV_BED PADDING\"\n        )\n    validated_bed,\
+        \ reference_fai, analysis_bed, igv_bed, padding_value = sys.argv[1:]\n    padding = int(padding_value)\n    if padding < 0:\n        raise ValueError(\"Padding must be non-negative\")\n\n    chrom_sizes,\
+        \ chrom_order = read_fai(reference_fai)\n    targets = read_bed3(validated_bed, chrom_sizes)\n    target_union = merge_intervals(targets, chrom_order)\n    padded = [\n        (chrom, max(0, start\
+        \ - padding), min(chrom_sizes[chrom], end + padding))\n        for chrom, start, end in target_union\n    ]\n    analysis_union = merge_intervals(padded, chrom_order)\n    padding_only = subtract_intervals(analysis_union,\
+        \ target_union, chrom_order)\n\n    with open(analysis_bed, \"w\") as output:\n        for chrom, start, end in analysis_union:\n            output.write(f\"{chrom}\\t{start}\\t{end}\\n\")\n\n \
+        \   features = [\n        (chrom, start, end, \"targeted\", \"128,128,128\")\n        for chrom, start, end in target_union\n    ] + [\n        (chrom, start, end, \"padding\", \"211,211,211\")\n\
+        \        for chrom, start, end in padding_only\n    ]\n    features.sort(\n        key=lambda item: (chrom_order[item[0]], item[1], item[2], item[3])\n    )\n    with open(igv_bed, \"w\") as output:\n\
+        \        output.write('track name=\"Targeted and Padding Regions\" itemRgb=\"On\"\\n')\n        for chrom, start, end, feature_type, color in features:\n            output.write(\n             \
+        \   f\"{chrom}\\t{start}\\t{end}\\t{feature_type}\\t0\\t.\\t\"\n                f\"{start}\\t{end}\\t{color}\\n\"\n            )\n\n    print(\n        f\"Generated {len(analysis_union)} BED3 analysis\
+        \ intervals and \"\n        f\"{len(features)} IGV features\",\n        file=sys.stderr,\n    )\n\n\nif __name__ == \"__main__\":\n    main()\n# END PADDED_BED_PYTHON\nPYTHON_SCRIPT\n  then\n  \
+        \  echo \"ERROR: Analysis/IGV BED generation failed. Refusing to use unpadded intervals.\"\n    exit 1\n  fi\n  analysisBedOutput=\"${hostOutputDir}/${validAnalysisBedName}\"\n  igvBedOutput=\"\
+        ${hostOutputDir}/${validIgvBedName}\"\nelse\n  echo \"Skipping padded BED artifacts for this validator invocation.\"\nfi\n\n# Write host output paths for Argo\necho -n \"${hostOutputDir}/${validBedName}\"\
+        \ > /tmp/validated_bed_file\necho -n \"${hostOutputDir}/${validBedName}.gz\" > /tmp/validated_bed_gz_file\necho -n \"${hostOutputDir}/validation_report.json\" > /tmp/validation_report\necho -n \"\
+        ${hostOutputDir}/${validCdsBedName}\" > /tmp/validated_bed_cds_only_file\necho -n \"$analysisBedOutput\" > /tmp/validated_bed_analysis_file\necho -n \"$igvBedOutput\" > /tmp/validated_bed_igv_file\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-bed-file
+      - mountPath: /mnt/gtf/
+        name: gtf-file
+        readOnly: true
+      - mountPath: /mnt/reference/
+        name: reference-fai-file
+        readOnly: true
+      - mountPath: /mnt/chains/
+        name: chains-dir
+      - mountPath: /mnt/output/
+        name: output-dir
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-bed-file''])}}'
+        type: Directory
+      name: input-bed-file
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''gtf-file''])}}'
+        type: Directory
+      name: gtf-file
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''reference-fai-file''])}}'
+        type: Directory
+      name: reference-fai-file
+    - hostPath:
+        path: '{{inputs.parameters.chains-dir}}'
+        type: DirectoryOrCreate
+      name: chains-dir
+    - hostPath:
+        path: '{{inputs.parameters.output-dir}}'
+        type: DirectoryOrCreate
+      name: output-dir

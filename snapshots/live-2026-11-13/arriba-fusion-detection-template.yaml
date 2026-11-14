@@ -1,0 +1,84 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: arriba-fusion-detection-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: input-bam
+      - name: ref-genome-fa
+      - name: gene-annotation-gtf
+      - name: output-fusions-tsv
+      - name: output-fusions-discarded-tsv
+      - default: ultra_sensitivity
+        name: sensitivity
+      - default: '20'
+        name: thread-count
+    name: arriba-fusion-detection
+    outputs:
+      parameters:
+      - name: output-fusions-tsv
+        value: '{{inputs.parameters.output-fusions-tsv}}'
+      - name: output-fusions-discarded-tsv
+        value: '{{inputs.parameters.output-fusions-discarded-tsv}}'
+    script:
+      command:
+      - sh
+      image: quay.io/biocontainers/arriba:2.5.1--h87b9561_0
+      name: arriba-fusion-detection
+      resources:
+        requests:
+          cpu: '4'
+          memory: 8Gi
+      source: "set -euo pipefail\n\n# Resolve bundled resource files dynamically (handles v2.5.0 vs v2.5.1)\nARRIBA_DATA=/usr/local/var/lib/arriba\nBLACKLIST=$(ls ${ARRIBA_DATA}/blacklist_hg38_GRCh38_v2.5.*.tsv.gz\
+        \ 2>/dev/null | head -1)\nKNOWN_FUSIONS=$(ls ${ARRIBA_DATA}/known_fusions_hg38_GRCh38_v2.5.*.tsv.gz 2>/dev/null | head -1)\nPROTEIN_DOMAINS=$(ls ${ARRIBA_DATA}/protein_domains_hg38_GRCh38_v2.5.*.gff3\
+        \ 2>/dev/null | head -1)\n\nif [ -z \"$BLACKLIST\" ] || [ -z \"$KNOWN_FUSIONS\" ] || [ -z \"$PROTEIN_DOMAINS\" ]; then\n  echo \"ERROR: Could not find arriba bundled resource files in ${ARRIBA_DATA}\"\
+        \n  ls -la ${ARRIBA_DATA}/ || true\n  exit 1\nfi\n\necho \"Resolved arriba resources:\"\necho \"  Blacklist:        ${BLACKLIST}\"\necho \"  Known fusions:    ${KNOWN_FUSIONS}\"\necho \"  Protein\
+        \ domains:  ${PROTEIN_DOMAINS}\"\n\nSAMPLE_ID=\"{{inputs.parameters.sample-id}}\"\nSENSITIVITY=\"{{inputs.parameters.sensitivity}}\"\nTHREADS=\"{{inputs.parameters.thread-count}}\"\n\nBAM=\"/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}\"\
+        \nGENOME=\"/mnt/ref/genome/{{=sprig.osBase(inputs.parameters['ref-genome-fa'])}}\"\nGTF=\"/mnt/input/gtf/{{=sprig.osBase(inputs.parameters['gene-annotation-gtf'])}}\"\n\nARRIBA_ARGS=\"-x ${BAM}\"\
+        \nARRIBA_ARGS=\"${ARRIBA_ARGS} -o /mnt/output/fusions/{{=sprig.osBase(inputs.parameters['output-fusions-tsv'])}}\"\nARRIBA_ARGS=\"${ARRIBA_ARGS} -O /mnt/output/discarded/{{=sprig.osBase(inputs.parameters['output-fusions-discarded-tsv'])}}\"\
+        \nARRIBA_ARGS=\"${ARRIBA_ARGS} -a ${GENOME}\"\nARRIBA_ARGS=\"${ARRIBA_ARGS} -g ${GTF}\"\nARRIBA_ARGS=\"${ARRIBA_ARGS} -b ${BLACKLIST}\"\nARRIBA_ARGS=\"${ARRIBA_ARGS} -k ${KNOWN_FUSIONS}\"\nARRIBA_ARGS=\"\
+        ${ARRIBA_ARGS} -t ${KNOWN_FUSIONS}\"\nARRIBA_ARGS=\"${ARRIBA_ARGS} -p ${PROTEIN_DOMAINS}\"\n# -u: honor upstream BAM_FDUP (0x400) flags instead of running\n# Arriba's internal coordinate-based dedup.\n\
+        #\n# In the RNA fusion DAG the upstream is `fgbio-mark-duplicates`\n# which sets 0x400 via UMI-aware Adjacency clustering (=\n# umi_tools' \"directional\"). Arriba with -u sees the dedup'd\n# view\
+        \ at the same time the FI consolidated BAM keeps every\n# read for IGV inspection. Switch to a UMI-aware upstream tool\n# if true UMIs are introduced and coord-only dedup would be\n# wrong \u2014\
+        \ already true in this DAG.\nARRIBA_ARGS=\"${ARRIBA_ARGS} -u\"\n\ncase \"${SENSITIVITY}\" in\n  ultra_sensitivity)\n    echo \"Using ultra_sensitivity mode\"\n    ARRIBA_ARGS=\"${ARRIBA_ARGS} -f\
+        \ blacklist,duplicates,low_entropy,multimappers,small_insert_size,hairpin,homopolymer,mismatches,relative_support,homologs\"\n    ARRIBA_ARGS=\"${ARRIBA_ARGS} -S 1 -E 5.0 -V 0.2 -A 10 -K 0.95 -R\
+        \ 1000\"\n    ;;\n  max_sensitivity)\n    echo \"Using max_sensitivity mode\"\n    ARRIBA_ARGS=\"${ARRIBA_ARGS} -f blacklist,duplicates,low_entropy,multimappers\"\n    ARRIBA_ARGS=\"${ARRIBA_ARGS}\
+        \ -S 1 -E 1.0 -V 0.05 -A 15 -K 0.8 -R 5000\"\n    ;;\n  *)\n    echo \"ERROR: Unknown arriba sensitivity mode: ${SENSITIVITY}\"\n    echo \"Valid modes: ultra_sensitivity, max_sensitivity\"\n  \
+        \  exit 1\n    ;;\nesac\n\n# Use -@ for threads (NOT -T which sets top_viral_contigs)\nARRIBA_ARGS=\"${ARRIBA_ARGS} -@ ${THREADS}\"\n\necho \"Running: arriba ${ARRIBA_ARGS}\"\narriba ${ARRIBA_ARGS}\n\
+        \necho \"arriba completed successfully\"\nls -la /mnt/output/fusions/\n"
+      volumeMounts:
+      - mountPath: /mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}
+        name: input-bam
+      - mountPath: /mnt/ref/genome/
+        name: ref-genome-fa
+      - mountPath: /mnt/input/gtf/{{=sprig.osBase(inputs.parameters['gene-annotation-gtf'])}}
+        name: gene-annotation-gtf
+      - mountPath: /mnt/output/fusions/
+        name: output-fusions-tsv
+      - mountPath: /mnt/output/discarded/
+        name: output-fusions-discarded-tsv
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-bam}}'
+        type: File
+      name: input-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''ref-genome-fa''])}}'
+        type: Directory
+      name: ref-genome-fa
+    - hostPath:
+        path: '{{inputs.parameters.gene-annotation-gtf}}'
+        type: File
+      name: gene-annotation-gtf
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-fusions-tsv''])}}'
+        type: DirectoryOrCreate
+      name: output-fusions-tsv
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-fusions-discarded-tsv''])}}'
+        type: DirectoryOrCreate
+      name: output-fusions-discarded-tsv

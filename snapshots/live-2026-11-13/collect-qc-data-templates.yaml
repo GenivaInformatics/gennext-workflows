@@ -1,0 +1,171 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: collect-qc-data-templates
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: run-id
+      - name: metrics-dir
+      - default: dna
+        name: data-source-type
+    name: collect-qc-data-bam
+    script:
+      command:
+      - python
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: demisto/pandas:1.0.0.80782
+      name: collect-qc-data-bam
+      source: "import os\nimport pandas as pd\nimport json\nimport requests\n\n# cluster info\ntoken = os.environ[\"GENNEXT_CLUSTER_TOKEN\"]\naddr = \"gennext-backend.gennext-dev.svc.cluster.local:3030\"\
+        \nurl = f\"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/quality\"\n\n# collect input data\nsample_id = \"{{inputs.parameters.sample-id}}\"\nmultiqc_data = pd.read_csv(\"multiqc_data/multiqc_general_stats.txt\"\
+        , sep=\"\\t\")\n\nqc_data = {\n    \"1x_coverage\": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth-1_x_pc'].values[0],\n    \"5x_coverage\": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth-5_x_pc'].values[0],\n\
+        \    \"10x_coverage\": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth-10_x_pc'].values[0],\n    \"30x_coverage\": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth-30_x_pc'].values[0],\n\
+        \    \"50x_coverage\": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth-50_x_pc'].values[0],\n    \"mean_coverage\": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth-mean_coverage'].values[0],\n\
+        \    \"median_coverage\": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth-median_coverage'].values[0],\n    \"contamination\": multiqc_data[multiqc_data['Sample'] == sample_id]['verifybamid-FREEMIX'].values[0],\n\
+        }\n\nqc_data_dict = {\n    \"dataSourceType\": \"{{inputs.parameters.data-source-type}}\",\n    \"1X\": str(f'{qc_data[\"1x_coverage\"]:.2f}'),\n    \"5X\": str(f'{qc_data[\"5x_coverage\"]:.2f}'),\n\
+        \    \"10X\": str(f'{qc_data[\"10x_coverage\"]:.2f}'),\n    \"30X\": str(f'{qc_data[\"30x_coverage\"]:.2f}'),\n    \"50X\": str(f'{qc_data[\"50x_coverage\"]:.2f}'),\n    \"meanCoverage\": str(f'{qc_data[\"\
+        mean_coverage\"]:.2f}'),\n    \"medianCoverage\": str(f'{qc_data[\"median_coverage\"]:.2f}'),\n    \"contamination\": str(f'{qc_data[\"contamination\"]:.5f}'),\n    \"totalReads\": None,\n    \"\
+        avgReadLength\": None,\n    \"gender\": None, #TODO\n    \"roh\": None # TODO\n}\n\n# if fqs_fnames_str != \"\":\n#     fqs_fnames = json.loads(fqs_fnames_str)\n#     fqs_bnames  = list(map(lambda\
+        \ fq: \".\".join(fq.split(\".\")[:-2]) if fq.endswith(\".gz\") else \".\".join(fq.split(\".\")[:-1]), fqs_fnames))\n#     qc_data_fqs = {\n#         \"total_sequences\": int(sum(multiqc_data[multiqc_data['Sample'].isin(fqs_bnames)]['fastqc-total_sequences'])/len(fqs_bnames)),\n\
+        #         \"avg_sequence_length\": sum(multiqc_data[multiqc_data['Sample'].isin(fqs_bnames)]['fastqc-avg_sequence_length'])/len(fqs_bnames)\n#     }\n#     qc_data_dict['totalReads'] = int(qc_data_fqs[\"\
+        total_sequences\"])\n#     qc_data_dict['avgReadLength'] = str(f'{qc_data_fqs[\"avg_sequence_length\"]:.2f}')\n\n# qc_data_json = json.dumps(qc_data_dict)\n\nprint(json.dumps({\"runId\": \"{{inputs.parameters.run-id}}\"\
+        , \"sampleId\": \"{{inputs.parameters.sample-id}}\", \"qcData\": qc_data_dict, \"token\": token }))\n\nres = requests.post(url, json={\"runId\": \"{{inputs.parameters.run-id}}\", \"sampleId\": \"\
+        {{inputs.parameters.sample-id}}\", \"qcData\": qc_data_dict, \"token\": token })\nif res.status_code != 200:\n    raise Exception(res.text)\n"
+      volumeMounts:
+      - mountPath: /mnt/metrics/
+        name: metrics-dir
+      workingDir: /mnt/metrics/
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.metrics-dir}}'
+        type: Directory
+      name: metrics-dir
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: run-id
+      - name: sample-fqs-fnames
+      - name: metrics-dir
+      - default: dna
+        name: data-source-type
+    name: collect-qc-data
+    script:
+      command:
+      - python
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: demisto/pandas:1.0.0.80782
+      name: collect-qc-data
+      source: "import os\nimport pandas as pd\nimport json\nimport requests\nimport zipfile\nimport re  # Added missing import for regex\n\n# cluster info\ntoken = os.environ[\"GENNEXT_CLUSTER_TOKEN\"]\n\
+        addr = \"gennext-backend.gennext-dev.svc.cluster.local:3030\"\nurl = f\"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/quality\"\n\n# collect input data\nsample_id = \"{{inputs.parameters.sample-id}}\"\
+        \nmultiqc_data = pd.read_csv(\"multiqc_data/multiqc_general_stats.txt\", sep=\"\\t\")\nfqs_fnames_str = '{{inputs.parameters.sample-fqs-fnames}}'\n\ndef parse_fastqc_stats(fq):\n    try:  # Added\
+        \ error handling for file access\n        with zipfile.ZipFile(f'fastqc/pre-trim/{fq}_fastqc.zip', 'r') as zip_ref:\n            with zip_ref.open(f'{fq}_fastqc/fastqc_data.txt') as file:\n    \
+        \            content = file.read().decode('utf-8')\n\n        # Find the Basic Statistics section\n        match = re.search(r'>>Basic Statistics.*?>>END_MODULE', content, re.DOTALL)\n        if\
+        \ not match:\n            return {}\n\n        # Parse only relevant lines into a dictionary\n        result = {}\n        for line in match.group(0).split('\\n'):\n            if line and not line.startswith('>>')\
+        \ and not line.startswith('#'):\n                parts = line.split('\\t')\n                if len(parts) >= 2:\n                    key = parts[0].strip()\n                    if key == 'Total\
+        \ Sequences':\n                        result[key] = int(parts[1])\n                    elif key == 'Total Bases':\n                        result[key] = float(parts[1].split()[0])\n           \
+        \         elif key == '%GC':\n                        result[key] = int(parts[1])\n                    else:\n                        result[key] = parts[1].strip()\n        return result\n    except\
+        \ Exception as e:\n        print(f\"Error parsing FastQC stats for {fq}: {str(e)}\")\n        return {}\n\n# Get QC data from multiqc\ntry:\n    qc_data = {\n        \"1x_coverage\": multiqc_data[multiqc_data['Sample']\
+        \ == sample_id]['mosdepth-1_x_pc'].values[0],\n        \"5x_coverage\": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth-5_x_pc'].values[0],\n        \"10x_coverage\": multiqc_data[multiqc_data['Sample']\
+        \ == sample_id]['mosdepth-10_x_pc'].values[0],\n        \"30x_coverage\": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth-30_x_pc'].values[0],\n        \"50x_coverage\": multiqc_data[multiqc_data['Sample']\
+        \ == sample_id]['mosdepth-50_x_pc'].values[0],\n        \"mean_coverage\": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth-mean_coverage'].values[0],\n        \"median_coverage\": multiqc_data[multiqc_data['Sample']\
+        \ == sample_id]['mosdepth-median_coverage'].values[0],\n        \"contamination\": multiqc_data[multiqc_data['Sample'] == sample_id]['verifybamid-FREEMIX'].values[0],\n    }\nexcept IndexError:\n\
+        \    print(f\"Error: Sample ID '{sample_id}' not found in multiqc data\")\n    raise Exception(f\"Sample ID '{sample_id}' not found in multiqc data\")\n\nqc_data_dict = {\n    \"dataSourceType\"\
+        : \"{{inputs.parameters.data-source-type}}\",\n    \"1X\": str(f'{qc_data[\"1x_coverage\"]:.2f}'),\n    \"5X\": str(f'{qc_data[\"5x_coverage\"]:.2f}'),\n    \"10X\": str(f'{qc_data[\"10x_coverage\"\
+        ]:.2f}'),\n    \"30X\": str(f'{qc_data[\"30x_coverage\"]:.2f}'),\n    \"50X\": str(f'{qc_data[\"50x_coverage\"]:.2f}'),\n    \"meanCoverage\": str(f'{qc_data[\"mean_coverage\"]:.2f}'),\n    \"medianCoverage\"\
+        : str(f'{qc_data[\"median_coverage\"]:.2f}'),\n    \"contamination\": str(f'{qc_data[\"contamination\"]:.5f}'),\n    \"totalReads\": None,\n    \"avgReadLength\": None,\n    \"gender\": None, #TODO\n\
+        \    \"roh\": None # TODO\n}\n\nif fqs_fnames_str != \"\":\n    try:\n        fqs_fnames = json.loads(fqs_fnames_str)\n        fqs_bnames = []\n        for fq in fqs_fnames:\n            if fq.endswith(\"\
+        .gz\"):\n                # Extract basename without the last two extensions (.fastq.gz)\n                fq_basename = \".\".join(fq.split(\".\")[:-2])\n            else:\n                # Extract\
+        \ basename without the last extension (.fastq)\n                fq_basename = \".\".join(fq.split(\".\")[:-1])\n            fqs_bnames.append(os.path.basename(fq_basename))\n\n        all_stats\
+        \ = {fq: parse_fastqc_stats(fq) for fq in fqs_bnames}\n        valid_stats = {f: stats for f, stats in all_stats.items() if stats and 'Total Sequences' in stats and 'Sequence length' in stats}\n\
+        \n        if valid_stats:\n            qc_data_fqs = {\n                \"total_sequences\": int(sum([int(valid_stats[f]['Total Sequences']) for f in valid_stats])/len(valid_stats)),\n         \
+        \       \"avg_sequence_length\": int(sum([int(valid_stats[f]['Sequence length']) for f in valid_stats])/len(valid_stats)),\n                \"file_names\": ', '.join(sorted([valid_stats[f].get('Filename',\
+        \ f) for f in valid_stats]))\n            }\n            qc_data_dict['totalReads'] = qc_data_fqs[\"total_sequences\"]\n            qc_data_dict['avgReadLength'] = str(f'{qc_data_fqs[\"avg_sequence_length\"\
+        ]:.2f}')\n    except Exception as e:\n        print(f\"Error processing FASTQ files: {str(e)}\")\n        # Continue without FASTQ stats rather than failing completely\n\n# Fix URL template parameter\n\
+        url = f\"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/quality\".replace(\"{{inputs.parameters.run-id}}\", \"{{inputs.parameters.run-id}}\")\n\n# Send request with properly formatted data\n\
+        try:\n    res = requests.post(\n        url,\n        json={\n            \"runId\": \"{{inputs.parameters.run-id}}\",\n            \"sampleId\": \"{{inputs.parameters.sample-id}}\",\n         \
+        \   \"qcData\": qc_data_dict,\n            \"token\": token\n        },\n        timeout=30  # Add timeout to prevent hanging\n    )\n    if res.status_code != 200:\n        raise Exception(f\"\
+        API request failed: {res.status_code} - {res.text}\")\n    print(f\"Successfully uploaded QC data for sample {sample_id}\")\nexcept requests.exceptions.RequestException as e:\n    raise Exception(f\"\
+        API connection error: {str(e)}\")\n"
+      volumeMounts:
+      - mountPath: /mnt/metrics/
+        name: metrics-dir
+      workingDir: /mnt/metrics/
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.metrics-dir}}'
+        type: Directory
+      name: metrics-dir
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: run-id
+      - name: sample-fqs-fnames
+      - name: metrics-dir
+      - default: dna
+        name: data-source-type
+      - name: node-name
+    name: collect-qc-data-on-node
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.node-name}}'
+    script:
+      command:
+      - python
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: demisto/pandas:1.0.0.80782
+      name: collect-qc-data
+      source: "import os\nimport pandas as pd\nimport json\nimport requests\nimport zipfile\nimport re  # Added missing import for regex\n\n# cluster info\ntoken = os.environ[\"GENNEXT_CLUSTER_TOKEN\"]\n\
+        addr = \"gennext-backend.gennext-dev.svc.cluster.local:3030\"\nurl = f\"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/quality\"\n\n# collect input data\nsample_id = \"{{inputs.parameters.sample-id}}\"\
+        \nmultiqc_data = pd.read_csv(\"multiqc_data/multiqc_general_stats.txt\", sep=\"\\t\")\nfqs_fnames_str = '{{inputs.parameters.sample-fqs-fnames}}'\n\ndef parse_fastqc_stats(fq):\n  # check if fastqc\
+        \ prefix folder exists\n  fatqc_prefix = \"fastqc/pre-trim/\"\n  if not os.path.exists(fatqc_prefix):\n    fatqc_prefix = \"fastqc/\"\n  try:  # Added error handling for file access\n    with zipfile.ZipFile(f'{fatqc_prefix}{fq}_fastqc.zip',\
+        \ 'r') as zip_ref:\n      with zip_ref.open(f'{fq}_fastqc/fastqc_data.txt') as file:\n        content = file.read().decode('utf-8')\n\n    # Find the Basic Statistics section\n    match = re.search(r'>>Basic\
+        \ Statistics.*?>>END_MODULE', content, re.DOTALL)\n    if not match:\n      return {}\n\n    # Parse only relevant lines into a dictionary\n    result = {}\n    for line in match.group(0).split('\\\
+        n'):\n      if line and not line.startswith('>>') and not line.startswith('#'):\n        parts = line.split('\\t')\n        if len(parts) >= 2:\n          key = parts[0].strip()\n          if key\
+        \ == 'Total Sequences':\n            result[key] = int(parts[1])\n          elif key == 'Total Bases':\n            result[key] = float(parts[1].split()[0])\n          elif key == '%GC':\n     \
+        \       result[key] = int(parts[1])\n          else:\n            result[key] = parts[1].strip()\n    return result\n  except Exception as e:\n    print(f\"Error parsing FastQC stats for {fq}: {str(e)}\"\
+        )\n    return {}\n\n# Get QC data from multiqc\ntry:\n  qc_data = {\n    \"1x_coverage\": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth-1_x_pc'].values[0],\n    \"5x_coverage\": multiqc_data[multiqc_data['Sample']\
+        \ == sample_id]['mosdepth-5_x_pc'].values[0],\n    \"10x_coverage\": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth-10_x_pc'].values[0],\n    \"30x_coverage\": multiqc_data[multiqc_data['Sample']\
+        \ == sample_id]['mosdepth-30_x_pc'].values[0],\n    \"50x_coverage\": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth-50_x_pc'].values[0],\n    \"mean_coverage\": multiqc_data[multiqc_data['Sample']\
+        \ == sample_id]['mosdepth-mean_coverage'].values[0],\n    \"median_coverage\": multiqc_data[multiqc_data['Sample'] == sample_id]['mosdepth-median_coverage'].values[0],\n    \"contamination\": multiqc_data[multiqc_data['Sample']\
+        \ == sample_id]['verifybamid-FREEMIX'].values[0],\n  }\nexcept IndexError:\n  print(f\"Error: Sample ID '{sample_id}' not found in multiqc data\")\n  raise Exception(f\"Sample ID '{sample_id}' not\
+        \ found in multiqc data\")\n\nqc_data_dict = {\n    \"dataSourceType\": \"{{inputs.parameters.data-source-type}}\",\n    \"1X\": str(f'{qc_data[\"1x_coverage\"]:.2f}'),\n    \"5X\": str(f'{qc_data[\"\
+        5x_coverage\"]:.2f}'),\n    \"10X\": str(f'{qc_data[\"10x_coverage\"]:.2f}'),\n    \"30X\": str(f'{qc_data[\"30x_coverage\"]:.2f}'),\n    \"50X\": str(f'{qc_data[\"50x_coverage\"]:.2f}'),\n    \"\
+        meanCoverage\": str(f'{qc_data[\"mean_coverage\"]:.2f}'),\n    \"medianCoverage\": str(f'{qc_data[\"median_coverage\"]:.2f}'),\n    \"contamination\": str(f'{qc_data[\"contamination\"]:.5f}'),\n\
+        \    \"totalReads\": None,\n    \"avgReadLength\": None,\n    \"gender\": None, #TODO\n    \"roh\": None # TODO\n}\n\nif fqs_fnames_str != \"\":\n  try:\n    fqs_fnames = json.loads(fqs_fnames_str)\n\
+        \    fqs_bnames = []\n    for fq in fqs_fnames:\n      if fq.endswith(\".gz\"):\n        # Extract basename without the last two extensions (.fastq.gz)\n        fq_basename = \".\".join(fq.split(\"\
+        .\")[:-2])\n      else:\n        # Extract basename without the last extension (.fastq)\n        fq_basename = \".\".join(fq.split(\".\")[:-1])\n      fqs_bnames.append(os.path.basename(fq_basename))\n\
+        \n    all_stats = {fq: parse_fastqc_stats(fq) for fq in fqs_bnames}\n    valid_stats = {f: stats for f, stats in all_stats.items() if stats and 'Total Sequences' in stats and 'Sequence length' in\
+        \ stats}\n\n    if valid_stats:\n      qc_data_fqs = {\n        \"total_sequences\": int(sum([int(valid_stats[f]['Total Sequences']) for f in valid_stats])/len(valid_stats)),\n        \"avg_sequence_length\"\
+        : int(sum([int(valid_stats[f]['Sequence length'].split('-')[-1]) for f in valid_stats])/len(valid_stats)),\n        \"file_names\": ', '.join(sorted([valid_stats[f].get('Filename', f) for f in valid_stats]))\n\
+        \      }\n      qc_data_dict['totalReads'] = qc_data_fqs[\"total_sequences\"]\n      qc_data_dict['avgReadLength'] = str(f'{qc_data_fqs[\"avg_sequence_length\"]:.2f}')\n  except Exception as e:\n\
+        \      print(f\"Error processing FASTQ files: {str(e)}\")\n      # Continue without FASTQ stats rather than failing completely\n\n# Fix URL template parameter\nurl = f\"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/quality\"\
+        .replace(\"{{inputs.parameters.run-id}}\", \"{{inputs.parameters.run-id}}\")\n\n# Send request with properly formatted data\ntry:\n  res = requests.post(\n    url,\n    json={\n      \"runId\":\
+        \ \"{{inputs.parameters.run-id}}\",\n      \"sampleId\": \"{{inputs.parameters.sample-id}}\",\n      \"qcData\": qc_data_dict,\n      \"token\": token\n    },\n    timeout=30  # Add timeout to prevent\
+        \ hanging\n  )\n  if res.status_code != 200:\n    raise Exception(f\"API request failed: {res.status_code} - {res.text}\")\n  print(f\"Successfully uploaded QC data for sample {sample_id}\")\nexcept\
+        \ requests.exceptions.RequestException as e:\n  raise Exception(f\"API connection error: {str(e)}\")\n"
+      volumeMounts:
+      - mountPath: /mnt/metrics/
+        name: metrics-dir
+      workingDir: /mnt/metrics/
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.metrics-dir}}'
+        type: Directory
+      name: metrics-dir

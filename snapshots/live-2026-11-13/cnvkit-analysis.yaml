@@ -1,0 +1,42 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cnvkit-analysis
+  namespace: argo
+  labels:
+    pipeline: cnv-calling
+    tool: cnvkit
+spec:
+  templates:
+  - container:
+      args:
+      - "set -euo pipefail\nmkdir -p /mnt/output\n\nSAMPLE_ID=\"{{inputs.parameters.sample-id}}\"\nBAM=\"/mnt/sample/bam/${SAMPLE_ID}_recal.bam\"\nREFERENCE=\"/mnt/ref/other/cnvkit/A3416642_tumor_pooled_reference.cnn\"\
+        \nVCF=\"/mnt/sample/results/snv/${SAMPLE_ID}_mutect2_vlod.vcf.gz\"\n\necho \"=== CNVkit Analysis ===\"\necho \"  Sample:    ${SAMPLE_ID}\"\necho \"  BAM:       ${BAM}\"\necho \"  Reference: ${REFERENCE}\"\
+        \necho \"  VCF:       ${VCF}\"\n\n# Step 1: cnvkit.py batch (coverage, fix, segment, scatter, diagram)\necho \"--- Step 1: cnvkit.py batch ---\"\ncnvkit.py batch \"$BAM\" \\\n    -r \"$REFERENCE\"\
+        \ \\\n    -d /mnt/output \\\n    --scatter --diagram --drop-low-coverage\n\nBAM_STEM=\"${SAMPLE_ID}_recal\"\n\n# Step 2: cnvkit.py call with BAF from VCF\necho \"--- Step 2: cnvkit.py call ---\"\
+        \ncnvkit.py call \"/mnt/output/${BAM_STEM}.cns\" \\\n    -v \"$VCF\" \\\n    -i \"$SAMPLE_ID\" \\\n    --ploidy 2 \\\n    -o \"/mnt/output/${BAM_STEM}.call.cns\"\n\n# Step 3: Regenerate scatter\
+        \ with BAF track\necho \"--- Step 3: cnvkit.py scatter ---\"\ncnvkit.py scatter \"/mnt/output/${BAM_STEM}.cnr\" \\\n    -s \"/mnt/output/${BAM_STEM}.call.cns\" \\\n    -v \"$VCF\" \\\n    -o \"\
+        /mnt/output/${BAM_STEM}-scatter.png\"\n\necho \"=== CNVkit Analysis complete ===\"\nls -la /mnt/output/\n"
+      command:
+      - bash
+      - -euo
+      - pipefail
+      - -c
+      image: quay.io/biocontainers/cnvkit:0.9.12--pyhdfd78af_1
+      resources:
+        requests:
+          cpu: '4'
+          memory: 8Gi
+      volumeMounts:
+      - mountPath: /mnt/sample
+        name: sample-data
+        readOnly: true
+      - mountPath: /mnt/ref
+        name: ref-data
+        readOnly: true
+      - mountPath: /mnt/output
+        name: output-data
+    inputs:
+      parameters:
+      - name: sample-id
+    name: run-cnvkit-analysis

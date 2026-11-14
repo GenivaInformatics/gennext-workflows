@@ -1,0 +1,48 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cnv-fusion-combined
+  namespace: argo
+  labels:
+    pipeline: cnv-fusion-combined
+  annotations:
+    workflows.argoproj.io/description: Combined pipeline that runs CNV calling and fusion detection in parallel as child workflows. Orchestrates cnv-calling and fusion-detection-ffpe WorkflowTemplates using
+      the workflow-of-workflows pattern.
+spec:
+  arguments:
+    parameters:
+    - name: sample-id
+    - name: sample-base
+    - name: output-base
+    - name: ref-base
+      value: /runspace/gennext/data/ref/hg38
+    - name: node-selector
+      value: acurare-01
+  entrypoint: combined-pipeline
+  serviceAccountName: gennext
+  templates:
+  - dag:
+      tasks:
+      - name: cnv-calling
+        template: submit-cnv-calling
+      - name: fusion-detection
+        template: submit-fusion-detection
+    name: combined-pipeline
+  - name: submit-cnv-calling
+    resource:
+      action: create
+      failureCondition: status.phase in (Failed, Error)
+      manifest: "apiVersion: argoproj.io/v1alpha1\nkind: Workflow\nmetadata:\n  generateName: cnv-calling-child-\n  namespace: argo\nspec:\n  workflowTemplateRef:\n    name: cnv-calling\n  arguments:\n\
+        \    parameters:\n      - name: sample-id\n        value: \"{{workflow.parameters.sample-id}}\"\n      - name: sample-base\n        value: \"{{workflow.parameters.sample-base}}\"\n      - name:\
+        \ output-base\n        value: \"{{workflow.parameters.output-base}}\"\n      - name: ref-base\n        value: \"{{workflow.parameters.ref-base}}\"\n      - name: node-selector\n        value: \"\
+        {{workflow.parameters.node-selector}}\"\n"
+      successCondition: status.phase == Succeeded
+  - name: submit-fusion-detection
+    resource:
+      action: create
+      failureCondition: status.phase in (Failed, Error)
+      manifest: "apiVersion: argoproj.io/v1alpha1\nkind: Workflow\nmetadata:\n  generateName: fusion-detection-child-\n  namespace: argo\nspec:\n  workflowTemplateRef:\n    name: fusion-detection-ffpe\n\
+        \  arguments:\n    parameters:\n      - name: sample-id\n        value: \"{{workflow.parameters.sample-id}}\"\n      - name: sample-base\n        value: \"{{workflow.parameters.sample-base}}\"\n\
+        \      - name: output-base\n        value: \"{{workflow.parameters.output-base}}\"\n      - name: ref-base\n        value: \"{{workflow.parameters.ref-base}}\"\n      - name: node-selector\n   \
+        \     value: \"{{workflow.parameters.node-selector}}\"\n"
+      successCondition: status.phase == Succeeded

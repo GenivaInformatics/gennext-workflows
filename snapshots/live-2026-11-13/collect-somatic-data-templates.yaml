@@ -1,0 +1,182 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: collect-somatic-data-templates
+  namespace: argo
+spec:
+  templates:
+  - dag:
+      tasks:
+      - arguments:
+          parameters:
+          - name: run-id
+            value: '{{inputs.parameters.run-id}}'
+          - name: sample-id
+            value: '{{inputs.parameters.sample-id}}'
+          - name: duckdb-file
+            value: '{{inputs.parameters.duckdb-file}}'
+          - name: target-bed-file
+            value: '{{inputs.parameters.snv-regions-bed-f}}'
+          - name: output-dir
+            value: '{{inputs.parameters.tmb-output-dir}}'
+        name: collect-tmb-data
+        templateRef:
+          name: collect-tmb-data-template
+          template: collect-tmb-data
+      - arguments:
+          parameters:
+          - name: run-id
+            value: '{{inputs.parameters.run-id}}'
+          - name: sample-id
+            value: '{{inputs.parameters.sample-id}}'
+          - name: msisensorpro-in-f
+            value: '{{inputs.parameters.msisensorpro-in-f}}'
+        name: collect-msi-data
+        template: collect-msi-data
+    inputs:
+      parameters:
+      - name: sample-id
+      - name: run-id
+      - name: duckdb-file
+      - name: msisensorpro-in-f
+      - name: tmb-output-dir
+      - name: snv-regions-bed-f
+    name: collect-somatic-data
+  - inputs:
+      parameters:
+      - name: run-id
+      - name: sample-id
+      - name: msisensorpro-in-f
+    name: collect-msi-data
+    script:
+      command:
+      - python
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: demisto/pandas:1.0.0.80782
+      name: collect-msi-data
+      source: "import pandas as pd\nimport os, requests\n\n# cluster info\ntoken = os.environ[\"GENNEXT_CLUSTER_TOKEN\"]\naddr = \"gennext-backend.gennext-prod.svc.cluster.local:3030\"\nurl = f\"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/somatic\"\
+        \n\n# collect input data\nsample_id = \"{{inputs.parameters.sample-id}}\"\nmsisensorpro_in_f = \"/mnt/input/{{=sprig.osBase(inputs.parameters['msisensorpro-in-f'])}}\"\n\n# collect msisensor data\n\
+        msi_data_df = pd.read_csv(msisensorpro_in_f, sep=\"\\t\")\nmsi_data_dict = msi_data_df.to_dict(orient=\"list\")\n\nfor key in msi_data_dict:\n    msi_data_dict[key] = msi_data_dict[key][0]\n\n\n\
+        msi_data = {\n  \"msiTotalNumberOfSites\": int(msi_data_dict[\"Total_Number_of_Sites\"]),\n  \"msiNumberOfSomaticSites\": int(msi_data_dict[\"Number_of_Somatic_Sites\"]),\n  \"msiPercentage\": str(f'{float(msi_data_dict[\"\
+        %\"]):.2f}'),\n  \"msiValue\": str(f'{(float(msi_data_dict[\"%\"]) / 100):.3f}'),\n  }\n\nprint(msi_data)\npayload = {\"runId\": \"{{inputs.parameters.run-id}}\", \"sampleId\": \"{{inputs.parameters.sample-id}}\"\
+        , \"somaticData\": msi_data, \"token\": token }\n\nres = requests.post(url, json=payload)\n\nif res.status_code != 200:\n    raise Exception(f\"Failed to post data: {res.status_code} - {res.text}\"\
+        )\n"
+      volumeMounts:
+      - mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['msisensorpro-in-f'])}}
+        name: msisensorpro-in-f
+      workingDir: /mnt/input/
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.msisensorpro-in-f}}'
+        type: File
+      name: msisensorpro-in-f
+  - inputs:
+      parameters:
+      - name: run-id
+      - name: sample-id
+      - name: msisensorpro-in-json
+    name: collect-msi-data-v2
+    script:
+      command:
+      - python
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: demisto/pandas:1.0.0.80782
+      name: collect-msi-data
+      source: "import json\nimport os, requests\n\n# cluster info\ntoken = os.environ[\"GENNEXT_CLUSTER_TOKEN\"]\naddr = \"gennext-backend.gennext-prod.svc.cluster.local:3030\"\nurl = f\"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/somatic\"\
+        \n\n# collect input data\nsample_id = \"{{inputs.parameters.sample-id}}\"\nmsisensorpro_in_json = \"/mnt/input/{{=sprig.osBase(inputs.parameters['msisensorpro-in-json'])}}\"\n\n# Load MSI data from\
+        \ JSON file\nwith open(msisensorpro_in_json, 'r') as f:\n    json_data = json.load(f)\n\n# Extract MSI data from the JSON structure\nmsi_info = json_data.get(\"MSI\", {})\ntotal_sites = msi_info.get(\"\
+        Total Number of Sites\", 0)\nunstable_sites = msi_info.get(\"Unstable Sites\", 0)\nmsi_percentage_decimal = msi_info.get(\"MSI Percentage\", 0.0)\n\n# Format MSI data for API\nmsi_data = {\n  \"\
+        msiTotalNumberOfSites\": int(total_sites),\n  \"msiNumberOfSomaticSites\": int(unstable_sites),\n  \"msiPercentage\": str(f'{msi_percentage_decimal * 100:.2f}'),\n  \"msiValue\": str(f'{msi_percentage_decimal:.3f}'),\n\
+        \  }\n\nprint(msi_data)\npayload = {\"runId\": \"{{inputs.parameters.run-id}}\", \"sampleId\": \"{{inputs.parameters.sample-id}}\", \"somaticData\": msi_data, \"token\": token }\n\nres = requests.post(url,\
+        \ json=payload)\n\nif res.status_code != 200:\n    raise Exception(f\"Failed to post data: {res.status_code} - {res.text}\")\n"
+      volumeMounts:
+      - mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['msisensorpro-in-json'])}}
+        name: msisensorpro-in-json
+      workingDir: /mnt/input/
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.msisensorpro-in-json}}'
+        type: File
+      name: msisensorpro-in-json
+  - inputs:
+      parameters:
+      - name: run-id
+      - name: sample-id
+      - name: hrd-json-f
+    name: collect-hrd-data
+    script:
+      command:
+      - python
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: demisto/pandas:1.0.0.80782
+      name: collect-hrd-data
+      source: "import json\nimport os, requests\n\n# cluster info\ntoken = os.environ[\"GENNEXT_CLUSTER_TOKEN\"]\naddr = \"gennext-backend.gennext-prod.svc.cluster.local:3030\"\nurl = f\"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/somatic\"\
+        \n\n# collect input data\nsample_id = \"{{inputs.parameters.sample-id}}\"\nhrd_json_f = \"/mnt/input/{{=sprig.osBase(inputs.parameters['hrd-json-f'])}}\"\n\n# Load HRD data from JSON file\nwith\
+        \ open(hrd_json_f, 'r') as f:\n    hrd_data_raw = json.load(f)\n\n# Map HRD fields (cast floats to int)\nhrd_data = {\n  \"hrdValue\": int(hrd_data_raw[\"HRD\"]),\n  \"hrdTelomericAi\": int(hrd_data_raw[\"\
+        Telomeric_AI\"]),\n  \"hrdLst\": int(hrd_data_raw[\"LST\"]),\n  \"hrdSum\": int(hrd_data_raw[\"HRD_sum\"]),\n  }\n\nprint(hrd_data)\npayload = {\"runId\": \"{{inputs.parameters.run-id}}\", \"sampleId\"\
+        : \"{{inputs.parameters.sample-id}}\", \"somaticData\": hrd_data, \"token\": token }\n\nres = requests.post(url, json=payload)\n\nif res.status_code != 200:\n    raise Exception(f\"Failed to post\
+        \ data: {res.status_code} - {res.text}\")\n"
+      volumeMounts:
+      - mountPath: /mnt/input/{{=sprig.osBase(inputs.parameters['hrd-json-f'])}}
+        name: hrd-json-f
+      workingDir: /mnt/input/
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.hrd-json-f}}'
+        type: File
+      name: hrd-json-f
+  - dag:
+      tasks:
+      - arguments:
+          parameters:
+          - name: run-id
+            value: '{{inputs.parameters.run-id}}'
+          - name: sample-id
+            value: '{{inputs.parameters.sample-id}}'
+          - name: duckdb-file
+            value: '{{inputs.parameters.duckdb-file}}'
+          - name: output-dir
+            value: '{{inputs.parameters.tmb-output-dir}}'
+          - name: target-bed-file
+            value: '{{inputs.parameters.snv-regions-bed-f}}'
+        name: collect-tmb-data
+        templateRef:
+          name: collect-tmb-data-template
+          template: collect-tmb-data
+      - arguments:
+          parameters:
+          - name: run-id
+            value: '{{inputs.parameters.run-id}}'
+          - name: sample-id
+            value: '{{inputs.parameters.sample-id}}'
+          - name: msisensorpro-in-json
+            value: '{{inputs.parameters.msisensorpro-in-f}}'
+        name: collect-msi-data
+        template: collect-msi-data-v2
+    inputs:
+      parameters:
+      - name: sample-id
+      - name: run-id
+      - name: duckdb-file
+      - name: snv-regions-bed-f
+      - name: tmb-output-dir
+      - name: msisensorpro-in-f
+      - name: node-name
+    name: collect-somatic-data-on-node
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.node-name}}'

@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: fastqc-v2-template
+  namespace: argo
+spec:
+  entrypoint: fastqc-v2
+  templates:
+  - container:
+      args:
+      - ls -lha /mnt/input; fastqc --outdir=/mnt/output --threads=2 /mnt/input/{{inputs.parameters.fastq1_f}} /mnt/input/{{inputs.parameters.fastq2_f}}
+      command:
+      - sh
+      - -c
+      image: quay.io/biocontainers/fastqc:0.12.1--hdfd78af_0
+      name: fastqc-v2
+      resources: {}
+      volumeMounts:
+      - mountPath: /mnt/input
+        name: input
+      - mountPath: /mnt/output
+        name: output
+    inputs:
+      parameters:
+      - name: fastq1_f
+      - name: fastq2_f
+    metadata: {}
+    name: fastqc-v2
+    outputs: {}

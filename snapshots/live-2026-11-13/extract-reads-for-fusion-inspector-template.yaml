@@ -1,0 +1,170 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: extract-reads-for-fusion-inspector-template
+  namespace: argo
+spec:
+  templates:
+  - container:
+      args:
+      - --in-bam=/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}
+      - --starfusion-tsv=/mnt/input/starfusion/{{=sprig.osBase(inputs.parameters['starfusion-tsv'])}}
+      - --arriba-tsv=/mnt/input/arriba/{{=sprig.osBase(inputs.parameters['arriba-tsv'])}}
+      - --fusion-list-tsv=/mnt/input/fusion-list/{{=sprig.osBase(inputs.parameters['fusion-list-tsv'])}}
+      - --artifact-filter-mode={{inputs.parameters.artifact-filter-mode}}
+      - --out-r1=/mnt/output/{{inputs.parameters.sample-id}}_filtered_R1.fq.gz
+      - --out-r2=/mnt/output/{{inputs.parameters.sample-id}}_filtered_R2.fq.gz
+      - --out-filtered-list=/mnt/output/{{inputs.parameters.sample-id}}_fusion_list.filtered.tsv
+      - --read-count-out=/tmp/read_count.txt
+      - --breakpoint-window={{inputs.parameters.breakpoint-window}}
+      - --threads={{inputs.parameters.thread-count}}
+      command:
+      - extract-reads-for-fusion-inspector
+      image: bergun/extract-fusion-reads:0.3.3
+      name: extract-reads-for-fusion-inspector
+      resources:
+        requests:
+          cpu: '16'
+          memory: 32Gi
+      volumeMounts:
+      - mountPath: /mnt/input/bam/
+        name: input-bam
+      - mountPath: /mnt/input/starfusion/
+        name: starfusion-tsv
+      - mountPath: /mnt/input/arriba/
+        name: arriba-tsv
+      - mountPath: /mnt/input/fusion-list/{{=sprig.osBase(inputs.parameters['fusion-list-tsv'])}}
+        name: fusion-list-tsv
+      - mountPath: /mnt/output/
+        name: output-dir
+    inputs:
+      parameters:
+      - name: sample-id
+      - name: input-bam
+      - default: .
+        name: starfusion-tsv
+      - default: .
+        name: arriba-tsv
+      - name: fusion-list-tsv
+      - default: filter
+        name: artifact-filter-mode
+      - name: output-dir
+      - name: thread-count
+      - default: '0'
+        name: breakpoint-window
+    name: extract-reads-for-fusion-inspector
+    outputs:
+      parameters:
+      - name: fq-r1
+        value: '{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_filtered_R1.fq.gz'
+      - name: fq-r2
+        value: '{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_filtered_R2.fq.gz'
+      - name: filtered-fusion-list-tsv
+        value: '{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_fusion_list.filtered.tsv'
+      - name: read-count
+        valueFrom:
+          path: /tmp/read_count.txt
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-bam''])}}'
+        type: Directory
+      name: input-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''starfusion-tsv''])}}'
+        type: Directory
+      name: starfusion-tsv
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''arriba-tsv''])}}'
+        type: Directory
+      name: arriba-tsv
+    - hostPath:
+        path: '{{inputs.parameters.fusion-list-tsv}}'
+        type: File
+      name: fusion-list-tsv
+    - hostPath:
+        path: '{{inputs.parameters.output-dir}}'
+        type: DirectoryOrCreate
+      name: output-dir
+  - container:
+      args:
+      - --in-bam=/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}
+      - --starfusion-tsv=/mnt/input/starfusion/{{=sprig.osBase(inputs.parameters['starfusion-tsv'])}}
+      - --arriba-tsv=/mnt/input/arriba/{{=sprig.osBase(inputs.parameters['arriba-tsv'])}}
+      - --fusion-list-tsv=/mnt/input/fusion-list/{{=sprig.osBase(inputs.parameters['fusion-list-tsv'])}}
+      - --artifact-filter-mode={{inputs.parameters.artifact-filter-mode}}
+      - --out-r1=/mnt/output/{{inputs.parameters.sample-id}}_filtered_R1.fq.gz
+      - --out-r2=/mnt/output/{{inputs.parameters.sample-id}}_filtered_R2.fq.gz
+      - --out-filtered-list=/mnt/output/{{inputs.parameters.sample-id}}_fusion_list.filtered.tsv
+      - --read-count-out=/tmp/read_count.txt
+      - --breakpoint-window={{inputs.parameters.breakpoint-window}}
+      - --threads={{inputs.parameters.thread-count}}
+      command:
+      - extract-reads-for-fusion-inspector
+      image: bergun/extract-fusion-reads:0.3.3
+      name: extract-reads-for-fusion-inspector
+      resources:
+        requests:
+          cpu: '16'
+          memory: 32Gi
+      volumeMounts:
+      - mountPath: /mnt/input/bam/
+        name: input-bam
+      - mountPath: /mnt/input/starfusion/
+        name: starfusion-tsv
+      - mountPath: /mnt/input/arriba/
+        name: arri
+      - mountPath: /mnt/input/fusion-list/{{=sprig.osBase(inputs.parameters['fusion-list-tsv'])}}
+        name: fusion-list-tsv
+      - mountPath: /mnt/output/
+        name: output-dir
+    inputs:
+      parameters:
+      - name: sample-id
+      - name: input-bam
+      - default: .
+        name: starfusion-tsv
+      - default: .
+        name: arriba-tsv
+      - name: fusion-list-tsv
+      - default: filter
+        name: artifact-filter-mode
+      - name: output-dir
+      - name: thread-count
+      - name: node-name
+      - default: '0'
+        name: breakpoint-window
+    name: extract-reads-for-fusion-inspector-on-node
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.node-name}}'
+    outputs:
+      parameters:
+      - name: fq-r1
+        value: '{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_filtered_R1.fq.gz'
+      - name: fq-r2
+        value: '{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_filtered_R2.fq.gz'
+      - name: filtered-fusion-list-tsv
+        value: '{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_fusion_list.filtered.tsv'
+      - name: read-count
+        valueFrom:
+          path: /tmp/read_count.txt
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-bam''])}}'
+        type: Directory
+      name: input-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''starfusion-tsv''])}}'
+        type: Directory
+      name: starfusion-tsv
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''arriba-tsv''])}}'
+        type: Directory
+      name: arriba-tsv
+    - hostPath:
+        path: '{{inputs.parameters.fusion-list-tsv}}'
+        type: File
+      name: fusion-list-tsv
+    - hostPath:
+        path: '{{inputs.parameters.output-dir}}'
+        type: DirectoryOrCreate
+      name: output-dir

@@ -1,0 +1,118 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: filter-artifact-fusions-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: input-fusions-json
+      - name: input-fusion-list-tsv
+      - name: output-fusions-json
+      - name: output-fusion-list-tsv
+      - name: output-fi-fusion-list-tsv
+      - default: '0'
+        name: fi-max-candidates
+    name: filter-artifact-fusions
+    outputs:
+      parameters:
+      - name: output-fusions-json
+        value: '{{inputs.parameters.output-fusions-json}}'
+      - name: output-fusion-list-tsv
+        value: '{{inputs.parameters.output-fusion-list-tsv}}'
+      - name: output-fi-fusion-list-tsv
+        value: '{{inputs.parameters.output-fi-fusion-list-tsv}}'
+    script:
+      command:
+      - python3
+      image: python:3.12-slim
+      name: filter-artifact-fusions
+      resources:
+        requests:
+          cpu: '1'
+          memory: 1Gi
+      source: "import json\nimport re\nimport sys\n\nIN_JSON = \"/mnt/input/json/{{=sprig.osBase(inputs.parameters['input-fusions-json'])}}\"\nIN_TSV  = \"/mnt/input/tsv/{{=sprig.osBase(inputs.parameters['input-fusion-list-tsv'])}}\"\
+        \nOUT_JSON = \"/mnt/output/json/{{=sprig.osBase(inputs.parameters['output-fusions-json'])}}\"\nOUT_TSV  = \"/mnt/output/tsv/{{=sprig.osBase(inputs.parameters['output-fusion-list-tsv'])}}\"\nOUT_FI_TSV\
+        \ = \"/mnt/output/fi-tsv/{{=sprig.osBase(inputs.parameters['output-fi-fusion-list-tsv'])}}\"\nFI_MAX = int(\"{{inputs.parameters.fi-max-candidates}}\")\n\n# IMPORTANT: keep this list in sync with\n\
+        # images/extract-reads-for-fusion-inspector/extract_reads.py.\nARTIFACT_PATTERNS = [\n    re.compile(r\"^MT-\"),\n    re.compile(r\"^IG[HKL][@JCV]\"),\n    re.compile(r\"^IGH-?@\"),\n    re.compile(r\"\
+        ^IGL-?@\"),\n    re.compile(r\"^IGK-?@\"),\n    re.compile(r\"^TR[ABDG][JCV]\"),\n    re.compile(r\"^RNU\\d\"),\n    re.compile(r\"^SNORD\\d\"),\n    re.compile(r\"^SNORA\\d\"),\n    re.compile(r\"\
+        ^SCARNA\\d\"),\n    re.compile(r\"^RNA5S\"),\n    re.compile(r\"^RNA5-8S\"),\n    re.compile(r\"^RNA28S\"),\n    re.compile(r\"^MIR\\d\"),\n    re.compile(r\"\\dP\\d+$\"),\n    re.compile(r\"-AS\\\
+        d+$\"),\n    re.compile(r\"^ENSG\\d\"),\n    re.compile(r\"^LINC\\d\"),\n    re.compile(r\"^AC\\d{6}\\.\\d\"),\n    re.compile(r\"^AL\\d{6}\\.\\d\"),\n    re.compile(r\"^AP\\d{6}\\.\\d\"),\n   \
+        \ re.compile(r\"^FP\\d{6}\\.\\d\"),\n]\n\ndef is_artifact(gene):\n    return any(p.search(gene) for p in ARTIFACT_PATTERNS)\n\ndef pair_keep(a, b):\n    return bool(a) and bool(b) and a != b \\\n\
+        \        and not is_artifact(a) and not is_artifact(b)\n\ndef name_keep(name):\n    if \"--\" not in (name or \"\"):\n        return False\n    a, b = name.split(\"--\", 1)\n    return pair_keep(a,\
+        \ b)\n\n# ---- TSV (one geneA--geneB per line; no header) -----------------------\n# tsv_lines keeps every input line keyed by fusion name, including\n# ones the blocklist drops, so the FI list\
+        \ below can re-emit a\n# DB-rescued fusion in its original column layout.\ntsv_lines = {}\nkept_tsv = dropped_tsv = 0\nwith open(IN_TSV) as src, open(OUT_TSV, \"w\") as dst:\n    for line in src:\n\
+        \        s = line.strip()\n        if not s or s.startswith(\"#\"):\n            continue\n        pair = s.split(\"\\t\", 1)[0]\n        tsv_lines.setdefault(pair, s)\n        if name_keep(pair):\n\
+        \            dst.write(s + \"\\n\")\n            kept_tsv += 1\n        else:\n            dropped_tsv += 1\nprint(f\"fusion_list.tsv: {kept_tsv} kept, {dropped_tsv} dropped\")\n\n# ---- JSON (fusion-report\
+        \ output) -------------------------------------\n# fusion-report 4.0.x emits a top-level dict keyed by fusion name; older\n# versions used a list. Handle both shapes defensively.\nwith open(IN_JSON)\
+        \ as fh:\n    data = json.load(fh)\n\nkept_json = dropped_json = 0\nif isinstance(data, dict):\n    filtered = {}\n    for k, v in data.items():\n        fusion_name = (\n            v.get(\"Fusion\"\
+        ) if isinstance(v, dict) else None\n        ) or k\n        if name_keep(fusion_name):\n            filtered[k] = v\n            kept_json += 1\n        else:\n            dropped_json += 1\nelif\
+        \ isinstance(data, list):\n    filtered = []\n    for entry in data:\n        fusion_name = entry.get(\"Fusion\") or entry.get(\"fusion\") or \"\"\n        if name_keep(fusion_name):\n         \
+        \   filtered.append(entry)\n            kept_json += 1\n        else:\n            dropped_json += 1\nelse:\n    # Unknown shape; pass through unchanged but warn.\n    print(f\"WARN: fusions.json\
+        \ top-level is {type(data).__name__}; \"\n          \"passing through unfiltered\", file=sys.stderr)\n    filtered = data\n\nwith open(OUT_JSON, \"w\") as fh:\n    json.dump(filtered, fh, indent=2)\n\
+        print(f\"fusions.json: {kept_json} kept, {dropped_json} dropped\")\n\n# ---- FusionInspector candidate list ----------------------------------\n# Narrower than the reporting view above; see the\
+        \ template header for\n# the cost model that forces a bound here.\nCONF_RANK = {\"high\": 3, \"medium\": 2, \"low\": 1}\n\ndef num(x):\n    try:\n        return float(x)\n    except (TypeError,\
+        \ ValueError):\n        return 0.0\n\ndef iter_named(obj):\n    \"\"\"Yield (fusion_name, entry) over either JSON shape.\"\"\"\n    items = obj.items() if isinstance(obj, dict) else \\\n       \
+        \     ((None, v) for v in obj) if isinstance(obj, list) else ()\n    for k, v in items:\n        if isinstance(v, dict):\n            yield (v.get(\"Fusion\") or v.get(\"fusion\") or k or \"\"),\
+        \ v\n\ndef evidence(entry):\n    \"\"\"Rank key, most significant field first.\"\"\"\n    sf = entry.get(\"starfusion\") or {}\n    ar = entry.get(\"arriba\") or {}\n    return (\n        bool(entry.get(\"\
+        Databases\")),\n        ar.get(\"reading-frame\") == \"in-frame\",\n        bool(sf) and bool(ar),\n        CONF_RANK.get(ar.get(\"confidence\"), 0),\n        num(entry.get(\"Fusion Indication Index\
+        \ (FII)\")),\n        num(sf.get(\"junction_reads\")) + num(sf.get(\"spanning_reads\"))\n        + num(ar.get(\"split_reads1\")) + num(ar.get(\"split_reads2\"))\n        + num(ar.get(\"discordant_mates\"\
+        )),\n    )\n\n# 1. Database rescue, read from the RAW json so that DB-recorded\n#    fusions the name blocklist drops still reach FI (measured: 3 on\n#    MP115-26, 12 on MP118-26 \u2014 NF1--SUZ12P1,\
+        \ LINC00469--DNMT1,\n#    KMT2D--AC055854.1 and assorted -AS1 partners). Self-fusions are\n#    NOT rescued: ~280 per sample are gene-vs-itself read-through\n#    artefacts, and realigning a gene\
+        \ against itself shows nothing.\nfi_selected = {}\nfor name, entry in iter_named(data):\n    if not entry.get(\"Databases\") or \"--\" not in name:\n        continue\n    a, b = name.split(\"--\"\
+        , 1)\n    if a and b and a != b:\n        fi_selected[name] = evidence(entry)\nn_rescued = len(fi_selected)\n\n# 2. Evidence filter over the name-filtered set: caller concordance,\n#    or arriba\
+        \ confidence >= medium, or an in-frame call. A raw\n#    read-count floor was measured and rejected \u2014 it retains only 10\n#    of 361 in-frame calls on MP118-26, because in-frame fusions in\n\
+        #    these FFPE libraries are typically low-confidence-but-corroborated\n#    rather than deeply covered.\nranked = []\nfor name, entry in iter_named(filtered):\n    if name in fi_selected:\n  \
+        \      continue\n    ev = evidence(entry)\n    _, inframe, both, conf, _, _ = ev\n    if both or conf >= 2 or inframe:\n        ranked.append((name, ev))\n\n# 3. Rank, then bound. in-frame deliberately\
+        \ outranks concordance \u2014\n#    rank concordance first and several thousand concordant calls\n#    crowd the in-frame ones out of any truncation. Ranking runs even\n#    when nothing is truncated:\
+        \ it orders the emitted file\n#    strongest-evidence-first, which is how a human reads it.\nranked.sort(key=lambda t: t[1], reverse=True)\n\n# The bound is derived from STAR's own ceiling, not\
+        \ fixed. FI builds\n# one STAR contig index over the whole candidate set, and STAR aborts\n# at index build once on-the-fly junctions exceed limitSjdbInsertNsj\n# (default 1,000,000; FI never raises\
+        \ it, and unlike\n# limitGenomeGenerateRAM it is not patchable from\n# fusion-inspector.yaml because run_FI_STAR.pl does not pass it).\n# Measured on the MP115-26 failure: 1,357,521 junctions for\
+        \ 28,334\n# candidates, i.e. ~48 per candidate. Budgeting 70% of the limit\n# leaves margin for that ratio varying between samples, while\n# letting the evidence filter \u2014 not a constant \u2014\
+        \ decide the list\n# size on every run that is not pathological. On the two measured\n# samples the bound never binds: MP115-26 lands at 21% of the limit\n# and MP118-26 at 46%.\nSJDB_PER_CANDIDATE\
+        \ = 48\nSJDB_LIMIT = 1000000\nSJDB_BUDGET_FRACTION = 0.70\nderived_max = int(SJDB_LIMIT * SJDB_BUDGET_FRACTION / SJDB_PER_CANDIDATE)\n\n# fi-max-candidates > 0 overrides the derived bound outright.\n\
+        bound = FI_MAX if FI_MAX > 0 else derived_max\nn_eligible = len(fi_selected) + len(ranked)\n# Database-recorded fusions are seated first and are never truncated,\n# even in the (currently hypothetical)\
+        \ case where they alone exceed\n# the budget \u2014 a few hundred contigs cannot threaten the ceiling.\nranked = ranked[:max(0, bound - len(fi_selected))]\nfi_selected.update(dict(ranked))\n\nwith\
+        \ open(OUT_FI_TSV, \"w\") as fh:\n    for name, _ in sorted(fi_selected.items(), key=lambda t: t[1], reverse=True):\n        fh.write(tsv_lines.get(name, name) + \"\\n\")\n\nn_fi = len(fi_selected)\n\
+        n_dropped = n_eligible - n_fi\norigin = \"fi-max-candidates\" if FI_MAX > 0 else \\\n         f\"{SJDB_BUDGET_FRACTION:.0%} of limitSjdbInsertNsj\"\nprint(f\"fusion_list.fi.tsv: {n_fi} candidates\
+        \ for FusionInspector \"\n      f\"(of {kept_json} name-filtered; {n_rescued} database-rescued; \"\n      f\"{n_eligible} eligible after the evidence filter)\")\n# Never truncate silently: a shorter\
+        \ list than the evidence justifies\n# is a result the reader has to know about.\nif n_dropped > 0:\n    print(f\"  TRUNCATED: dropped the {n_dropped} lowest-ranked eligible \"\n          f\"candidates\
+        \ to stay within the bound of {bound} ({origin}). \"\n          f\"Database, in-frame and concordant calls are seated first.\",\n          file=sys.stderr)\nelse:\n    print(f\"  bound not reached\
+        \ ({n_fi}/{bound}, {origin}) \u2014 \"\n          \"the evidence filter alone set this list size\")\n# Projected STAR cost at contig-index build, from the per-candidate\n# scaling measured on the\
+        \ MP115-26 / MP118-26 failures. Logged so a\n# run drifting toward the fatal ceilings is visible here rather than\n# two hours later inside FusionInspector.\nprint(f\"  projected STAR index build:\
+        \ ~{n_fi * 223 / 1024 / 1024:.2f} GB contig GTF, \"\n      f\"~{n_fi * SJDB_PER_CANDIDATE:,} sjdb junctions \"\n      f\"({n_fi * SJDB_PER_CANDIDATE / SJDB_LIMIT:.0%} of limitSjdbInsertNsj), \"\n\
+        \      f\"~{n_fi * 675 / 1024 / 1024:.1f} GB RAM (34 GB ceiling)\")\n"
+      volumeMounts:
+      - mountPath: /mnt/input/json/{{=sprig.osBase(inputs.parameters['input-fusions-json'])}}
+        name: input-fusions-json
+      - mountPath: /mnt/input/tsv/{{=sprig.osBase(inputs.parameters['input-fusion-list-tsv'])}}
+        name: input-fusion-list-tsv
+      - mountPath: /mnt/output/json/
+        name: output-fusions-json
+      - mountPath: /mnt/output/tsv/
+        name: output-fusion-list-tsv
+      - mountPath: /mnt/output/fi-tsv/
+        name: output-fi-fusion-list-tsv
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-fusions-json}}'
+        type: File
+      name: input-fusions-json
+    - hostPath:
+        path: '{{inputs.parameters.input-fusion-list-tsv}}'
+        type: File
+      name: input-fusion-list-tsv
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-fusions-json''])}}'
+        type: DirectoryOrCreate
+      name: output-fusions-json
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-fusion-list-tsv''])}}'
+        type: DirectoryOrCreate
+      name: output-fusion-list-tsv
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-fi-fusion-list-tsv''])}}'
+        type: DirectoryOrCreate
+      name: output-fi-fusion-list-tsv

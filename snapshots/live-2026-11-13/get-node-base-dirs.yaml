@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: get-node-base-dirs
+  namespace: argo
+spec:
+  arguments:
+    parameters:
+    - name: node-name
+  entrypoint: get-node-base-dirs
+  nodeSelector:
+    kubernetes.io/hostname: '{{workflow.parameters.node-name}}'
+  serviceAccountName: gennext-workflows
+  templates:
+  - inputs:
+      parameters:
+      - name: node-name
+    name: get-node-base-dirs
+    outputs:
+      parameters:
+      - name: input-base-dir
+        valueFrom:
+          path: /tmp/INPUT_BASE_DIR
+      - name: output-base-dir
+        valueFrom:
+          path: /tmp/OUTPUT_BASE_DIR
+      - name: ref-base-dir
+        valueFrom:
+          path: /tmp/REF_BASE_DIR
+      - name: temp-base-dir
+        valueFrom:
+          path: /tmp/TEMP_BASE_DIR
+      - name: scratch-base-dir
+        valueFrom:
+          path: /tmp/SCRATCH_BASE_DIR
+      - name: thread-count
+        valueFrom:
+          path: /tmp/THREAD_COUNT
+    script:
+      command:
+      - sh
+      image: alpine/kubectl
+      source: "NODE_NAME=\"{{inputs.parameters.node-name}}\"\nkubectl get node $NODE_NAME -o jsonpath='\n{\"INPUT_BASE_DIR=\"}{.metadata.annotations.gennext\\.bio/input-base-dir}\n{\"\\nOUTPUT_BASE_DIR=\"\
+        }{.metadata.annotations.gennext\\.bio/output-base-dir}\n{\"\\nREF_BASE_DIR=\"}{.metadata.annotations.gennext\\.bio/ref-base-dir}\n{\"\\nTEMP_BASE_DIR=\"}{.metadata.annotations.gennext\\.bio/temp-base-dir}\n\
+        {\"\\nSCRATCH_BASE_DIR=\"}{.metadata.annotations.gennext\\.bio/scratch-base-dir}\n{\"\\nTHREAD_COUNT=\"}{.metadata.annotations.gennext\\.bio/thread-count}\n' > /tmp/keyvals_tmp0\nwhile IFS='=' read\
+        \ -r key value\ndo\n  echo \"$value\" > \"/tmp/$key\"\ndone < /tmp/keyvals_tmp0\n"

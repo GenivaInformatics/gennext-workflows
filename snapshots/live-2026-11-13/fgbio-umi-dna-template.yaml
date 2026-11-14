@@ -1,0 +1,108 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: fgbio-umi-dna-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: input-bam
+      - description: Directory holding detection.json; fgbio metrics are written here too
+        name: metrics-dir
+      - description: Unused since the UMI is read from the BAM; kept so existing callers stay valid
+        name: umi-dir
+      - name: genome-ref
+      - name: output-bam
+      - default: '8'
+        name: thread-count
+    name: fgbio-umi-dna
+    outputs:
+      parameters:
+      - name: output-bam
+        valueFrom:
+          path: /tmp/output-bam
+      - name: umi-applied
+        valueFrom:
+          path: /tmp/umi-applied
+    script:
+      command:
+      - bash
+      image: docker.io/bergun/fgbio-mark-duplicates:0.1.0
+      resources:
+        requests:
+          cpu: '8'
+          memory: 24Gi
+      source: "set -euo pipefail\nIN_HOST=\"{{inputs.parameters.input-bam}}\"\nOUT_HOST=\"{{inputs.parameters.output-bam}}\"\nIN=\"/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}\"\nOUT=\"\
+        /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}\"\nREF=\"/mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}}\"\nMETRICS=/mnt/metrics\nSAMPLE=\"{{inputs.parameters.sample-id}}\"\
+        \nTHREADS=\"{{inputs.parameters.thread-count}}\"\nSORT_THREADS=$(( THREADS / 2 < 2 ? 2 : THREADS / 2 ))\n\n# Settings come from the detection record, the single source of truth.\neval \"$(python3\
+        \ - \"$METRICS/detection.json\" <<'PY'\nimport json, shlex, sys\nd = json.load(open(sys.argv[1]))[\"decision\"]\ns = d.get(\"scheme\") or {}\ncorr = s.get(\"umiCorrection\") or {}\nvals = {\n  \
+        \  \"STATUS\": d[\"status\"],\n    \"RESULT\": d[\"result\"],\n    \"USE_UMI\": \"true\" if d[\"status\"] == \"detected\" and s else \"false\",\n    \"MASK_R1\": s.get(\"mask\", {}).get(\"r1\",\
+        \ 0),\n    \"MASK_R2\": s.get(\"mask\", {}).get(\"r2\", 0),\n    \"STRATEGY\": s.get(\"grouping\", {}).get(\"strategy\", \"\").capitalize(),\n    \"RS_R1\": s.get(\"readStructure\", {}).get(\"r1\"\
+        , \"\"),\n    \"RS_R2\": s.get(\"readStructure\", {}).get(\"r2\", \"\"),\n    \"EDITS\": s.get(\"grouping\", {}).get(\"edits\", 0),\n    \"CORR_UMIS\": \" \".join(corr.get(\"umis\", [])),\n    \"\
+        CORR_MISMATCHES\": corr.get(\"maxMismatches\", 1),\n    \"CORR_DISTANCE\": corr.get(\"minDistance\", 2),\n}\nfor k, v in vals.items():\n    print(f\"{k}={shlex.quote(str(v))}\")\nPY\n)\"\necho \"\
+        detection: status=$STATUS result=$RESULT use-umi=$USE_UMI\"\n\nif [ \"$USE_UMI\" != \"true\" ]; then\n  echo \"no UMI scheme detected: passing ${IN_HOST} through unchanged\"\n  printf '%s' \"$IN_HOST\"\
+        \ > /tmp/output-bam\n  printf 'false' > /tmp/umi-applied\n  exit 0\nfi\n\nWORK=\"/mnt/output/bam/.fgbio-umi-${SAMPLE}\"\nrm -rf \"$WORK\"; mkdir -p \"$WORK\"\ntrap 'rm -rf \"$WORK\"' EXIT\n# One\
+        \ JVM per streaming stage. Stages pass uncompressed BAM to each\n# other; only GroupReadsByUmi's output is compressed.\nfg() { local heap=\"$1\"; shift; fgbio \"-Xmx${heap}\" \"--tmp-dir=$WORK\"\
+        \ --async-io=true \"$@\"; }\n# Prefix each tool's log lines so a failure in the stream names its stage.\ntag() { sed -u \"s/^/[$1] /\" >&2; }\n\necho \"1/3 clear position-based duplicate flags,\
+        \ queryname sort\"\nsamtools view -u --remove-flags 0x400 -@ \"$THREADS\" \"$IN\" \\\n  | samtools sort -n -l 1 -@ \"$SORT_THREADS\" -m 1G -T \"$WORK/sortn\" -o \"$WORK/qn.bam\" -\n\n# Reads for\
+        \ AnnotateBamWithUmis, streamed from the name-sorted BAM\n# through named pipes (no copy on disk). Only reads whose structure\n# holds a UMI (an M segment) are used.\ncase \"$RS_R1\" in *M*) ;;\
+        \ *) echo \"read structure r1 '${RS_R1}' has no UMI segment\" >&2; exit 1 ;; esac\nmkfifo \"$WORK/r1.fq\"; FASTQS=(\"$WORK/r1.fq\"); STRUCTS=(\"$RS_R1\"); READ_FLAGS=(0x40)\ncase \"$RS_R2\" in *M*)\
+        \ mkfifo \"$WORK/r2.fq\"; FASTQS+=(\"$WORK/r2.fq\"); STRUCTS+=(\"$RS_R2\"); READ_FLAGS+=(0x80) ;; esac\ncorrect_umis() {\n  if [ -n \"$CORR_UMIS\" ]; then\n    # shellcheck disable=SC2086\n    fg\
+        \ 4g --compression=0 CorrectUmis -i /dev/stdin -o /dev/stdout \\\n      -r \"$WORK/rejects.bam\" -M \"$METRICS/umi_correction_metrics.txt\" \\\n      -m \"$CORR_MISMATCHES\" -d \"$CORR_DISTANCE\"\
+        \ -u $CORR_UMIS 2> >(tag correct)\n  else\n    cat\n  fi\n}\n\necho \"2/3 one stream: AnnotateBamWithUmis | ClipBam SoftWithMask (R1 5' ${MASK_R1}, R2 5' ${MASK_R2}, past mate)\"\necho \"    | CorrectUmis\
+        \ ($( [ -n \"$CORR_UMIS\" ] && echo \"max mismatches ${CORR_MISMATCHES}, min distance ${CORR_DISTANCE}\" || echo \"skipped, random UMIs\"))\"\necho \"    | SetMateInformation | set aside ungroupable\
+        \ records | GroupReadsByUmi (${STRATEGY}, ${EDITS} edits)\"\n# One writer per pipe: a single `samtools fastq` writing both pipes\n# deadlocks, because fgbio waits for R1 data before it opens R2.\n\
+        # --fail-fast stops on any record without a matching read (also a\n# read whose mate is missing).\n# fastp keeps reads down to 20 bases, shorter than some structures'\n# fixed part (Archer 8M13S+T\
+        \ needs 22). Such reads are padded with N /\n# '!' so fgbio can parse them; a UMI that reaches the padding holds N\n# and the record is set aside below, as before.\nmin_len() { python3 -c 'import\
+        \ re, sys; s = sys.argv[1]; print(sum(int(n) for n in re.findall(r\"(\\d+)[A-Z]\", s)) + (\"+\" in s))' \"$1\"; }\nFASTQ_PIDS=()\nfor i in \"${!FASTQS[@]}\"; do\n  ( set -o pipefail\n    samtools\
+        \ fastq -n -F 0x900 -f \"${READ_FLAGS[$i]}\" \"$WORK/qn.bam\" 2> >(tag \"fastq-r$((i + 1))\") \\\n      | awk -v L=\"$(min_len \"${STRUCTS[$i]}\")\" \\\n          'NR % 4 == 2 || NR % 4 == 0 { while\
+        \ (length($0) < L) $0 = $0 (NR % 4 == 2 ? \"N\" : \"!\") } 1' \\\n      > \"${FASTQS[$i]}\" ) &\n  FASTQ_PIDS+=($!)\ndone\nfg 2g --compression=0 AnnotateBamWithUmis -i \"$WORK/qn.bam\" -f \"${FASTQS[@]}\"\
+        \ -r \"${STRUCTS[@]}\" \\\n    --sorted=true --fail-fast=true -o /dev/stdout 2> >(tag annotate) \\\n  | fg 4g --compression=0 ClipBam -i /dev/stdin -o /dev/stdout -r \"$REF\" \\\n      --clipping-mode=SoftWithMask\
+        \ \\\n      --read-one-five-prime=\"$MASK_R1\" --read-two-five-prime=\"$MASK_R2\" \\\n      --clip-bases-past-mate=true -m \"$METRICS/clip_metrics.txt\" 2> >(tag clip) \\\n  | correct_umis \\\n\
+        \  | fg 4g --compression=0 SetMateInformation -i /dev/stdin -o /dev/stdout 2> >(tag setmate) \\\n  | samtools view -u \\\n      -e '[RX] && !([RX] =~ \"N\") && !(flag.unmap && flag.munmap) && !flag.secondary\
+        \ && !flag.supplementary' \\\n      -U \"$WORK/aside.bam\" -o - - \\\n  | fg 8g --compression=1 GroupReadsByUmi -i /dev/stdin -o \"$WORK/grouped.bam\" \\\n      --strategy=\"$STRATEGY\" --edits=\"\
+        $EDITS\" --mark-duplicates=true \\\n      --family-size-histogram=\"$METRICS/family_sizes.txt\" \\\n      --grouping-metrics=\"$METRICS/grouping_metrics.txt\" 2> >(tag group)\nfor pid in \"${FASTQ_PIDS[@]}\"\
+        ; do\n  wait \"$pid\" || { echo \"samtools fastq failed\" >&2; exit 1; }\ndone\nrm -f \"$WORK/qn.bam\"\n\necho \"3/3 duplicate flag to set-aside supplementary/secondary records, merge, coordinate\
+        \ sort, index\"\n# Only the names of the set-aside supplementary/secondary records are\n# held in memory; the duplicate primary names stream past them (holding\n# every duplicate name took ~20 GB\
+        \ at 200 M records).\ncat > \"$WORK/mark_aside.py\" <<'PY'\nimport sys, pysam\naside, marked_out = sys.argv[1], sys.argv[2]\nwith pysam.AlignmentFile(aside, \"rb\") as inp:\n    wanted = {r.query_name\
+        \ for r in inp if r.is_supplementary or r.is_secondary}\ndups, n_dup = set(), 0\nfor line in sys.stdin:\n    n_dup += 1\n    name = line.rstrip(\"\\n\")\n    if name in wanted:\n        dups.add(name)\n\
+        marked = 0\nwith pysam.AlignmentFile(aside, \"rb\") as inp, pysam.AlignmentFile(marked_out, \"wb\", template=inp) as out:\n    for r in inp:\n        if (r.is_supplementary or r.is_secondary) and\
+        \ r.query_name in dups:\n            r.flag |= 0x400\n            marked += 1\n        out.write(r)\nprint(f\"duplicate flag propagated to {marked} supplementary/secondary records ({n_dup} duplicate\
+        \ primary records)\")\nPY\nsamtools view -f 0x400 -@ \"$THREADS\" \"$WORK/grouped.bam\" | cut -f1 \\\n  | python3 \"$WORK/mark_aside.py\" \"$WORK/aside.bam\" \"$WORK/aside_marked.bam\"\nmv \"$WORK/aside_marked.bam\"\
+        \ \"$WORK/aside.bam\"\nPARTS=(\"$WORK/grouped.bam\" \"$WORK/aside.bam\")\n[ -s \"$WORK/rejects.bam\" ] && PARTS+=(\"$WORK/rejects.bam\")\nsamtools cat -o \"$WORK/merged.bam\" \"${PARTS[@]}\"\nsamtools\
+        \ sort -@ \"$SORT_THREADS\" -m 1G -T \"$WORK/sortc\" -o \"$WORK/out.bam\" \"$WORK/merged.bam\"\nsamtools index -@ \"$THREADS\" \"$WORK/out.bam\"\n\n# Every input record must come out exactly once.\n\
+        n_in=$(samtools view -c -@ \"$THREADS\" \"$IN\")\nn_out=$(samtools view -c -@ \"$THREADS\" \"$WORK/out.bam\")\necho \"records in: ${n_in}  out: ${n_out}\"\nif [ \"$n_in\" != \"$n_out\" ]; then\n\
+        \  echo \"record count changed (${n_in} -> ${n_out}); refusing to continue\" >&2\n  exit 1\nfi\n{\n  echo \"# ${SAMPLE} ${RESULT}: duplicates before (position) and after (UMI)\"\n  echo \"records\t\
+        ${n_in}\"\n  echo \"dup_flagged_position\t$(samtools view -c -f 0x400 -F 0x900 -@ \"$THREADS\" \"$IN\")\"\n  echo \"dup_flagged_umi\t$(samtools view -c -f 0x400 -F 0x900 -@ \"$THREADS\" \"$WORK/out.bam\"\
+        )\"\n  echo \"primary_records\t$(samtools view -c -F 0x900 -@ \"$THREADS\" \"$WORK/out.bam\")\"\n  echo \"set_aside_records\t$(samtools view -c -@ \"$THREADS\" \"$WORK/aside.bam\")\"\n  echo \"\
+        correction_rejects\t$( [ -s \"$WORK/rejects.bam\" ] && samtools view -c \"$WORK/rejects.bam\" || echo 0)\"\n} > \"$METRICS/umi_dedup_summary.tsv\"\ncat \"$METRICS/umi_dedup_summary.tsv\"\n\nmv \"\
+        $WORK/out.bam\" \"$OUT\"\nmv \"$WORK/out.bam.bai\" \"$OUT.bai\"\nprintf '%s' \"$OUT_HOST\" > /tmp/output-bam\nprintf 'true' > /tmp/umi-applied\n"
+      volumeMounts:
+      - mountPath: /mnt/input/bam/
+        name: input-bam
+      - mountPath: /mnt/output/bam/
+        name: output-bam
+      - mountPath: /mnt/metrics/
+        name: metrics
+      - mountPath: /mnt/ref/genome/
+        name: genome-ref
+        readOnly: true
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-bam''])}}'
+        type: Directory
+      name: input-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-bam''])}}'
+        type: DirectoryOrCreate
+      name: output-bam
+    - hostPath:
+        path: '{{inputs.parameters.metrics-dir}}'
+        type: Directory
+      name: metrics
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''genome-ref''])}}'
+        type: Directory
+      name: genome-ref

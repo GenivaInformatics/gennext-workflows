@@ -1,0 +1,59 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: parabricks-bamsort-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: input-bam
+      - name: output-bam
+      - name: genome-ref
+      - name: thread-count
+      - default: 'false'
+        name: apply-proper-pair-filter
+    name: parabricks-bamsort
+    outputs:
+      parameters:
+      - name: output-bam
+        value: '{{inputs.parameters.output-bam}}'
+    script:
+      command:
+      - bash
+      image: nvcr.io/nvidia/clara/clara-parabricks:4.3.1-1
+      name: parabricks-bamsort-script
+      resources:
+        limits:
+          nvidia.com/gpu: 1
+      source: "set -euo pipefail\n\nIN_BAM=\"/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}\"\nOUT_BAM=\"/mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}\"\nREF=\"/mnt/ref/genome-fa/{{=sprig.osBase(inputs.parameters['genome-ref'])}}\"\
+        \nTHREADS=\"{{inputs.parameters.thread-count}}\"\nAPPLY_PP_FILTER=\"{{inputs.parameters.apply-proper-pair-filter}}\"\n\nSORT_INPUT=\"${IN_BAM}\"\nPROPER_PAIR_BAM=\"/tmp/proper_pair.bam\"\nif [ \"\
+        ${APPLY_PP_FILTER}\" = \"true\" ]; then\n  echo \"Applying proper-pair filter (samtools view -f 2) before sort\"\n  samtools view -@ \"${THREADS}\" -b -f 2 \"${IN_BAM}\" -o \"${PROPER_PAIR_BAM}\"\
+        \n  SORT_INPUT=\"${PROPER_PAIR_BAM}\"\nelse\n  echo \"Skipping proper-pair filter; passing all reads through to sort\"\nfi\n\n# GPU coordinate sort. pbrun bamsort splits work between sort and\n\
+        # zip thread pools; defaults are 10 sort + 16 zip but we cap each\n# half at the requested THREADS so total cores stay within budget.\npbrun bamsort \\\n  --ref \"${REF}\" \\\n  --in-bam \"${SORT_INPUT}\"\
+        \ \\\n  --out-bam \"${OUT_BAM}\" \\\n  --num-sort-threads \"${THREADS}\" \\\n  --num-zip-threads \"${THREADS}\"\n\n# pbrun bamsort does not emit an index; create one.\nsamtools index -@ \"${THREADS}\"\
+        \ \"${OUT_BAM}\"\n\nrm -f \"${PROPER_PAIR_BAM}\"\n"
+      volumeMounts:
+      - mountPath: /mnt/input/bam/
+        name: input-bam
+      - mountPath: /mnt/output/bam/
+        name: output-bam
+      - mountPath: /mnt/ref/genome-fa/
+        name: genome-ref
+    tolerations:
+    - effect: NoSchedule
+      key: nvidia.com/gpu
+      operator: Exists
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-bam''])}}'
+        type: Directory
+      name: input-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-bam''])}}'
+        type: DirectoryOrCreate
+      name: output-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''genome-ref''])}}'
+        type: Directory
+      name: genome-ref

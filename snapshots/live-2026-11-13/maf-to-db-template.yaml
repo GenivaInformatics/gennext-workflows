@@ -1,0 +1,94 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: maf-to-db-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: input-maf
+      - name: sample-id
+      - name: batch-size
+        value: '1000'
+    name: maf-to-db
+    script:
+      command:
+      - sh
+      env:
+      - name: DATABASE_USER
+        valueFrom:
+          secretKeyRef:
+            key: DATABASE_USER
+            name: gennext-allele-db
+      - name: DATABASE_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            key: DATABASE_PASSWORD
+            name: gennext-allele-db
+      - name: DATABASE_HOST
+        valueFrom:
+          secretKeyRef:
+            key: DATABASE_HOST
+            name: gennext-allele-db
+      - name: DATABASE_PORT
+        valueFrom:
+          secretKeyRef:
+            key: DATABASE_PORT
+            name: gennext-allele-db
+      image: bergun/gennext-maf-to-db:v0.0.2c
+      name: maf-to-db-script
+      source: "python -m main\\\n  -i /mnt/input/maf/{{=sprig.osBase(inputs.parameters['input-maf'])}} \\\n  -s {{inputs.parameters.sample-id}} \\\n  -b {{inputs.parameters.batch-size}} || exit 0\n"
+      volumeMounts:
+      - mountPath: /mnt/input/maf/{{=sprig.osBase(inputs.parameters['input-maf'])}}
+        name: input-maf
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-maf}}'
+        type: File
+      name: input-maf
+  - inputs:
+      parameters:
+      - name: input-maf
+      - name: sample-id
+      - name: batch-size
+        value: '1000'
+      - name: node-name
+    name: maf-to-db-with-node-selector
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.node-name}}'
+    script:
+      command:
+      - sh
+      env:
+      - name: DATABASE_USER
+        valueFrom:
+          secretKeyRef:
+            key: DATABASE_USER
+            name: gennext-allele-db
+      - name: DATABASE_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            key: DATABASE_PASSWORD
+            name: gennext-allele-db
+      - name: DATABASE_HOST
+        valueFrom:
+          secretKeyRef:
+            key: DATABASE_HOST
+            name: gennext-allele-db
+      - name: DATABASE_PORT
+        valueFrom:
+          secretKeyRef:
+            key: DATABASE_PORT
+            name: gennext-allele-db
+      image: bergun/gennext-maf-to-db:v0.0.2c
+      name: maf-to-db-script
+      source: "python -m main\\\n  -i /mnt/input/maf/{{=sprig.osBase(inputs.parameters['input-maf'])}} \\\n  -s {{inputs.parameters.sample-id}} \\\n  -b {{inputs.parameters.batch-size}}\n"
+      volumeMounts:
+      - mountPath: /mnt/input/maf/{{=sprig.osBase(inputs.parameters['input-maf'])}}
+        name: input-maf
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-maf}}'
+        type: File
+      name: input-maf

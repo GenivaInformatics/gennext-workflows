@@ -1,0 +1,295 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: parabricks-fq2bam-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: genome-ref
+      - name: input-fq-r1
+      - name: input-fq-r2
+      - name: scratch-dir
+      - name: read-group-str
+      - name: output-bam
+      - name: output-dupes
+      - name: thread_count
+        value: '8'
+    name: parabricks-fq2bamfast-no-bqsr
+    outputs:
+      parameters:
+      - name: output-bam
+        value: '{{inputs.parameters.output-bam}}'
+      - name: output-dupes
+        value: '{{inputs.parameters.output-dupes}}'
+    script:
+      command:
+      - sh
+      image: '{{workflow.parameters.parabricksImage}}'
+      name: parabricks-germline-fq2bamfast-no-bqsr-script
+      resources:
+        limits:
+          nvidia.com/gpu: 1
+      source: "# Parabricks 4.3.1 exposes fq2bamfast; newer images expose fq2bam.\nfq2bam_command=fq2bamfast\ncase \"{{workflow.parameters.parabricksImage}}\" in\n  *:4.5.1-1|*:4.7.1-1) fq2bam_command=fq2bam\
+        \ ;;\nesac\npbrun \"$fq2bam_command\" \\\n  --ref /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \\\n  --in-fq /mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-fq-r1'])}}\
+        \ /mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-fq-r2'])}} \\\n  \"{{inputs.parameters.read-group-str}}\" \\\n  --tmp-dir /mnt/scratch/ \\\n  --low-memory \\\n  --bwa-cpu-thread-pool\
+        \ {{inputs.parameters.thread_count}} \\\n  --out-duplicate-metrics /mnt/output/metrics/{{=sprig.osBase(inputs.parameters['output-dupes'])}} \\\n  --out-bam /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}\n"
+      volumeMounts:
+      - mountPath: /mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-fq-r1'])}}
+        name: input-fq-r1
+      - mountPath: /mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-fq-r2'])}}
+        name: input-fq-r2
+      - mountPath: /mnt/output/bam/
+        name: output-bam
+      - mountPath: /mnt/scratch/
+        name: scratch-dir
+      - mountPath: /mnt/ref/genome/
+        name: genome-ref
+      - mountPath: /mnt/output/metrics/
+        name: output-dupes
+    tolerations:
+    - effect: NoSchedule
+      key: nvidia.com/gpu
+      operator: Exists
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-fq-r1}}'
+        type: File
+      name: input-fq-r1
+    - hostPath:
+        path: '{{inputs.parameters.input-fq-r2}}'
+        type: File
+      name: input-fq-r2
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-bam''])}}'
+        type: DirectoryOrCreate
+      name: output-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-dupes''])}}'
+        type: DirectoryOrCreate
+      name: output-dupes
+    - hostPath:
+        path: '{{inputs.parameters.scratch-dir}}'
+        type: Directory
+      name: scratch-dir
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''genome-ref''])}}'
+        type: Directory
+      name: genome-ref
+  - inputs:
+      parameters:
+      - name: genome-ref
+      - name: input-fq-r1
+      - name: input-fq-r2
+      - name: scratch-dir
+      - name: read-group-str
+      - name: output-bam
+      - name: output-dupes
+    name: parabricks-fq2bam-no-bqsr
+    outputs:
+      parameters:
+      - name: output-bam
+        value: '{{inputs.parameters.output-bam}}'
+      - name: output-dupes
+        value: '{{inputs.parameters.output-dupes}}'
+    script:
+      command:
+      - sh
+      image: '{{workflow.parameters.parabricksImage}}'
+      name: parabricks-germline-fq2bam-no-bqsr-script
+      resources:
+        limits:
+          nvidia.com/gpu: 1
+      source: "pbrun fq2bam \\\n  --ref /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \\\n  --in-fq /mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-fq-r1'])}} /mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-fq-r2'])}}\
+        \ \\\n  \"{{inputs.parameters.read-group-str}}\" \\\n  --tmp-dir /mnt/scratch/ \\\n  --low-memory \\\n  --out-duplicate-metrics /mnt/output/metrics/{{=sprig.osBase(inputs.parameters['output-dupes'])}}\
+        \ \\\n  --out-bam /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}\n"
+      volumeMounts:
+      - mountPath: /mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-fq-r1'])}}
+        name: input-fq-r1
+      - mountPath: /mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-fq-r2'])}}
+        name: input-fq-r2
+      - mountPath: /mnt/output/bam/
+        name: output-bam
+      - mountPath: /mnt/scratch/
+        name: scratch-dir
+      - mountPath: /mnt/ref/genome/
+        name: genome-ref
+      - mountPath: /mnt/output/metrics/
+        name: output-dupes
+    tolerations:
+    - effect: NoSchedule
+      key: nvidia.com/gpu
+      operator: Exists
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-fq-r1}}'
+        type: File
+      name: input-fq-r1
+    - hostPath:
+        path: '{{inputs.parameters.input-fq-r2}}'
+        type: File
+      name: input-fq-r2
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-bam''])}}'
+        type: DirectoryOrCreate
+      name: output-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-dupes''])}}'
+        type: DirectoryOrCreate
+      name: output-dupes
+    - hostPath:
+        path: '{{inputs.parameters.scratch-dir}}'
+        type: Directory
+      name: scratch-dir
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''genome-ref''])}}'
+        type: Directory
+      name: genome-ref
+  - inputs:
+      parameters:
+      - name: genome-ref
+      - name: input-fq-r1
+      - name: input-fq-r2
+      - name: scratch-dir
+      - name: read-group-str
+      - name: output-bam
+      - name: output-dupes
+      - name: node-name
+    name: parabricks-fq2bam-no-bqsr-on-node
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.node-name}}'
+    outputs:
+      parameters:
+      - name: output-bam
+        value: '{{inputs.parameters.output-bam}}'
+      - name: output-dupes
+        value: '{{inputs.parameters.output-dupes}}'
+    script:
+      command:
+      - sh
+      image: '{{workflow.parameters.parabricksImage}}'
+      name: parabricks-germline-fq2bam-no-bqsr-script
+      resources:
+        limits:
+          nvidia.com/gpu: 1
+      source: "pbrun fq2bam \\\n  --ref /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}} \\\n  --in-fq /mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-fq-r1'])}} /mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-fq-r2'])}}\
+        \ \\\n  \"{{inputs.parameters.read-group-str}}\" \\\n  --tmp-dir /mnt/scratch/ \\\n  --low-memory \\\n  --out-duplicate-metrics /mnt/output/metrics/{{=sprig.osBase(inputs.parameters['output-dupes'])}}\
+        \ \\\n  --out-bam /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}\n"
+      volumeMounts:
+      - mountPath: /mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-fq-r1'])}}
+        name: input-fq-r1
+      - mountPath: /mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-fq-r2'])}}
+        name: input-fq-r2
+      - mountPath: /mnt/output/bam/
+        name: output-bam
+      - mountPath: /mnt/scratch/
+        name: scratch-dir
+      - mountPath: /mnt/ref/genome/
+        name: genome-ref
+      - mountPath: /mnt/output/metrics/
+        name: output-dupes
+    tolerations:
+    - effect: NoSchedule
+      key: nvidia.com/gpu
+      operator: Exists
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-fq-r1}}'
+        type: File
+      name: input-fq-r1
+    - hostPath:
+        path: '{{inputs.parameters.input-fq-r2}}'
+        type: File
+      name: input-fq-r2
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-bam''])}}'
+        type: DirectoryOrCreate
+      name: output-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-dupes''])}}'
+        type: DirectoryOrCreate
+      name: output-dupes
+    - hostPath:
+        path: '{{inputs.parameters.scratch-dir}}'
+        type: Directory
+      name: scratch-dir
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''genome-ref''])}}'
+        type: Directory
+      name: genome-ref
+  - inputs:
+      parameters:
+      - name: genome-ref
+      - name: input-fq-r1
+      - name: input-fq-r2
+      - name: scratch-dir
+      - name: read-group-str
+      - name: output-bam
+      - name: output-dupes
+      - name: thread_count
+        value: '16'
+      - name: node-name
+    name: parabricks-fq2bamfast-no-bqsr-on-node
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.node-name}}'
+    outputs:
+      parameters:
+      - name: output-bam
+        value: '{{inputs.parameters.output-bam}}'
+      - name: output-dupes
+        value: '{{inputs.parameters.output-dupes}}'
+    script:
+      command:
+      - sh
+      image: '{{workflow.parameters.parabricksImage}}'
+      name: parabricks-germline-fq2bamfast-no-bqsr-script
+      resources:
+        limits:
+          nvidia.com/gpu: 1
+      source: "fq2bam_command=fq2bamfast\ncase \"{{workflow.parameters.parabricksImage}}\" in\n  *:4.5.1-1|*:4.7.1-1) fq2bam_command=fq2bam ;;\nesac\npbrun \"$fq2bam_command\" \\\n  --ref /mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}}\
+        \ \\\n  --in-fq /mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-fq-r1'])}} /mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-fq-r2'])}} \\\n  \"{{inputs.parameters.read-group-str}}\"\
+        \ \\\n  --tmp-dir /mnt/scratch/ \\\n  --low-memory \\\n  --bwa-cpu-thread-pool {{inputs.parameters.thread_count}} \\\n  --out-duplicate-metrics /mnt/output/metrics/{{=sprig.osBase(inputs.parameters['output-dupes'])}}\
+        \ \\\n  --out-bam /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}\n"
+      volumeMounts:
+      - mountPath: /mnt/input/fq_r1/{{=sprig.osBase(inputs.parameters['input-fq-r1'])}}
+        name: input-fq-r1
+      - mountPath: /mnt/input/fq_r2/{{=sprig.osBase(inputs.parameters['input-fq-r2'])}}
+        name: input-fq-r2
+      - mountPath: /mnt/output/bam/
+        name: output-bam
+      - mountPath: /mnt/scratch/
+        name: scratch-dir
+      - mountPath: /mnt/ref/genome/
+        name: genome-ref
+      - mountPath: /mnt/output/metrics/
+        name: output-dupes
+    tolerations:
+    - effect: NoSchedule
+      key: nvidia.com/gpu
+      operator: Exists
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-fq-r1}}'
+        type: File
+      name: input-fq-r1
+    - hostPath:
+        path: '{{inputs.parameters.input-fq-r2}}'
+        type: File
+      name: input-fq-r2
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-bam''])}}'
+        type: DirectoryOrCreate
+      name: output-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-dupes''])}}'
+        type: DirectoryOrCreate
+      name: output-dupes
+    - hostPath:
+        path: '{{inputs.parameters.scratch-dir}}'
+        type: Directory
+      name: scratch-dir
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''genome-ref''])}}'
+        type: Directory
+      name: genome-ref

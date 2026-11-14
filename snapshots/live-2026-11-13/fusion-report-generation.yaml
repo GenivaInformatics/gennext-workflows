@@ -1,0 +1,36 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: fusion-report-generation
+  namespace: argo
+  labels:
+    pipeline: fusion-detection
+    tool: fusion-report
+spec:
+  templates:
+  - container:
+      args:
+      - "set -euo pipefail\n\nmkdir -p /mnt/output/fusion-report\n\nSAMPLE_ID=\"{{inputs.parameters.sample-id}}\"\nDB_DIR=\"/mnt/ref/other/fusion_report_db/\"\n\nARRIBA_FILE=\"/mnt/output/arriba/${SAMPLE_ID}_fusions.tsv\"\
+        \nSTARFUSION_FILE=\"/mnt/output/star-fusion/star-fusion.fusion_predictions.tsv\"\n\necho \"Running fusion-report for sample: ${SAMPLE_ID}\"\necho \"  Arriba file:      ${ARRIBA_FILE}\"\necho \"\
+        \  STAR-Fusion file: ${STARFUSION_FILE}\"\necho \"  Database dir:     ${DB_DIR}\"\n\nfusion_report run \\\n  \"${SAMPLE_ID}\" \\\n  /mnt/output/fusion-report \\\n  \"${DB_DIR}\" \\\n  --arriba \"\
+        ${ARRIBA_FILE}\" \\\n  --starfusion \"${STARFUSION_FILE}\" \\\n  --allow-multiple-gene-symbols \\\n  --no-cosmic\n\necho \"fusion-report completed successfully\"\nls -la /mnt/output/fusion-report/\n"
+      command:
+      - bash
+      - -euo
+      - pipefail
+      - -c
+      image: quay.io/biocontainers/fusion-report:4.0.1--py313hdfd78af_0
+      resources:
+        requests:
+          cpu: '2'
+          memory: 2Gi
+      volumeMounts:
+      - mountPath: /mnt/ref
+        name: ref-data
+        readOnly: true
+      - mountPath: /mnt/output
+        name: output-data
+    inputs:
+      parameters:
+      - name: sample-id
+    name: run-fusion-report

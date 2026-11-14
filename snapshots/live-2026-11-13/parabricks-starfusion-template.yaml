@@ -1,0 +1,55 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: parabricks-starfusion-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: chimeric-junction-file
+      - name: genome-lib-dir
+      - name: output-dir
+      - name: thread-count
+    name: parabricks-starfusion
+    outputs:
+      parameters:
+      - name: output-dir
+        value: '{{inputs.parameters.output-dir}}'
+      - name: output-fusions-tsv
+        value: '{{inputs.parameters.output-dir}}/{{inputs.parameters.sample-id}}_fusion_predictions.tsv'
+    script:
+      command:
+      - sh
+      image: '{{workflow.parameters.parabricksImage}}'
+      name: parabricks-starfusion-script
+      resources:
+        limits:
+          nvidia.com/gpu: 1
+      source: "pbrun starfusion \\\n  --chimeric-junction /mnt/input/star_output/{{=sprig.osBase(inputs.parameters['chimeric-junction-file'])}} \\\n  --genome-lib-dir /mnt/ref/genome_lib/ \\\n  --out-prefix\
+        \ {{inputs.parameters.sample-id}}_ \\\n  --output-dir /mnt/output/dir/ \\\n  --num-threads {{inputs.parameters.thread-count}}\n"
+      volumeMounts:
+      - mountPath: /mnt/ref/genome_lib/
+        name: genome-lib-dir
+      - mountPath: /mnt/input/star_output/
+        name: chimeric-junction-file
+      - mountPath: /mnt/output/dir/
+        name: output-dir
+    tolerations:
+    - effect: NoSchedule
+      key: nvidia.com/gpu
+      operator: Exists
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''chimeric-junction-file''])}}'
+        type: Directory
+      name: chimeric-junction-file
+    - hostPath:
+        path: '{{inputs.parameters.genome-lib-dir}}'
+        type: Directory
+      name: genome-lib-dir
+    - hostPath:
+        path: '{{inputs.parameters.output-dir}}'
+        type: DirectoryOrCreate
+      name: output-dir

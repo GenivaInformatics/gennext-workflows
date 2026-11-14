@@ -1,0 +1,80 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: gennext-read
+  namespace: argo
+spec:
+  arguments:
+    parameters:
+    - name: run-id
+    - name: node-name
+    - name: input-dir
+    - name: temp-dir
+    - name: ref-dir
+    - name: metadata-file
+    - name: epic-v2-min-probes
+      value: '1080000'
+    - name: epic-v1-min-probes
+      value: '600000'
+  entrypoint: read
+  templates:
+  - container:
+      args:
+      - /app/scripts/read.R
+      - --run-id
+      - '{{inputs.parameters.run-id}}'
+      - --metadata
+      - /data/config/sample_metadata.tsv
+      - --epic-v2-min-probes
+      - '{{inputs.parameters.epic-v2-min-probes}}'
+      - --epic-v1-min-probes
+      - '{{inputs.parameters.epic-v1-min-probes}}'
+      - --output-dir
+      - /data/outputs
+      command:
+      - Rscript
+      image: bergun/gennext-minfi:0.1.2
+      volumeMounts:
+      - mountPath: /data/samples
+        name: input-dir
+        readOnly: true
+      - mountPath: /data/outputs
+        name: temp-dir
+      - mountPath: /data/ref
+        name: ref-dir
+        readOnly: true
+      - mountPath: /data/config/sample_metadata.tsv
+        name: metadata-file
+        readOnly: true
+    inputs:
+      parameters:
+      - name: run-id
+      - name: node-name
+      - name: input-dir
+      - name: temp-dir
+      - name: ref-dir
+      - name: metadata-file
+      - default: '1080000'
+        name: epic-v2-min-probes
+      - default: '600000'
+        name: epic-v1-min-probes
+    name: read
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.node-name}}'
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-dir}}'
+        type: Directory
+      name: input-dir
+    - hostPath:
+        path: '{{inputs.parameters.temp-dir}}'
+        type: DirectoryOrCreate
+      name: temp-dir
+    - hostPath:
+        path: '{{inputs.parameters.ref-dir}}'
+        type: Directory
+      name: ref-dir
+    - hostPath:
+        path: '{{inputs.parameters.metadata-file}}'
+        type: File
+      name: metadata-file

@@ -1,0 +1,113 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: star-fusion-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: read-group-str
+      - name: fq-r1
+      - name: fq-r2
+        value: ''
+      - name: ctat-genome-lib-build-dir
+      - name: output-bam
+      - name: output-fusions-tsv
+      - name: output-chimeric-out-fusions
+      - name: metrics-dir
+      - name: scratch-dir
+      - name: thread-count
+      - default: full_Monty
+        name: sensitivity
+    name: star-fusion
+    outputs:
+      parameters:
+      - name: output-bam
+        value: '{{inputs.parameters.output-bam}}'
+      - name: output-fusions-tsv
+        value: '{{inputs.parameters.output-fusions-tsv}}'
+      - name: output-chimeric-out-fusions
+        value: '{{inputs.parameters.output-chimeric-out-fusions}}'
+      - name: star-log-final
+        value: '{{inputs.parameters.metrics-dir}}Log.final.out'
+    script:
+      command:
+      - sh
+      env:
+      - name: STAR_RG_LINE
+        value: '{{inputs.parameters.read-group-str}}'
+      image: quay.io/biocontainers/star-fusion:1.15.1--hdfd78af_1
+      name: star-fusion
+      source: "set -euo pipefail\n\nfqR1=\"{{=sprig.osBase(inputs.parameters['fq-r1'])}}\"\nfqR2=\"{{=sprig.osBase(inputs.parameters['fq-r2'])}}\"\nSENSITIVITY=\"{{inputs.parameters.sensitivity}}\"\n\n\
+        FUSION_OUT_DIR=\"/mnt/output/fusions\"\nFUSION_OUT_FILE=\"$FUSION_OUT_DIR/{{=sprig.osBase(inputs.parameters['output-fusions-tsv'])}}\"\nBAM_OUT_DIR=\"/mnt/output/bam\"\nBAM_OUT_FILE=\"$BAM_OUT_DIR/{{=sprig.osBase(inputs.parameters['output-bam'])}}\"\
+        \nCHIMERIC_OUT_DIR=\"/mnt/output/chimeric\"\nCHIMERIC_OUT_FILE=\"$CHIMERIC_OUT_DIR/{{=sprig.osBase(inputs.parameters['output-chimeric-out-fusions'])}}\"\n\n# Clean stale checkpoints/output from\
+        \ any previous run\nrm -rf /mnt/scratch/*\n\n# Build sensitivity flags\nSENSITIVITY_ARGS=\"\"\ncase \"${SENSITIVITY}\" in\n  full_Monty)\n    echo \"Using full_Monty mode (expanded, FFPM preserved)\"\
+        \n    SENSITIVITY_ARGS=\"--min_junction_reads 0 --min_sum_frags 1 --require_LDAS 0 --min_spanning_frags_only 1 --min_novel_junction_support 1 --no_single_fusion_per_breakpoint --skip_EM --max_promiscuity\
+        \ 1000000 --min_pct_dom_promiscuity 1 --min_alt_pct_junction 1e-3 --no_annotation_filter --no_RT_artifact_filter --min_FFPM 0\"\n    ;;\n  max_sensitivity)\n    echo \"Using max_sensitivity mode\
+        \ (expanded, FFPM preserved)\"\n    SENSITIVITY_ARGS=\"--min_junction_reads 0 --min_sum_frags 1 --require_LDAS 0 --min_spanning_frags_only 1 --min_novel_junction_support 1 --no_single_fusion_per_breakpoint\
+        \ --skip_EM --min_FFPM 0\"\n    ;;\n  default)\n    echo \"Using default STAR-Fusion settings\"\n    ;;\n  *)\n    echo \"ERROR: Unknown STAR-Fusion sensitivity mode: ${SENSITIVITY}\"\n    echo\
+        \ \"Valid modes: full_Monty, max_sensitivity, default\"\n    exit 1\n    ;;\nesac\n\n# Build optional right_fq arg\nRIGHT_FQ_ARG=\"\"\nif [ -n \"$fqR2\" ]; then\n  RIGHT_FQ_ARG=\"--right_fq /mnt/input/r2/$fqR2\"\
+        \nfi\n\necho \"Running STAR-Fusion (sensitivity: ${SENSITIVITY})\"\n# Call the Perl script directly \u2014 the /usr/local/bin/STAR-Fusion\n# wrapper uses unquoted $@ which word-splits the RG line\
+        \ on\n# whitespace (tabs/spaces).\n/usr/local/lib/STAR-Fusion/STAR-Fusion \\\n  --genome_lib_dir /mnt/ref/ctat-lib/ \\\n  --left_fq \"/mnt/input/r1/$fqR1\" \\\n  $RIGHT_FQ_ARG \\\n  \"--STAR_outSAMattrRGline=$STAR_RG_LINE\"\
+        \ \\\n  --output_dir /mnt/scratch/ \\\n  --CPU {{inputs.parameters.thread-count}} \\\n  $SENSITIVITY_ARGS\n\n# Handle BAM file\nif [ -f \"/mnt/scratch/Aligned.out.bam\" ]; then\n  mv /mnt/scratch/Aligned.out.bam\
+        \ $BAM_OUT_FILE\nelse\n  echo \"No BAM file was generated\"\nfi\n\n# Handle fusion predictions file\nif [ -f \"/mnt/scratch/star-fusion.fusion_predictions.tsv\" ]; then\n  mv /mnt/scratch/star-fusion.fusion_predictions.tsv\
+        \ $FUSION_OUT_FILE\nelse\n  echo -e \"#FusionName\\tJunctionReadCount\\tSpanningFragCount\\test_J\\test_S\\tSpliceType\\tLeftGene\\tLeftBreakpoint\\tRightGene\\tRightBreakpoint\\tJunctionReads\\\
+        tSpanningFrags\\tLargeAnchorSupport\\tFFPM\\tLeftBreakDinuc\\tLeftBreakEntropy\\tRightBreakDinuc\\tRightBreakEntropy\\tannots\" > $FUSION_OUT_FILE\n  echo \"Created empty fusion file with header\
+        \ at $FUSION_OUT_FILE\"\nfi\n\n# Handle chimeric junction file\nif [ -f \"/mnt/scratch/Chimeric.out.junction\" ]; then\n  mv /mnt/scratch/Chimeric.out.junction $CHIMERIC_OUT_FILE\nelse\n  echo -e\
+        \ \"chr_donorA\\tbrkpt_donorA\\tstrand_donorA\\tchr_acceptorB\\tbrkpt_acceptorB\\tstrand_acceptorB\\tjunction_type\\trepeat_left_lenA\\trepeat_right_lenB\\tread_name\\tstart_alnA\\tcigar_alnA\\\
+        tstart_alnB\\tcigar_alnB\\tnum_chim_aln\\tmax_poss_aln_score\\tnon_chim_aln_score\\tthis_chim_aln_score\\tbestall_chim_aln_score\\tPEmerged_bool\\treadgrp\" > $CHIMERIC_OUT_FILE\n  echo \"Created\
+        \ empty chimeric junctions file with header at $CHIMERIC_OUT_FILE\"\nfi\n\n# Relay STAR alignment summary into metrics-dir for MultiQC. The\n# STAR-Fusion wrapper invokes STAR inside /mnt/scratch/,\
+        \ so the log\n# files live at the top level of the scratch dir.\nfor f in Log.final.out SJ.out.tab; do\n  if [ -f \"/mnt/scratch/$f\" ]; then\n    cp \"/mnt/scratch/$f\" \"/mnt/metrics/$f\"\n  fi\n\
+        done\n\necho \"STAR-Fusion completed successfully\"\n"
+      volumeMounts:
+      - mountPath: /mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}
+        name: fq-r1
+      - mountPath: /mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}
+        name: fq-r2
+      - mountPath: /mnt/output/bam/
+        name: output-bam
+      - mountPath: /mnt/output/fusions/
+        name: output-fusions-tsv
+      - mountPath: /mnt/output/chimeric/
+        name: output-chimeric-out-fusions
+      - mountPath: /mnt/metrics/
+        name: metrics-dir
+      - mountPath: /mnt/scratch/
+        name: scratch-dir
+      - mountPath: /mnt/ref/ctat-lib/
+        name: ctat-genome-lib-build-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.fq-r1}}'
+        type: File
+      name: fq-r1
+    - hostPath:
+        path: '{{inputs.parameters.fq-r2}}'
+        type: File
+      name: fq-r2
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-bam''])}}'
+        type: DirectoryOrCreate
+      name: output-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''scratch-dir''])}}'
+        type: DirectoryOrCreate
+      name: scratch-dir
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-fusions-tsv''])}}'
+        type: DirectoryOrCreate
+      name: output-fusions-tsv
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-chimeric-out-fusions''])}}'
+        type: DirectoryOrCreate
+      name: output-chimeric-out-fusions
+    - hostPath:
+        path: '{{inputs.parameters.metrics-dir}}'
+        type: DirectoryOrCreate
+      name: metrics-dir
+    - hostPath:
+        path: '{{inputs.parameters.ctat-genome-lib-build-dir}}'
+        type: Directory
+      name: ctat-genome-lib-build-dir

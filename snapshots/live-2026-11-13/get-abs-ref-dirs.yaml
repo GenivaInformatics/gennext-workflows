@@ -1,0 +1,152 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: get-abs-ref-dirs
+  namespace: argo
+spec:
+  entrypoint: get-abs-ref-dirs
+  serviceAccountName: gennext-workflows
+  templates:
+  - inputs:
+      parameters:
+      - name: ref-ver
+      - name: ref-base-dir
+    name: get-abs-ref-dirs
+    outputs:
+      parameters:
+      - name: ref-genome-f
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.genome
+      - name: ref-dbsnp-f
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.dbsnp
+      - name: ref-gnomad4-common-variants-f
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.gnomad4.common.variants
+      - name: regions-bed-f
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.regions.targeted
+      - name: exome-regions-bed-f
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.regions.exome
+      - name: cds-regions-bed-f
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.regions.cds
+      - name: annovar-dir
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.other.annovar
+      - name: gnomad-af-f
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.other.gnomad-af
+      - name: 1000g-pon-f
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.other.1000g-pon
+      - name: canonical-chroms-regions
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.regions.canonical-chrs
+      - name: somtest-A3416642-geneslists-sv-cnv
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.somtest.A3416642.geneslists.sv-cnv
+      - name: somtest-A3416642-geneslists-sv-translocation
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.somtest.A3416642.geneslists.sv-translocation
+      - name: somtest-A3416642-geneslists-sv-fusion
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.somtest.A3416642.geneslists.sv-fusion
+      - name: somtest-A3416642-regions-snv
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.somtest.A3416642.regions.snv
+      - name: somtest-A3416642-regions-sv-cnv
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.somtest.A3416642.regions.sv-cnv
+      - name: somtest-A3416642-regions-sv-translocation
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.somtest.A3416642.regions.sv-translocation
+      - name: somtest-A3416642-regions-sv-merged
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.somtest.A3416642.regions.sv-merged
+      - name: somtest-A3416642-regions-all-tracks
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.somtest.A3416642.regions.all-tracks
+      - name: somtest-A3370051-regions-fusions
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.somtest-A3370051-regions-fusions
+      - name: somtest-A3370051-regions-covered-fusions
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.somtest-A3370051-regions-covered-fusions
+      - name: ctat-genome-lib-build-dir
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.rna.ctat-genome-lib-build-dir
+      - name: msisensor-pro-baseline
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.rna.msisensor-pro.baseline
+      - name: chrom-sizes
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.chrom.sizes
+      - name: gene-annotation-gtf
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.genes.annotation
+    script:
+      command:
+      - bash
+      image: bash:alpine3.18
+      source: 'clean_path() {
+
+        sed -E ''s#/+#/#g; s#([^/])$#\1/#'';
+
+        }
+
+        for i in $(ls /tmp/ref-configmap); do sed -E -e "s#^#$(clean_path <<< {{inputs.parameters.ref-base-dir}})#" <<< read /tmp/ref-configmap/$i > /tmp/$i; done
+
+        '
+      volumeMounts:
+      - mountPath: /tmp/ref-configmap
+        name: gennext-references
+    volumes:
+    - configMap:
+        name: gennext-references
+      name: gennext-references
+  - inputs:
+      parameters:
+      - name: ref-ver
+      - name: ref-base-dir
+    name: get-abs-pgs-ref-dirs
+    outputs:
+      parameters:
+      - name: dbsnp-f
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.dbsnp
+      - name: pgs-dir
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.pgs
+      - name: pgs-metadata-f
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.pgs.metadata
+      - name: pgs-genome-f
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.pgs.genome
+      - name: pgs-genotype-ref-f
+        valueFrom:
+          path: /tmp/{{inputs.parameters.ref-ver}}.pgs.genotype.ref
+    script:
+      command:
+      - bash
+      image: bash:alpine3.18
+      source: 'ls /tmp/ref-configmap;
+
+        clean_path() {
+
+        sed -E ''s#/+#/#g; s#([^/])$#\1/#'';
+
+        }
+
+        for i in $(ls /tmp/ref-configmap); do sed -E -e "s#^#$(clean_path <<< {{inputs.parameters.ref-base-dir}})#" <<< read /tmp/ref-configmap/$i > /tmp/$i; done
+
+        '
+      volumeMounts:
+      - mountPath: /tmp/ref-configmap
+        name: gennext-pgs-references
+    volumes:
+    - configMap:
+        name: gennext-pgs-references
+      name: gennext-pgs-references

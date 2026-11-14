@@ -1,0 +1,85 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: filter-msisensor-pro-template
+  namespace: argo
+spec:
+  entrypoint: filter-msisensor-pro
+  templates:
+  - inputs:
+      parameters:
+      - name: msisensor-pro-tsv
+      - name: regions-bed-f
+      - name: min-coverage
+        value: '500'
+      - name: filtered-output-tsv
+      - name: summary-output-json
+    name: filter-msisensor-pro
+    outputs:
+      parameters:
+      - name: filtered-output-tsv
+        value: '{{inputs.parameters.filtered-output-tsv}}'
+      - name: summary-output-json
+        value: '{{inputs.parameters.summary-output-json}}'
+    script:
+      command:
+      - python
+      image: python:3.12-alpine
+      name: filter-msisensor-pro-script
+      source: "#!/usr/bin/env python3\n\nimport json\nimport sys\nfrom typing import List, Tuple, Optional\n\n\ndef read_bed_file(file_path: str) -> List[Tuple[str, int, int]]:\n    \"\"\"Read BED file\
+        \ and return list of (chromosome, start, end) tuples.\"\"\"\n    regions = []\n    try:\n        with open(file_path, 'r') as f:\n            for line in f:\n                line = line.strip()\n\
+        \                if line and not line.startswith('#'):\n                    parts = line.split('\\t')\n                    if len(parts) >= 3:\n                        chrom = parts[0]\n       \
+        \                 start = int(parts[1])\n                        end = int(parts[2])\n                        regions.append((chrom, start, end))\n    except FileNotFoundError:\n        print(f\"\
+        Error: BED file '{file_path}' not found\", file=sys.stderr)\n        sys.exit(1)\n    except ValueError as e:\n        print(f\"Error parsing BED file: {e}\", file=sys.stderr)\n        sys.exit(1)\n\
+        \    \n    return regions\n\n\ndef is_in_bed_regions(chrom: str, pos: int, bed_regions: List[Tuple[str, int, int]]) -> bool:\n    \"\"\"Check if a position is within any BED region.\"\"\"\n    for\
+        \ bed_chrom, bed_start, bed_end in bed_regions:\n        if chrom == bed_chrom and bed_start <= pos <= bed_end:\n            return True\n    return False\n\n\ndef filter_msi_data(msi_file: str,\
+        \ bed_regions: List[Tuple[str, int, int]], \n                  coverage_threshold: int, filtered_output: Optional[str] = None,\n                  summary_output: Optional[str] = None):\n    \"\"\
+        \"Filter MSI data and generate outputs.\"\"\"\n    \n    try:\n        with open(msi_file, 'r') as f:\n            lines = f.readlines()\n    except FileNotFoundError:\n        print(f\"Error: MSI\
+        \ file '{msi_file}' not found\", file=sys.stderr)\n        sys.exit(1)\n    \n    if not lines:\n        print(\"Error: MSI file is empty\", file=sys.stderr)\n        sys.exit(1)\n    \n    # Parse\
+        \ header\n    header = lines[0].strip()\n    if not header.startswith('chromosome'):\n        print(\"Error: MSI file does not have expected header format\", file=sys.stderr)\n        sys.exit(1)\n\
+        \    \n    # Process data lines\n    filtered_lines = [header]  # Include header in filtered output\n    total_sites = 0\n    unstable_sites = 0\n    \n    for line_num, line in enumerate(lines[1:],\
+        \ 2):\n        line = line.strip()\n        if not line:\n            continue\n            \n        parts = line.split('\\t')\n        if len(parts) < 10:\n            print(f\"Warning: Line {line_num}\
+        \ has insufficient columns, skipping\", file=sys.stderr)\n            continue\n        \n        try:\n            chrom = parts[0]\n            pos = int(parts[1])\n            coverage = int(parts[8])\
+        \  # CovReads column\n            pro_p = float(parts[6])   # pro_p column\n            threshold = float(parts[9])  # threshold column\n        except (ValueError, IndexError) as e:\n         \
+        \   print(f\"Warning: Error parsing line {line_num}: {e}, skipping\", file=sys.stderr)\n            continue\n        \n        # Apply filters\n        passes_coverage = coverage > coverage_threshold\n\
+        \        passes_bed = is_in_bed_regions(chrom, pos, bed_regions)\n        \n        if passes_coverage and passes_bed:\n            total_sites += 1\n            if pro_p > threshold:\n        \
+        \        unstable_sites += 1\n            \n            # Add to filtered output\n            if filtered_output:\n                filtered_lines.append(line)\n    \n    # Calculate MSI percentage\n\
+        \    msi_percentage = (unstable_sites / total_sites) if total_sites > 0 else 0.0\n    \n    # Write filtered MSI output\n    if filtered_output:\n        try:\n            with open(filtered_output,\
+        \ 'w') as f:\n                f.write('\\n'.join(filtered_lines) + '\\n')\n            print(f\"Filtered MSI data written to: {filtered_output}\")\n        except IOError as e:\n            print(f\"\
+        Error writing filtered output: {e}\", file=sys.stderr)\n            sys.exit(1)\n    \n    # Write summary JSON\n    if summary_output:\n        summary_data = {\n            \"MSI\": {\n      \
+        \          \"Total Number of Sites\": total_sites,\n                \"Unstable Sites\": unstable_sites,\n                \"MSI Percentage\": round(msi_percentage, 4)\n            }\n        }\n\
+        \        \n        try:\n            with open(summary_output, 'w') as f:\n                json.dump(summary_data, f, indent=2)\n            print(f\"Summary JSON written to: {summary_output}\"\
+        )\n        except IOError as e:\n            print(f\"Error writing summary output: {e}\", file=sys.stderr)\n            sys.exit(1)\n    \n    # Print summary to console\n    print(\"\\nSummary:\"\
+        )\n    print(f\"Total Number of Sites: {total_sites}\")\n    print(f\"Unstable Sites: {unstable_sites}\")\n    print(f\"MSI Percentage: {msi_percentage:.4f}\")\n\n\n\nargs = {\n    \"msi\": \"/mnt/input/msi/{{=sprig.osBase(inputs.parameters['msisensor-pro-tsv'])}}\"\
+        ,\n    \"bed\": \"/mnt/input/bed/{{=sprig.osBase(inputs.parameters['regions-bed-f'])}}\",\n    \"coverage\": {{=inputs.parameters['min-coverage']}},\n    \"filtered_output\": \"/mnt/output/msi/{{=sprig.osBase(inputs.parameters['filtered-output-tsv'])}}\"\
+        ,\n    \"summary_output\": \"/mnt/output/json/{{=sprig.osBase(inputs.parameters['summary-output-json'])}}\"\n}\n\n\n\n# Validate that at least one output is requested\nif not args[\"filtered_output\"\
+        ] and not args[\"summary_output\"]:\n    print(\"Error: At least one output (--filtered-output or --summary-output) must be specified\", \n          file=sys.stderr)\n    sys.exit(1)\n\n# Load BED\
+        \ regions\nprint(f\"Loading BED regions from: {args['bed']}\")\nbed_regions = read_bed_file(args[\"bed\"])\nprint(f\"Loaded {len(bed_regions)} BED regions\")\n\n# Process MSI data\nprint(f\"Processing\
+        \ MSI file: {args['msi']}\")\nprint(f\"Coverage threshold: >{args['coverage']}\")\n\nfilter_msi_data(\n    msi_file=args[\"msi\"],\n    bed_regions=bed_regions,\n    coverage_threshold=args[\"coverage\"\
+        ],\n    filtered_output=args[\"filtered_output\"],\n    summary_output=args[\"summary_output\"]\n)\n"
+      volumeMounts:
+      - mountPath: /mnt/input/msi/{{=sprig.osBase(inputs.parameters['msisensor-pro-tsv'])}}
+        name: msisensor-pro-tsv
+      - mountPath: /mnt/input/bed/{{=sprig.osBase(inputs.parameters['regions-bed-f'])}}
+        name: regions-bed-f
+      - mountPath: /mnt/output/msi/
+        name: filtered-output-tsv
+      - mountPath: /mnt/output/json/
+        name: summary-output-json
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.msisensor-pro-tsv}}'
+        type: File
+      name: msisensor-pro-tsv
+    - hostPath:
+        path: '{{inputs.parameters.regions-bed-f}}'
+        type: File
+      name: regions-bed-f
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''filtered-output-tsv''])}}'
+        type: DirectoryOrCreate
+      name: filtered-output-tsv
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''summary-output-json''])}}'
+        type: DirectoryOrCreate
+      name: summary-output-json

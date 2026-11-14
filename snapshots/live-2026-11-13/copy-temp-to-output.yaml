@@ -1,0 +1,77 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: copy-temp-to-output
+  namespace: argo
+spec:
+  entrypoint: copy-temp-to-output
+  serviceAccountName: gennext-workflows
+  templates:
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: output-rel-dir
+      - name: temp-rel-dir
+    name: copy-temp-to-output
+    outputs:
+      parameters:
+      - name: output-vcf-dv
+        value: '{{inputs.parameters.output-rel-dir}}vcf/{{inputs.parameters.sample-id}}_dv.vcf.gz'
+      - name: output-vcf-filtered-dv
+        value: '{{inputs.parameters.output-rel-dir}}vcf/{{inputs.parameters.sample-id}}_filtered_dv.vcf.gz'
+      - name: output-g-vcf-dv
+        value: '{{inputs.parameters.output-rel-dir}}vcf/{{inputs.parameters.sample-id}}_dv.g.vcf.gz'
+      - name: bam-recal
+        value: '{{inputs.parameters.output-rel-dir}}bam/{{inputs.parameters.sample-id}}_recal.bam'
+    script:
+      command:
+      - sh
+      image: eeacms/rsync:latest
+      source: '#!/bin/sh
+
+        rsync -r /mnt/temp/ /mnt/output/ && find /mnt/temp -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+        '
+      volumeMounts:
+      - mountPath: /mnt/output/
+        name: output-rel-dir
+      - mountPath: /mnt/temp/
+        name: temp-rel-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.output-rel-dir}}'
+        type: DirectoryOrCreate
+      name: output-rel-dir
+    - hostPath:
+        path: '{{inputs.parameters.temp-rel-dir}}'
+        type: Directory
+      name: temp-rel-dir
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: output-rel-dir
+      - name: temp-rel-dir
+    name: copy-temp-to-output-no-out
+    script:
+      command:
+      - sh
+      image: eeacms/rsync:latest
+      source: '#!/bin/sh
+
+        rsync -av --no-owner --no-group /mnt/temp/ /mnt/output/ && find /mnt/temp -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+        '
+      volumeMounts:
+      - mountPath: /mnt/output/
+        name: output-rel-dir
+      - mountPath: /mnt/temp/
+        name: temp-rel-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.output-rel-dir}}'
+        type: DirectoryOrCreate
+      name: output-rel-dir
+    - hostPath:
+        path: '{{inputs.parameters.temp-rel-dir}}'
+        type: Directory
+      name: temp-rel-dir

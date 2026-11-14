@@ -1,0 +1,76 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: fastqc-template
+  namespace: argo
+spec:
+  arguments:
+    parameters:
+    - name: node_name
+      value: gorillab-02
+    - name: fastq1
+    - name: fastq2
+  entrypoint: fastqc
+  nodeSelector:
+    kubernetes.io/hostname: '{{workflow.parameters.node_name}}'
+  templates:
+  - inputs:
+      parameters:
+      - name: fq-r1
+      - name: fq-r2
+      - name: output-dir
+    name: fastqc
+    outputs:
+      parameters:
+      - name: output-dir
+        value: '{{inputs.parameters.output-dir}}'
+    script:
+      command:
+      - sh
+      image: quay.io/biocontainers/fastqc:0.12.1--hdfd78af_0
+      name: fastqc
+      source: 'ls -lha  /mnt/input/r1/;
+
+        ls -lha  /mnt/input/r2/;
+
+        fastqc \
+
+        --outdir=/mnt/output \
+
+        --threads=2 \
+
+        /mnt/input/r1/{{=sprig.osBase(inputs.parameters[''fq-r1''])}} \
+
+        /mnt/input/r2/{{=sprig.osBase(inputs.parameters[''fq-r2''])}}
+
+        '
+      volumeMounts:
+      - mountPath: /mnt/input/r1/{{=sprig.osBase(inputs.parameters['fq-r1'])}}
+        name: fq-r1
+      - mountPath: /mnt/input/r2/{{=sprig.osBase(inputs.parameters['fq-r2'])}}
+        name: fq-r2
+      - mountPath: /mnt/output/
+        name: output-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.fq-r1}}'
+        type: File
+      name: fq-r1
+    - hostPath:
+        path: '{{inputs.parameters.fq-r2}}'
+        type: File
+      name: fq-r2
+    - hostPath:
+        path: '{{inputs.parameters.output-dir}}'
+        type: DirectoryOrCreate
+      name: output-dir
+  volumes:
+  - hostPath:
+      path: /opt/gennext/data/scratch
+    name: scratch
+  - hostPath:
+      path: /opt/gennext/data/input
+    name: input
+  - hostPath:
+      path: /opt/gennext/data/output
+    name: output

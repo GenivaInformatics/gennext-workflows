@@ -1,0 +1,84 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: fusion-report-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: arriba-fusions-tsv
+      - name: starfusion-predictions-tsv
+      - name: fusion-report-db-dir
+      - name: output-dir
+      - name: metrics-dir
+    name: fusion-report
+    outputs:
+      parameters:
+      - name: output-dir
+        value: '{{inputs.parameters.output-dir}}'
+      - name: output-fusions-json
+        value: '{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_fusions.json'
+      - name: output-fusion-list-tsv
+        value: '{{inputs.parameters.output-dir}}{{inputs.parameters.sample-id}}_fusion_list.tsv'
+      - name: mqc-tsv
+        value: '{{inputs.parameters.metrics-dir}}{{inputs.parameters.sample-id}}_fusion-report_mqc.tsv'
+    script:
+      command:
+      - sh
+      image: quay.io/biocontainers/fusion-report:4.0.1--py313hdfd78af_0
+      name: fusion-report
+      resources:
+        requests:
+          cpu: '2'
+          memory: 2Gi
+      source: "set -euo pipefail\n\nSAMPLE_ID=\"{{inputs.parameters.sample-id}}\"\nARRIBA_FILE=\"/mnt/input/arriba/{{=sprig.osBase(inputs.parameters['arriba-fusions-tsv'])}}\"\nSTARFUSION_FILE=\"/mnt/input/starfusion/{{=sprig.osBase(inputs.parameters['starfusion-predictions-tsv'])}}\"\
+        \nDB_DIR=\"/mnt/ref/fusion_report_db/\"\n\necho \"Running fusion-report for sample: ${SAMPLE_ID}\"\necho \"  Arriba file:      ${ARRIBA_FILE}\"\necho \"  STAR-Fusion file: ${STARFUSION_FILE}\"\n\
+        echo \"  Database dir:     ${DB_DIR}\"\n\nfusion_report run \\\n  \"${SAMPLE_ID}\" \\\n  /mnt/output/ \\\n  \"${DB_DIR}\" \\\n  --arriba \"${ARRIBA_FILE}\" \\\n  --starfusion \"${STARFUSION_FILE}\"\
+        \ \\\n  --allow-multiple-gene-symbols \\\n  --no-cosmic\n\necho \"fusion-report completed successfully\"\nls -la /mnt/output/\n\n# fusion-report writes hardcoded fusions.json and fusion_list.tsv;\n\
+        # rename them to embed the sample-id so a directory listing makes\n# the sample obvious without inspecting parent paths.\nif [ -f /mnt/output/fusions.json ]; then\n  mv /mnt/output/fusions.json\
+        \ \"/mnt/output/${SAMPLE_ID}_fusions.json\"\nfi\nif [ -f /mnt/output/fusion_list.tsv ]; then\n  mv /mnt/output/fusion_list.tsv \"/mnt/output/${SAMPLE_ID}_fusion_list.tsv\"\nfi\n\n# Emit a MultiQC\
+        \ custom-content TSV summarizing the merged call set:\n# total unique fusions, per-caller counts, and how many each caller\n# contributed exclusively. Tolerant of fusion-report JSON shape\n# changes\
+        \ \u2014 defaults to zero counts on parse failure.\nMQC_OUT=\"/mnt/metrics/{{inputs.parameters.sample-id}}_fusion-report_mqc.tsv\"\npython3 - \"${SAMPLE_ID}\" \"/mnt/output/${SAMPLE_ID}_fusions.json\"\
+        \ \"${MQC_OUT}\" <<'PY'\nimport json, sys, os\nsample, fusions_json, out_tsv = sys.argv[1], sys.argv[2], sys.argv[3]\n\ntotal = arriba = starfusion = both = arriba_only = sf_only = 0\ntry:\n   \
+        \ with open(fusions_json) as fh:\n        data = json.load(fh)\n    entries = data.values() if isinstance(data, dict) else data\n    for entry in entries:\n        total += 1\n        tools = entry.get(\"\
+        tools\") if isinstance(entry, dict) else None\n        if not tools and isinstance(entry, dict):\n            tools = list(entry.get(\"found_in\", {}).keys())\n        tools = {t.lower() for t in\
+        \ (tools or [])}\n        in_arriba = \"arriba\" in tools\n        in_sf = \"starfusion\" in tools or \"star-fusion\" in tools or \"star_fusion\" in tools\n        arriba += int(in_arriba)\n   \
+        \     starfusion += int(in_sf)\n        if in_arriba and in_sf:\n            both += 1\n        elif in_arriba:\n            arriba_only += 1\n        elif in_sf:\n            sf_only += 1\nexcept\
+        \ Exception as e:\n    sys.stderr.write(f\"fusion-report MQC summary fell back to zeros: {e}\\n\")\n\nos.makedirs(os.path.dirname(out_tsv), exist_ok=True)\nwith open(out_tsv, \"w\") as fh:\n   \
+        \ fh.write(\"# id: fusion-report\\n\")\n    fh.write(\"# section_name: 'fusion-report (merged calls)'\\n\")\n    fh.write(\"# description: 'Per-caller fusion counts after fusion-report consolidation.'\\\
+        n\")\n    fh.write(\"# format: 'tsv'\\n\")\n    fh.write(\"# plot_type: 'table'\\n\")\n    fh.write(\"Sample\\tTotal_unique_fusions\\tArriba_total\\tSTARFusion_total\\tBoth_callers\\tArriba_only\\\
+        tSTARFusion_only\\n\")\n    fh.write(f\"{sample}\\t{total}\\t{arriba}\\t{starfusion}\\t{both}\\t{arriba_only}\\t{sf_only}\\n\")\nPY\necho \"Wrote MultiQC custom-content TSV to ${MQC_OUT}\"\n"
+      volumeMounts:
+      - mountPath: /mnt/input/arriba/{{=sprig.osBase(inputs.parameters['arriba-fusions-tsv'])}}
+        name: arriba-fusions-tsv
+      - mountPath: /mnt/input/starfusion/{{=sprig.osBase(inputs.parameters['starfusion-predictions-tsv'])}}
+        name: starfusion-predictions-tsv
+      - mountPath: /mnt/ref/fusion_report_db/
+        name: fusion-report-db-dir
+      - mountPath: /mnt/output/
+        name: output-dir
+      - mountPath: /mnt/metrics/
+        name: metrics-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.arriba-fusions-tsv}}'
+        type: File
+      name: arriba-fusions-tsv
+    - hostPath:
+        path: '{{inputs.parameters.starfusion-predictions-tsv}}'
+        type: File
+      name: starfusion-predictions-tsv
+    - hostPath:
+        path: '{{inputs.parameters.fusion-report-db-dir}}'
+        type: Directory
+      name: fusion-report-db-dir
+    - hostPath:
+        path: '{{inputs.parameters.output-dir}}'
+        type: DirectoryOrCreate
+      name: output-dir
+    - hostPath:
+        path: '{{inputs.parameters.metrics-dir}}'
+        type: DirectoryOrCreate
+      name: metrics-dir

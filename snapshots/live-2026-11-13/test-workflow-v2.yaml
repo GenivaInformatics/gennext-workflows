@@ -1,0 +1,64 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: test-workflow-v2
+  namespace: argo
+spec:
+  arguments:
+    parameters:
+    - name: user_id
+    - name: job_id
+    - name: input_dir
+    - name: output_dir
+    - name: temp_dir
+    - name: scratch_dir
+    - name: thread_count
+    - name: node_name
+  entrypoint: test-workflow-v2
+  nodeSelector:
+    kubernetes.io/hostname: '{{workflow.parameters.node_name}}'
+  templates:
+  - name: test-workflow-v2
+    steps:
+    - - name: boilerplate-template
+        template: boilerplate-template
+    - - arguments:
+          parameters:
+          - name: fastq1
+            value: '{{steps.boilerplate-template.outputs.parameters.out_fq1}}'
+          - name: fastq2
+            value: '{{steps.boilerplate-template.outputs.parameters.out_fq2}}'
+        name: fastqc-v2-template
+        templateRef:
+          name: fastqc-v2-template
+          template: fastqc-v2
+  - name: boilerplate-template
+    outputs:
+      parameters:
+      - name: out_fq1
+        value: SRR100910_R1.fastq.gz
+      - name: out_fq2
+        value: SRR100910_R2.fastq.gz
+    script:
+      command:
+      - sh
+      image: alpine:latest
+      source: 'ls -lha /mnt/input
+
+        '
+      volumeMounts:
+      - mountPath: /mnt/input
+        name: input
+  volumes:
+  - hostPath:
+      path: '{{workflow.parameters.input_dir}}/{{workflow.parameters.user_id}}/{{workflow.parameters.job_id}}/'
+    name: input
+  - hostPath:
+      path: '{{workflow.parameters.output_dir}}/{{workflow.parameters.user_id}}/{{workflow.parameters.job_id}}/'
+    name: output
+  - hostPath:
+      path: '{{workflow.parameters.temp_dir}}/{{workflow.parameters.user_id}}/{{workflow.parameters.job_id}}/'
+    name: temp
+  - hostPath:
+      path: '{{workflow.parameters.scratch_dir}}/{{workflow.parameters.user_id}}/{{workflow.parameters.job_id}}/'
+    name: scratch

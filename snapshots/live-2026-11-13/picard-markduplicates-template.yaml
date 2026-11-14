@@ -1,0 +1,53 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: picard-markduplicates-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: input-bam
+      - name: output-bam
+      - name: output-metrics
+    name: picard-markduplicates
+    outputs:
+      parameters:
+      - name: output-bam
+        value: '{{inputs.parameters.output-bam}}'
+      - name: output-metrics
+        value: '{{inputs.parameters.output-metrics}}'
+    script:
+      command:
+      - bash
+      image: broadinstitute/gatk:4.6.2.0
+      name: picard-markduplicates
+      resources:
+        requests:
+          cpu: '4'
+          memory: 16Gi
+      source: "set -euo pipefail\n\nBAM_IN=\"/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}\"\nBAM_OUT=\"/mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}\"\nMETRICS_OUT=\"\
+        /mnt/output/metrics/{{=sprig.osBase(inputs.parameters['output-metrics'])}}\"\n\necho \"Running MarkDuplicates (via GATK4)\"\necho \"  Input:    ${BAM_IN}\"\necho \"  Output:   ${BAM_OUT}\"\necho\
+        \ \"  Metrics:  ${METRICS_OUT}\"\n\ngatk --java-options \"-Xmx12G\" MarkDuplicates \\\n  -I \"${BAM_IN}\" \\\n  -O \"${BAM_OUT}\" \\\n  -M \"${METRICS_OUT}\" \\\n  --ASSUME_SORT_ORDER coordinate\
+        \ \\\n  --VALIDATION_STRINGENCY LENIENT \\\n  --CREATE_INDEX true\n\necho \"MarkDuplicates completed\"\n"
+      volumeMounts:
+      - mountPath: /mnt/input/bam/
+        name: input-bam
+      - mountPath: /mnt/output/bam/
+        name: output-bam
+      - mountPath: /mnt/output/metrics/
+        name: output-metrics
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-bam''])}}'
+        type: Directory
+      name: input-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-bam''])}}'
+        type: DirectoryOrCreate
+      name: output-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-metrics''])}}'
+        type: DirectoryOrCreate
+      name: output-metrics

@@ -1,0 +1,304 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: parabricks-bqsr-template
+  namespace: argo
+spec:
+  templates:
+  - initContainers:
+    - args:
+      - 'set -eu
+
+        IN_BAM="/mnt/input/bam/{{=sprig.osBase(inputs.parameters[''input-bam''])}}"
+
+        samtools --version | head -1
+
+        rm -f "${IN_BAM}.bai" "${IN_BAM%.bam}.bai"
+
+        samtools index -@ "{{inputs.parameters.thread-count}}" "${IN_BAM}"
+
+        echo "Regenerated index: ${IN_BAM}.bai"
+
+        '
+      command:
+      - sh
+      - -c
+      image: quay.io/biocontainers/samtools:1.24--h9dcdb79_0
+      name: reindex-bam
+      volumeMounts:
+      - mountPath: /mnt/input/bam/
+        name: input-bam
+    inputs:
+      parameters:
+      - name: input-bam
+      - name: genome-ref
+      - name: known-sites
+      - name: known-sites-gnomad
+        value: .
+      - name: output-recal-file
+      - name: regions-file
+        value: .
+      - name: thread-count
+        value: '4'
+      - name: node-name
+        value: '{{inputs.parameters.node-name}}'
+    name: parabricks-bqsr-on-node
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.node-name}}'
+    outputs:
+      parameters:
+      - name: output-recal-file
+        value: '{{inputs.parameters.output-recal-file}}'
+    script:
+      command:
+      - bash
+      image: '{{workflow.parameters.parabricksImage}}'
+      name: parabricks-bqsr-script
+      resources:
+        limits:
+          nvidia.com/gpu: 1
+      source: "set -euo pipefail\n\nREF=\"/mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}}\"\nIN_BAM=\"/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}\"\nOUT_RECAL=\"\
+        /mnt/output/recal/{{=sprig.osBase(inputs.parameters['output-recal-file'])}}\"\nregionsFile=\"{{=sprig.osBase(inputs.parameters['regions-file'])}}\"\ngnomadFile=\"{{=sprig.osBase(inputs.parameters['known-sites-gnomad'])}}\"\
+        \ndbsnpKnownSites=\"{{=sprig.osBase(inputs.parameters['known-sites'])}}\"\noptions=\"\"\n\necho \"=== Parabricks BQSR Configuration ===\"\necho \"Input BAM: ${IN_BAM}\"\necho \"Genome reference:\
+        \ ${REF}\"\necho \"dbSNP known sites: $dbsnpKnownSites\"\necho \"gnomAD known sites: $gnomadFile\"\necho \"Regions file: $regionsFile\"\necho \"Output recal file: ${OUT_RECAL}\"\n\n# Add regions\
+        \ file if provided\nif [ ! \".\" = \"$regionsFile\" ]; then\n  echo \"Adding regions file: /mnt/input/regions/$regionsFile\"\n  options=\"$options --interval-file /mnt/input/regions/$regionsFile\"\
+        \nelse\n  echo \"No regions file specified\"\nfi\n\n# Workflows submitted before the hg38 reference map update still pass\n# dbSNP155. Both releases live in the same mounted directory.\nif [ \"\
+        $dbsnpKnownSites\" = \"GRCh38.dbSNP155.vcf.gz\" ]; then\n  dbsnpKnownSites=\"GRCh38.dbSNP157.vcf.gz\"\nfi\n\n# Set known sites - prefer gnomAD when present, else fall back to dbSNP\nknownSitesArg=\"\
+        \"\nif [ ! \".\" = \"$gnomadFile\" ] && [ -f \"/mnt/ref/known-sites-gnomad/$gnomadFile\" ]; then\n  echo \"Using gnomAD known sites: /mnt/ref/known-sites-gnomad/$gnomadFile\"\n  knownSitesArg=\"\
+        --knownSites /mnt/ref/known-sites-gnomad/$gnomadFile\"\nelse\n  if [ ! -s \"/mnt/ref/known-sites/$dbsnpKnownSites\" ] || [ ! -s \"/mnt/ref/known-sites/$dbsnpKnownSites.tbi\" ]; then\n    echo \"\
+        Missing dbSNP known sites or index: /mnt/ref/known-sites/$dbsnpKnownSites\" >&2\n    exit 1\n  fi\n  echo \"Using dbSNP known sites: /mnt/ref/known-sites/$dbsnpKnownSites\"\n  knownSitesArg=\"--knownSites\
+        \ /mnt/ref/known-sites/$dbsnpKnownSites\"\nfi\n\necho \"=== Starting Parabricks BQSR ===\"\npbrun bqsr \\\n  --ref \"${REF}\" \\\n  $knownSitesArg \\\n  --in-bam \"${IN_BAM}\" \\\n  $options \\\n\
+        \  --out-recal-file \"${OUT_RECAL}\"\n\n# Fail loudly if pbrun exited 0 but produced no recal table.\nif [ ! -s \"${OUT_RECAL}\" ]; then\n  echo \"ERROR: recal file ${OUT_RECAL} missing or empty\
+        \ after pbrun bqsr\" >&2\n  exit 1\nfi\necho \"=== Parabricks BQSR completed: $(wc -c < \"${OUT_RECAL}\") bytes ===\"\n"
+      volumeMounts:
+      - mountPath: /mnt/ref/genome/
+        name: genome-ref
+      - mountPath: /mnt/ref/known-sites/
+        name: known-sites
+      - mountPath: /mnt/ref/known-sites-gnomad/
+        name: known-sites-gnomad
+      - mountPath: /mnt/input/bam/
+        name: input-bam
+      - mountPath: /mnt/output/recal/
+        name: output-recal-file
+      - mountPath: /mnt/input/regions/
+        name: regions-file
+    tolerations:
+    - effect: NoSchedule
+      key: nvidia.com/gpu
+      operator: Exists
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-bam''])}}'
+        type: Directory
+      name: input-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''genome-ref''])}}'
+        type: Directory
+      name: genome-ref
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''known-sites''])}}'
+        type: Directory
+      name: known-sites
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''known-sites-gnomad''])}}'
+        type: Directory
+      name: known-sites-gnomad
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''regions-file''])}}'
+        type: Directory
+      name: regions-file
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-recal-file''])}}'
+        type: DirectoryOrCreate
+      name: output-recal-file
+  - initContainers:
+    - args:
+      - 'set -eu
+
+        IN_BAM="/mnt/input/bam/{{=sprig.osBase(inputs.parameters[''input-bam''])}}"
+
+        samtools --version | head -1
+
+        rm -f "${IN_BAM}.bai" "${IN_BAM%.bam}.bai"
+
+        samtools index -@ "{{inputs.parameters.thread-count}}" "${IN_BAM}"
+
+        echo "Regenerated index: ${IN_BAM}.bai"
+
+        '
+      command:
+      - sh
+      - -c
+      image: quay.io/biocontainers/samtools:1.24--h9dcdb79_0
+      name: reindex-bam
+      volumeMounts:
+      - mountPath: /mnt/input/bam/
+        name: input-bam
+    inputs:
+      parameters:
+      - name: input-bam
+      - name: genome-ref
+      - name: known-sites
+      - name: known-sites-gnomad
+        value: .
+      - name: output-recal-file
+      - name: regions-file
+        value: .
+      - name: thread-count
+        value: '4'
+    name: parabricks-bqsr
+    outputs:
+      parameters:
+      - name: output-recal-file
+        value: '{{inputs.parameters.output-recal-file}}'
+    script:
+      command:
+      - bash
+      image: '{{workflow.parameters.parabricksImage}}'
+      name: parabricks-bqsr-script
+      resources:
+        limits:
+          nvidia.com/gpu: 1
+      source: "set -euo pipefail\n\nREF=\"/mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}}\"\nIN_BAM=\"/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}\"\nOUT_RECAL=\"\
+        /mnt/output/recal/{{=sprig.osBase(inputs.parameters['output-recal-file'])}}\"\nregionsFile=\"{{=sprig.osBase(inputs.parameters['regions-file'])}}\"\ngnomadFile=\"{{=sprig.osBase(inputs.parameters['known-sites-gnomad'])}}\"\
+        \ndbsnpKnownSites=\"{{=sprig.osBase(inputs.parameters['known-sites'])}}\"\noptions=\"\"\n\necho \"=== Parabricks BQSR Configuration ===\"\necho \"Input BAM: ${IN_BAM}\"\necho \"Genome reference:\
+        \ ${REF}\"\necho \"dbSNP known sites: $dbsnpKnownSites\"\necho \"gnomAD known sites: $gnomadFile\"\necho \"Regions file: $regionsFile\"\necho \"Output recal file: ${OUT_RECAL}\"\n\n# Add regions\
+        \ file if provided\nif [ ! \".\" = \"$regionsFile\" ]; then\n  echo \"Adding regions file: /mnt/input/regions/$regionsFile\"\n  options=\"$options --interval-file /mnt/input/regions/$regionsFile\"\
+        \nelse\n  echo \"No regions file specified\"\nfi\n\n# Workflows submitted before the hg38 reference map update still pass\n# dbSNP155. Both releases live in the same mounted directory.\nif [ \"\
+        $dbsnpKnownSites\" = \"GRCh38.dbSNP155.vcf.gz\" ]; then\n  dbsnpKnownSites=\"GRCh38.dbSNP157.vcf.gz\"\nfi\n\n# Set known sites - prefer gnomAD when present, else fall back to dbSNP\nknownSitesArg=\"\
+        \"\nif [ ! \".\" = \"$gnomadFile\" ] && [ -f \"/mnt/ref/known-sites-gnomad/$gnomadFile\" ]; then\n  echo \"Using gnomAD known sites: /mnt/ref/known-sites-gnomad/$gnomadFile\"\n  knownSitesArg=\"\
+        --knownSites /mnt/ref/known-sites-gnomad/$gnomadFile\"\nelse\n  if [ ! -s \"/mnt/ref/known-sites/$dbsnpKnownSites\" ] || [ ! -s \"/mnt/ref/known-sites/$dbsnpKnownSites.tbi\" ]; then\n    echo \"\
+        Missing dbSNP known sites or index: /mnt/ref/known-sites/$dbsnpKnownSites\" >&2\n    exit 1\n  fi\n  echo \"Using dbSNP known sites: /mnt/ref/known-sites/$dbsnpKnownSites\"\n  knownSitesArg=\"--knownSites\
+        \ /mnt/ref/known-sites/$dbsnpKnownSites\"\nfi\n\necho \"=== Starting Parabricks BQSR ===\"\npbrun bqsr \\\n  --ref \"${REF}\" \\\n  $knownSitesArg \\\n  --in-bam \"${IN_BAM}\" \\\n  $options \\\n\
+        \  --out-recal-file \"${OUT_RECAL}\"\n\n# Fail loudly if pbrun exited 0 but produced no recal table.\nif [ ! -s \"${OUT_RECAL}\" ]; then\n  echo \"ERROR: recal file ${OUT_RECAL} missing or empty\
+        \ after pbrun bqsr\" >&2\n  exit 1\nfi\necho \"=== Parabricks BQSR completed: $(wc -c < \"${OUT_RECAL}\") bytes ===\"\n"
+      volumeMounts:
+      - mountPath: /mnt/ref/genome/
+        name: genome-ref
+      - mountPath: /mnt/ref/known-sites/
+        name: known-sites
+      - mountPath: /mnt/ref/known-sites-gnomad/
+        name: known-sites-gnomad
+      - mountPath: /mnt/input/bam/
+        name: input-bam
+      - mountPath: /mnt/output/recal/
+        name: output-recal-file
+      - mountPath: /mnt/input/regions/
+        name: regions-file
+    tolerations:
+    - effect: NoSchedule
+      key: nvidia.com/gpu
+      operator: Exists
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-bam''])}}'
+        type: Directory
+      name: input-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''genome-ref''])}}'
+        type: Directory
+      name: genome-ref
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''known-sites''])}}'
+        type: Directory
+      name: known-sites
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''known-sites-gnomad''])}}'
+        type: Directory
+      name: known-sites-gnomad
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''regions-file''])}}'
+        type: Directory
+      name: regions-file
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-recal-file''])}}'
+        type: DirectoryOrCreate
+      name: output-recal-file
+  - initContainers:
+    - args:
+      - 'set -eu
+
+        IN_BAM="/mnt/input/bam/{{=sprig.osBase(inputs.parameters[''input-bam''])}}"
+
+        samtools --version | head -1
+
+        rm -f "${IN_BAM}.bai" "${IN_BAM%.bam}.bai"
+
+        samtools index -@ "{{inputs.parameters.thread-count}}" "${IN_BAM}"
+
+        echo "Regenerated index: ${IN_BAM}.bai"
+
+        '
+      command:
+      - sh
+      - -c
+      image: quay.io/biocontainers/samtools:1.24--h9dcdb79_0
+      name: reindex-bam
+      volumeMounts:
+      - mountPath: /mnt/input/bam/
+        name: input-bam
+    inputs:
+      parameters:
+      - name: genome-ref
+      - name: input-bam
+      - name: input-recal-file
+      - name: output-bam
+      - name: regions-file
+        value: .
+      - name: thread-count
+        value: '4'
+    name: parabricks-applybqsr
+    outputs:
+      parameters:
+      - name: output-bam
+        value: '{{inputs.parameters.output-bam}}'
+    script:
+      command:
+      - bash
+      image: '{{workflow.parameters.parabricksImage}}'
+      name: parabricks-apply-bqsr-script
+      resources:
+        limits:
+          nvidia.com/gpu: 1
+      source: "set -euo pipefail\n\nREF=\"/mnt/ref/genome/{{=sprig.osBase(inputs.parameters['genome-ref'])}}\"\nIN_BAM=\"/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}\"\nIN_RECAL=\"/mnt/input/recal/{{=sprig.osBase(inputs.parameters['input-recal-file'])}}\"\
+        \nOUT_BAM=\"/mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}\"\nregionsFile=\"{{=sprig.osBase(inputs.parameters['regions-file'])}}\"\noptions=\"\"\n\nif [ ! \".\" = \"$regionsFile\"\
+        \ ]; then\n  options=\"$options --interval-file /mnt/input/regions/$regionsFile\"\nfi\n\npbrun applybqsr \\\n  --ref \"${REF}\" \\\n  --in-bam \"${IN_BAM}\" \\\n  --in-recal-file \"${IN_RECAL}\"\
+        \ \\\n  $options \\\n  --out-bam \"${OUT_BAM}\"\n\n# Fail loudly if pbrun exited 0 but produced no output BAM.\nif [ ! -s \"${OUT_BAM}\" ]; then\n  echo \"ERROR: output BAM ${OUT_BAM} missing or\
+        \ empty after pbrun applybqsr\" >&2\n  exit 1\nfi\necho \"=== Parabricks applyBQSR completed: $(wc -c < \"${OUT_BAM}\") bytes ===\"\n"
+      volumeMounts:
+      - mountPath: /mnt/ref/genome/
+        name: genome-ref
+      - mountPath: /mnt/input/bam/
+        name: input-bam
+      - mountPath: /mnt/input/recal/{{=sprig.osBase(inputs.parameters['input-recal-file'])}}
+        name: input-recal-file
+      - mountPath: /mnt/output/bam/
+        name: output-bam
+      - mountPath: /mnt/input/regions/
+        name: regions-file
+    tolerations:
+    - effect: NoSchedule
+      key: nvidia.com/gpu
+      operator: Exists
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-bam''])}}'
+        type: Directory
+      name: input-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''genome-ref''])}}'
+        type: Directory
+      name: genome-ref
+    - hostPath:
+        path: '{{inputs.parameters.input-recal-file}}'
+        type: File
+      name: input-recal-file
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''regions-file''])}}'
+        type: Directory
+      name: regions-file
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-bam''])}}'
+        type: DirectoryOrCreate
+      name: output-bam

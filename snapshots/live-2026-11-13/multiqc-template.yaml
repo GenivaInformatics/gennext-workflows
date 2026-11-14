@@ -1,0 +1,40 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: multiqc-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: input-dir
+      - name: output-dir
+    name: main
+    outputs:
+      parameters:
+      - name: output-dir
+        value: '{{inputs.parameters.output-dir}}'
+    script:
+      command:
+      - sh
+      image: quay.io/biocontainers/multiqc:1.27--pyhdfd78af_0
+      name: multiqc-script
+      source: "# Create temporary MultiQC config file\ncat << 'EOF' > /tmp/multiqc_config.yaml\nmosdepth_config:\n  # Coverage thresholds for General Stats\n  general_stats_coverage:\n    - 1\n    - 5\n\
+        \    - 10\n    - 30\n    - 50\n    - 100\n    - 500\n    - 1000\n    - 2000\n\n  # Contig inclusion/exclusion filters\n  include_contigs:\n    - \"chr*\"\n  exclude_contigs:\n    - \"*_alt\"\n \
+        \   - \"*_decoy\"\n    - \"*_random\"\n    - \"chrUn*\"\n    - \"HLA*\"\n    - \"chrM\"\n    - \"chrEBV\"\n\n  # # Exclude contigs with low relative coverage\n  # perchrom_fraction_cutoff: 0.001\n\
+        \n  # # Show debug logs for excluded contigs\n  # show_excluded_debug_logs: False\nEOF\n\n# Run MultiQC with the custom config file\nmultiqc \\\n/mnt/input/ \\\n-f \\\n-x \"rna\" \\\n-o /mnt/output/\
+        \ \\\n-c /tmp/multiqc_config.yaml\n\n# Remove the temporary config file\nrm /tmp/multiqc_config.yaml\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-dir
+      - mountPath: /mnt/output/
+        name: output-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-dir}}'
+        type: Directory
+      name: input-dir
+    - hostPath:
+        path: '{{inputs.parameters.output-dir}}/'
+        type: DirectoryOrCreate
+      name: output-dir

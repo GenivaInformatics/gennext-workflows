@@ -1,0 +1,441 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: load-and-prepare
+  namespace: argo
+spec:
+  entrypoint: load-and-prepare
+  serviceAccountName: gennext-workflows
+  templates:
+  - container:
+      args:
+      - project
+      - --sample-uuid={{inputs.parameters.sample-uuid}}
+      - --run-id={{inputs.parameters.run-id}}
+      - --input-dir={{inputs.parameters.input-rel-dir}}
+      image: bergun/gennext-load-and-prepare:0.6.0
+      volumeMounts:
+      - mountPath: '{{inputs.parameters.input-rel-dir}}'
+        name: input-dir
+        readOnly: true
+    inputs:
+      parameters:
+      - name: sample-uuid
+      - name: run-id
+      - name: input-rel-dir
+    name: project-sample-run-data
+    outputs:
+      parameters:
+      - name: sample-run-data
+        valueFrom:
+          path: /tmp/sample_run_data.json
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-rel-dir}}'
+        type: Directory
+      name: input-dir
+  - container:
+      args:
+      - sample
+      - --sample-uuid={{inputs.parameters.sample-uuid}}
+      - --run-id={{inputs.parameters.run-id}}
+      - --input-dir={{inputs.parameters.input-rel-dir}}
+      - --output-dir={{inputs.parameters.output-rel-dir}}
+      - --temp-dir={{inputs.parameters.temp-rel-dir}}
+      - --scratch-dir={{inputs.parameters.scratch-rel-dir}}
+      - --ref-base-dir={{inputs.parameters.ref-base-dir}}
+      - --configmap-dir=/mnt/configmap
+      - --host-prefix=/host
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: bergun/gennext-load-and-prepare:0.6.0
+      volumeMounts:
+      - mountPath: '{{inputs.parameters.input-rel-dir}}'
+        name: input-dir
+        readOnly: true
+      - mountPath: '{{inputs.parameters.scratch-rel-dir}}'
+        name: scratch-dir
+      - mountPath: '{{inputs.parameters.ref-base-dir}}'
+        name: ref-dir
+        readOnly: true
+      - mountPath: /mnt/configmap
+        name: configmap
+        readOnly: true
+      - mountPath: /host
+        name: host-root
+        readOnly: true
+    inputs:
+      parameters:
+      - name: sample-uuid
+      - name: run-id
+      - name: input-rel-dir
+      - name: output-rel-dir
+      - name: temp-rel-dir
+      - name: scratch-rel-dir
+      - name: ref-base-dir
+    name: load-and-prepare
+    outputs:
+      parameters:
+      - name: sample-run-data
+        valueFrom:
+          path: /tmp/sample_run_data.json
+      - name: sample-id
+        valueFrom:
+          path: /tmp/sample_id.txt
+      - name: dna-file-type
+        valueFrom:
+          path: /tmp/dna_file_type.txt
+      - name: rna-file-type
+        valueFrom:
+          path: /tmp/rna_file_type.txt
+      - name: dna-input-files
+        valueFrom:
+          path: /tmp/dna_input_files.json
+      - name: rna-input-files
+        valueFrom:
+          path: /tmp/rna_input_files.json
+      - name: tumor-type
+        valueFrom:
+          path: /tmp/tumor_type.txt
+      - name: ref-version
+        valueFrom:
+          path: /tmp/ref_version.txt
+      - name: ref-paths
+        valueFrom:
+          path: /tmp/ref_paths.json
+      - name: sample-input-dir
+        valueFrom:
+          path: /tmp/SAMPLE_INPUT_DIR
+      - name: sample-output-dir
+        valueFrom:
+          path: /tmp/SAMPLE_OUTPUT_DIR
+      - name: sample-temp-dir
+        valueFrom:
+          path: /tmp/SAMPLE_TEMP_DIR
+      - name: sample-scratch-dir
+        valueFrom:
+          path: /tmp/SAMPLE_SCRATCH_DIR
+      - name: has-post-processing
+        valueFrom:
+          path: /tmp/has_post_processing.txt
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-rel-dir}}'
+        type: Directory
+      name: input-dir
+    - hostPath:
+        path: '{{inputs.parameters.scratch-rel-dir}}'
+        type: DirectoryOrCreate
+      name: scratch-dir
+    - hostPath:
+        path: '{{inputs.parameters.ref-base-dir}}'
+        type: Directory
+      name: ref-dir
+    - configMap:
+        name: gennext-references
+      name: configmap
+    - hostPath:
+        path: /
+        type: Directory
+      name: host-root
+  - container:
+      args:
+      - sample
+      - --sample-uuid={{inputs.parameters.sample-uuid}}
+      - --run-id={{inputs.parameters.run-id}}
+      - --input-dir={{inputs.parameters.input-rel-dir}}
+      - --output-dir={{inputs.parameters.output-rel-dir}}
+      - --temp-dir={{inputs.parameters.temp-rel-dir}}
+      - --scratch-dir={{inputs.parameters.scratch-rel-dir}}
+      - --ref-base-dir={{inputs.parameters.ref-base-dir}}
+      - --configmap-dir=/mnt/configmap
+      - --mode=dna
+      - --host-prefix=/host
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: bergun/gennext-load-and-prepare:0.6.0
+      volumeMounts:
+      - mountPath: '{{inputs.parameters.input-rel-dir}}'
+        name: input-dir
+        readOnly: true
+      - mountPath: '{{inputs.parameters.scratch-rel-dir}}'
+        name: scratch-dir
+      - mountPath: '{{inputs.parameters.ref-base-dir}}'
+        name: ref-dir
+        readOnly: true
+      - mountPath: /mnt/configmap
+        name: configmap
+        readOnly: true
+      - mountPath: /host
+        name: host-root
+        readOnly: true
+    inputs:
+      parameters:
+      - name: sample-uuid
+      - name: run-id
+      - name: input-rel-dir
+      - name: output-rel-dir
+      - name: temp-rel-dir
+      - name: scratch-rel-dir
+      - name: ref-base-dir
+    name: load-and-prepare-dna
+    outputs:
+      parameters:
+      - name: sample-run-data
+        valueFrom:
+          path: /tmp/sample_run_data.json
+      - name: sample-id
+        valueFrom:
+          path: /tmp/sample_id.txt
+      - name: dna-file-type
+        valueFrom:
+          path: /tmp/dna_file_type.txt
+      - name: dna-input-files
+        valueFrom:
+          path: /tmp/dna_input_files.json
+      - name: tumor-type
+        valueFrom:
+          path: /tmp/tumor_type.txt
+      - name: ref-version
+        valueFrom:
+          path: /tmp/ref_version.txt
+      - name: ref-paths
+        valueFrom:
+          path: /tmp/ref_paths.json
+      - name: sample-input-dir
+        valueFrom:
+          path: /tmp/SAMPLE_INPUT_DIR
+      - name: sample-output-dir
+        valueFrom:
+          path: /tmp/SAMPLE_OUTPUT_DIR
+      - name: sample-temp-dir
+        valueFrom:
+          path: /tmp/SAMPLE_TEMP_DIR
+      - name: sample-scratch-dir
+        valueFrom:
+          path: /tmp/SAMPLE_SCRATCH_DIR
+      - name: has-post-processing
+        valueFrom:
+          path: /tmp/has_post_processing.txt
+      - name: run-hrd
+        valueFrom:
+          default: 'false'
+          path: /tmp/run_hrd.txt
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-rel-dir}}'
+        type: Directory
+      name: input-dir
+    - hostPath:
+        path: '{{inputs.parameters.scratch-rel-dir}}'
+        type: DirectoryOrCreate
+      name: scratch-dir
+    - hostPath:
+        path: '{{inputs.parameters.ref-base-dir}}'
+        type: Directory
+      name: ref-dir
+    - configMap:
+        name: gennext-references
+      name: configmap
+    - hostPath:
+        path: /
+        type: Directory
+      name: host-root
+  - container:
+      args:
+      - sample
+      - --sample-uuid={{inputs.parameters.sample-uuid}}
+      - --run-id={{inputs.parameters.run-id}}
+      - --input-dir={{inputs.parameters.input-rel-dir}}
+      - --output-dir={{inputs.parameters.output-rel-dir}}
+      - --temp-dir={{inputs.parameters.temp-rel-dir}}
+      - --scratch-dir={{inputs.parameters.scratch-rel-dir}}
+      - --ref-base-dir={{inputs.parameters.ref-base-dir}}
+      - --configmap-dir=/mnt/configmap
+      - --mode=rna
+      - --host-prefix=/host
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: bergun/gennext-load-and-prepare:0.6.0
+      volumeMounts:
+      - mountPath: '{{inputs.parameters.input-rel-dir}}'
+        name: input-dir
+        readOnly: true
+      - mountPath: '{{inputs.parameters.scratch-rel-dir}}'
+        name: scratch-dir
+      - mountPath: '{{inputs.parameters.ref-base-dir}}'
+        name: ref-dir
+        readOnly: true
+      - mountPath: /mnt/configmap
+        name: configmap
+        readOnly: true
+      - mountPath: /host
+        name: host-root
+        readOnly: true
+    inputs:
+      parameters:
+      - name: sample-uuid
+      - name: run-id
+      - name: input-rel-dir
+      - name: output-rel-dir
+      - name: temp-rel-dir
+      - name: scratch-rel-dir
+      - name: ref-base-dir
+    name: load-and-prepare-rna
+    outputs:
+      parameters:
+      - name: sample-run-data
+        valueFrom:
+          path: /tmp/sample_run_data.json
+      - name: sample-id
+        valueFrom:
+          path: /tmp/sample_id.txt
+      - name: rna-file-type
+        valueFrom:
+          path: /tmp/rna_file_type.txt
+      - name: rna-input-files
+        valueFrom:
+          path: /tmp/rna_input_files.json
+      - name: tumor-type
+        valueFrom:
+          path: /tmp/tumor_type.txt
+      - name: ref-version
+        valueFrom:
+          path: /tmp/ref_version.txt
+      - name: ref-paths
+        valueFrom:
+          path: /tmp/ref_paths.json
+      - name: sample-input-dir
+        valueFrom:
+          path: /tmp/SAMPLE_INPUT_DIR
+      - name: sample-output-dir
+        valueFrom:
+          path: /tmp/SAMPLE_OUTPUT_DIR
+      - name: sample-temp-dir
+        valueFrom:
+          path: /tmp/SAMPLE_TEMP_DIR
+      - name: sample-scratch-dir
+        valueFrom:
+          path: /tmp/SAMPLE_SCRATCH_DIR
+      - name: has-post-processing
+        valueFrom:
+          path: /tmp/has_post_processing.txt
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-rel-dir}}'
+        type: Directory
+      name: input-dir
+    - hostPath:
+        path: '{{inputs.parameters.scratch-rel-dir}}'
+        type: DirectoryOrCreate
+      name: scratch-dir
+    - hostPath:
+        path: '{{inputs.parameters.ref-base-dir}}'
+        type: Directory
+      name: ref-dir
+    - configMap:
+        name: gennext-references
+      name: configmap
+    - hostPath:
+        path: /
+        type: Directory
+      name: host-root
+  - container:
+      args:
+      - batch
+      - --run-id={{inputs.parameters.run-id}}
+      - --sample-uuids={{inputs.parameters.sample-uuids}}
+      - --enrichment-kit={{inputs.parameters.enrichment-kit}}
+      - --output-base-dir={{inputs.parameters.output-base-dir}}
+      - --scratch-base-dir={{inputs.parameters.scratch-base-dir}}
+      - --ref-base-dir={{inputs.parameters.ref-base-dir}}
+      - --thread-count={{inputs.parameters.thread-count}}
+      - --user-id={{inputs.parameters.user-id}}
+      - --post-process-steps={{inputs.parameters.post-process-steps}}
+      - --configmap-dir={{inputs.parameters.configmap-dir}}
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: bergun/gennext-load-and-prepare:0.6.1-cnv-mane-20261005
+      volumeMounts:
+      - mountPath: '{{inputs.parameters.ref-base-dir}}'
+        name: ref-dir
+        readOnly: true
+      - mountPath: /mnt/configmap
+        name: configmap
+        readOnly: true
+      - mountPath: '{{inputs.parameters.scratch-base-dir}}'
+        name: scratch-dir
+      - mountPath: '{{inputs.parameters.output-base-dir}}'
+        name: output-dir
+    inputs:
+      parameters:
+      - name: run-id
+      - name: sample-uuids
+      - name: enrichment-kit
+      - name: output-base-dir
+      - name: scratch-base-dir
+      - name: ref-base-dir
+      - name: thread-count
+      - name: user-id
+      - name: post-process-steps
+      - default: /mnt/configmap
+        name: configmap-dir
+    name: batch-load-and-prepare
+    outputs:
+      parameters:
+      - name: sample-list
+        valueFrom:
+          path: /tmp/sample_list.json
+      - name: ref-genome
+        valueFrom:
+          path: /tmp/ref_genome.txt
+      - name: ref-flat
+        valueFrom:
+          path: /tmp/ref_flat.txt
+      - name: regions-file
+        valueFrom:
+          path: /tmp/regions_file.txt
+      - name: scratch-cnv-dir
+        valueFrom:
+          path: /tmp/scratch_cnv_dir.txt
+      - name: thread-count
+        valueFrom:
+          path: /tmp/thread_count.txt
+      - name: user-id
+        valueFrom:
+          path: /tmp/user_id.txt
+      - name: run-hrd
+        valueFrom:
+          path: /tmp/run_hrd.txt
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.ref-base-dir}}'
+        type: Directory
+      name: ref-dir
+    - configMap:
+        name: gennext-references
+      name: configmap
+    - hostPath:
+        path: '{{inputs.parameters.scratch-base-dir}}'
+        type: DirectoryOrCreate
+      name: scratch-dir
+    - hostPath:
+        path: '{{inputs.parameters.output-base-dir}}'
+        type: Directory
+      name: output-dir

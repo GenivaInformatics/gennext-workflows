@@ -1,0 +1,77 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: star-fusion-from-junction-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: chimeric-junction-file
+      - name: ctat-genome-lib-build-dir
+      - name: output-fusions-tsv
+      - name: scratch-dir
+      - name: thread-count
+      - default: full_Monty
+        name: sensitivity
+    name: star-fusion-from-junction
+    outputs:
+      parameters:
+      - name: output-fusions-tsv
+        value: '{{inputs.parameters.output-fusions-tsv}}'
+    script:
+      command:
+      - sh
+      image: quay.io/biocontainers/star-fusion:1.15.1--hdfd78af_1
+      name: star-fusion-from-junction
+      resources:
+        requests:
+          cpu: '4'
+          memory: 16Gi
+      source: "set -euo pipefail\n\nSENSITIVITY=\"{{inputs.parameters.sensitivity}}\"\nJUNCTION_IN=\"/mnt/input/junction/{{=sprig.osBase(inputs.parameters['chimeric-junction-file'])}}\"\nFUSION_OUT_FILE=\"\
+        /mnt/output/fusions/{{=sprig.osBase(inputs.parameters['output-fusions-tsv'])}}\"\n\nrm -rf /mnt/scratch/*\n\nEMPTY_FUSION_HEADER=\"#FusionName\\tJunctionReadCount\\tSpanningFragCount\\test_J\\test_S\\\
+        tSpliceType\\tLeftGene\\tLeftBreakpoint\\tRightGene\\tRightBreakpoint\\tJunctionReads\\tSpanningFrags\\tLargeAnchorSupport\\tFFPM\\tLeftBreakDinuc\\tLeftBreakEntropy\\tRightBreakDinuc\\tRightBreakEntropy\\\
+        tannots\"\n\n# Defense-in-depth: STAR-Fusion computes its FFPM denominator\n# by tail-reading the `# Nreads N\\tNreadsUnique N\\tNreadsMulti N`\n# footer that --chimOutJunctionFormat 1 appends.\
+        \ A junction\n# missing that footer (0-byte file, or a malformed/truncated\n# one) makes STAR-Fusion confess \"doesn't have expected\n# formatting\" and exit 255, failing the whole sample. A\n#\
+        \ degenerate library with zero surviving reads is a valid\n# outcome, not a pipeline error \u2014 so if the footer is absent\n# we emit the empty (header-only) fusion file and succeed.\n# The upstream\
+        \ filter (filter-chimeric-junction-by-bam) is\n# fixed to always preserve this footer; this guard also covers\n# junctions arriving from any other source.\n# NB: busybox grep (this biocontainer)\
+        \ does NOT expand \\t in\n# the pattern, so we match on the `# Nreads <int>` prefix only\n# \u2014 sufficient to confirm STAR-Fusion's tail-parseable footer\n# is present.\nif ! tail -n1 \"${JUNCTION_IN}\"\
+        \ | grep -qE '^# Nreads [0-9]'; then\n  echo \"WARNING: ${JUNCTION_IN} has no valid '# Nreads' footer (empty or malformed junction); emitting empty fusion output.\"\n  echo -e \"${EMPTY_FUSION_HEADER}\"\
+        \ > \"${FUSION_OUT_FILE}\"\n  echo \"STAR-Fusion kickstart completed (no chimeric evidence)\"\n  exit 0\nfi\n\n# Sensitivity flag set mirrors tasks/base_tasks/star-fusion.yaml.\n# NOTE: --skip_EM\
+        \ intentionally NOT included. The EM step\n# populates est_J / est_S, which the bundled\n# incorporate_FFPM_into_final_report.pl uses verbatim to\n# compute FFPM (= (est_J + est_S) * 1e6 / num_frags).\
+        \ With\n# --skip_EM, est_J/est_S are 'NA' \u2192 Perl coerces to 0 \u2192\n# every row reports FFPM=0. We need real FFPM for the\n# frontend's FFPM-based filtering, so we pay the EM cost.\nSENSITIVITY_ARGS=\"\
+        \"\ncase \"${SENSITIVITY}\" in\n  full_Monty)\n    SENSITIVITY_ARGS=\"--min_junction_reads 0 --min_sum_frags 1 --require_LDAS 0 --min_spanning_frags_only 1 --min_novel_junction_support 1 --no_single_fusion_per_breakpoint\
+        \ --max_promiscuity 1000000 --min_pct_dom_promiscuity 1 --min_alt_pct_junction 1e-3 --no_annotation_filter --no_RT_artifact_filter --min_FFPM 0\"\n    ;;\n  max_sensitivity)\n    SENSITIVITY_ARGS=\"\
+        --min_junction_reads 0 --min_sum_frags 1 --require_LDAS 0 --min_spanning_frags_only 1 --min_novel_junction_support 1 --no_single_fusion_per_breakpoint --min_FFPM 0\"\n    ;;\n  default)\n    ;;\n\
+        \  *)\n    echo \"ERROR: Unknown sensitivity mode: ${SENSITIVITY}\"\n    exit 1\n    ;;\nesac\n\necho \"Running STAR-Fusion kickstart from ${JUNCTION_IN} (sensitivity: ${SENSITIVITY})\"\n# STAR-Fusion\
+        \ 1.15.1 doesn't have --no_FusionInspector; FI is opt-in\n# via --FusionInspector inspect, so we just don't pass it.\n/usr/local/lib/STAR-Fusion/STAR-Fusion \\\n  --genome_lib_dir /mnt/ref/ctat-lib/\
+        \ \\\n  --chimeric_junction \"${JUNCTION_IN}\" \\\n  --output_dir /mnt/scratch/ \\\n  --CPU {{inputs.parameters.thread-count}} \\\n  $SENSITIVITY_ARGS\n\nif [ -f \"/mnt/scratch/star-fusion.fusion_predictions.tsv\"\
+        \ ]; then\n  mv /mnt/scratch/star-fusion.fusion_predictions.tsv \"${FUSION_OUT_FILE}\"\nelse\n  echo -e \"${EMPTY_FUSION_HEADER}\" > \"${FUSION_OUT_FILE}\"\n  echo \"Created empty fusion file with\
+        \ header at ${FUSION_OUT_FILE}\"\nfi\n\necho \"STAR-Fusion kickstart completed\"\n"
+      volumeMounts:
+      - mountPath: /mnt/input/junction/{{=sprig.osBase(inputs.parameters['chimeric-junction-file'])}}
+        name: chimeric-junction-file
+      - mountPath: /mnt/ref/ctat-lib/
+        name: ctat-genome-lib-build-dir
+      - mountPath: /mnt/output/fusions/
+        name: output-fusions-tsv
+      - mountPath: /mnt/scratch/
+        name: scratch-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.chimeric-junction-file}}'
+        type: File
+      name: chimeric-junction-file
+    - hostPath:
+        path: '{{inputs.parameters.ctat-genome-lib-build-dir}}'
+        type: Directory
+      name: ctat-genome-lib-build-dir
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-fusions-tsv''])}}'
+        type: DirectoryOrCreate
+      name: output-fusions-tsv
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''scratch-dir''])}}'
+        type: DirectoryOrCreate
+      name: scratch-dir

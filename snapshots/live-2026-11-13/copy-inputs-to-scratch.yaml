@@ -1,0 +1,365 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: copy-inputs-to-scratch
+  namespace: argo
+spec:
+  entrypoint: copy-inputs-to-scratch
+  serviceAccountName: gennext-workflows
+  templates:
+  - inputs:
+      parameters:
+      - name: bam
+      - name: input-rel-dir
+      - name: scratch-rel-dir
+    name: copy-bam-to-scratch-path-aware
+    outputs:
+      parameters:
+      - name: bam
+        valueFrom:
+          path: '{{steps.copy-bam-to-scratch.outputs.parameters.bam}}'
+    steps:
+    - - name: check-
+  - inputs:
+      parameters:
+      - name: run-data
+      - name: input-rel-dir
+      - name: scratch-rel-dir
+    name: copy-inputs-to-scratch
+    outputs:
+      parameters:
+      - name: fq-r1
+        valueFrom:
+          parameter: '{{steps.copy-fastq-to-scratch.outputs.parameters.fq-r1}}'
+      - name: fq-r2
+        valueFrom:
+          parameter: '{{steps.copy-fastq-to-scratch.outputs.parameters.fq-r2}}'
+      - name: regions-file
+        valueFrom:
+          parameter: '{{steps.copy-regions-file-to-scratch.outputs.parameters.regions-file}}'
+    steps:
+    - - arguments:
+          parameters:
+          - name: fq-r1
+            value: '{{=jsonpath(inputs.parameters[''run-data''], ''$.samples[0].files.fqR1.name'')}}'
+          - name: fq-r2
+            value: '{{=jsonpath(inputs.parameters[''run-data''], ''$.samples[0].files.fqR2.name'')}}'
+          - name: input-rel-dir
+            value: '{{inputs.parameters.input-rel-dir}}'
+          - name: scratch-rel-dir
+            value: '{{inputs.parameters.scratch-rel-dir}}'
+        name: copy-fastq-to-scratch
+        template: copy-fastq-to-scratch
+    - - arguments:
+          parameters:
+          - name: fq-r1
+            value: '{{=jsonpath(inputs.parameters[''run-data''], ''$.samples[0].files.fqR1RNA.name'')}}'
+          - name: fq-r2
+            value: '{{=jsonpath(inputs.parameters[''run-data''], ''$.samples[0].files.fqR2RNA.name'')}}'
+          - name: input-rel-dir
+            value: '{{inputs.parameters.input-rel-dir}}'
+          - name: scratch-rel-dir
+            value: '{{inputs.parameters.scratch-rel-dir}}'
+        name: copy-fastq-rna-to-scratch
+        template: copy-fastq-to-scratch
+    - - arguments:
+          parameters:
+          - name: regions-file
+            value: '{{=jsonpath(inputs.parameters[''run-data''], ''$.samples[0].files.regionsFile.name'')}}'
+          - name: input-rel-dir
+            value: '{{inputs.parameters.input-rel-dir}}'
+          - name: scratch-rel-dir
+            value: '{{inputs.parameters.scratch-rel-dir}}'
+        name: copy-regions-file-to-scratch
+        template: copy-regions-file-to-scratch
+  - inputs:
+      parameters:
+      - name: fq-r1
+      - name: fq-r2
+      - name: input-rel-dir
+      - name: scratch-rel-dir
+    name: copy-fastq-to-scratch
+    outputs:
+      parameters:
+      - name: fq-r1
+        valueFrom:
+          path: /tmp/fq-r1-output.txt
+      - name: fq-r2
+        valueFrom:
+          path: /tmp/fq-r2-output.txt
+    script:
+      command:
+      - sh
+      image: alpine:latest
+      source: "#!/bin/sh\nset -eu\n\n# Function to sanitize filenames\nsanitize_filename() {\n  # Replace spaces with underscores and remove other problematic characters\n  echo \"$1\" | sed 's/ /_/g' |\
+        \ sed 's/[^a-zA-Z0-9_.-]/_/g'\n}\n\nFQ_R1=\"{{inputs.parameters.fq-r1}}\"\nFQ_R2=\"{{inputs.parameters.fq-r2}}\"\n\nSANITIZED_R1=$(sanitize_filename \"$(basename \"$FQ_R1\")\")\nSANITIZED_R2=$(sanitize_filename\
+        \ \"$(basename \"$FQ_R2\")\")\n\ncp \"/mnt/input/$FQ_R1\" \"/mnt/scratch/$SANITIZED_R1\"\ncp \"/mnt/input/$FQ_R2\" \"/mnt/scratch/$SANITIZED_R2\"\n\necho \"{{inputs.parameters.scratch-rel-dir}}$SANITIZED_R1\"\
+        \ > /tmp/fq-r1-output.txt\necho \"{{inputs.parameters.scratch-rel-dir}}$SANITIZED_R2\" > /tmp/fq-r2-output.txt\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-rel-dir
+      - mountPath: /mnt/scratch/
+        name: scratch-rel-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-rel-dir}}'
+        type: Directory
+      name: input-rel-dir
+    - hostPath:
+        path: '{{inputs.parameters.scratch-rel-dir}}'
+        type: DirectoryOrCreate
+      name: scratch-rel-dir
+  - inputs:
+      parameters:
+      - name: vcf
+      - name: input-rel-dir
+      - name: scratch-rel-dir
+    name: copy-vcf-to-scratch
+    outputs:
+      parameters:
+      - name: vcf
+        value: '{{inputs.parameters.scratch-rel-dir}}{{inputs.parameters.vcf}}'
+    script:
+      command:
+      - sh
+      image: alpine:latest
+      source: '#!/bin/sh
+
+        cp "/mnt/input/{{inputs.parameters.vcf}}" /mnt/scratch/
+
+        '
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-rel-dir
+      - mountPath: /mnt/scratch/
+        name: scratch-rel-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-rel-dir}}'
+        type: Directory
+      name: input-rel-dir
+    - hostPath:
+        path: '{{inputs.parameters.scratch-rel-dir}}'
+        type: DirectoryOrCreate
+      name: scratch-rel-dir
+  - inputs:
+      parameters:
+      - name: sample-id
+      - name: vcf
+      - name: input-rel-dir
+      - name: output-rel-dir
+    name: copy-vcf-to-output
+    outputs:
+      parameters:
+      - name: vcf
+        value: '{{inputs.parameters.output-rel-dir}}{{inputs.parameters.sample-id}}_dv.vcf.gz'
+    script:
+      command:
+      - sh
+      image: quay.io/biocontainers/tabix:0.2.6--ha92aebf_0
+      source: "#!/bin/sh\nFILE=\"{{inputs.parameters.vcf}}\"\nNEW_FILE=\"{{inputs.parameters.sample-id}}_dv.vcf.gz\"\nif [ \"$(head -c 2 \"/mnt/input/$FILE\" | xxd -p)\" != \"1f8b\" ]; then\n    bgzip -c\
+        \ \"/mnt/input/$FILE\" > \"/mnt/output/$NEW_FILE\"\nelse\n    cp \"/mnt/input/$FILE\" /mnt/output/$NEW_FILE\n    echo \"FILE is already gzipped.\"\nfi\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-rel-dir
+      - mountPath: /mnt/output/
+        name: output-rel-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-rel-dir}}'
+        type: Directory
+      name: input-rel-dir
+    - hostPath:
+        path: '{{inputs.parameters.output-rel-dir}}'
+        type: DirectoryOrCreate
+      name: output-rel-dir
+  - inputs:
+      parameters:
+      - name: bam
+      - name: input-rel-dir
+      - name: scratch-rel-dir
+    name: copy-bam-to-scratch
+    outputs:
+      parameters:
+      - name: bam
+        value: '{{inputs.parameters.scratch-rel-dir}}{{inputs.parameters.bam}}'
+    script:
+      command:
+      - sh
+      image: alpine:latest
+      source: '#!/bin/sh
+
+        cp "/mnt/input/{{inputs.parameters.bam}}" /mnt/scratch/
+
+        '
+      volumeMounts:
+      - mountPath: /mnt/input
+        name: input-rel-dir
+      - mountPath: /mnt/scratch
+        name: scratch-rel-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-rel-dir}}'
+        type: Directory
+      name: input-rel-dir
+    - hostPath:
+        path: '{{inputs.parameters.scratch-rel-dir}}'
+        type: DirectoryOrCreate
+      name: scratch-rel-dir
+  - inputs:
+      parameters:
+      - name: provided-regions-file
+      - name: enrichment-kit-regions-file
+      - name: input-rel-dir
+      - name: scratch-rel-dir
+      - name: ref-regions-dir
+    name: copy-regions-file-to-scratch-v2
+    outputs:
+      parameters:
+      - name: regions-file
+        valueFrom:
+          path: /tmp/regions-file-output.txt
+    script:
+      command:
+      - sh
+      image: alpine:latest
+      source: "#!/bin/sh\n\n# Function to sanitize filenames\nsanitize_filename() {\n  # Replace spaces with underscores and remove other problematic characters\n  echo \"$1\" | sed 's/ /_/g' | sed 's/[^a-zA-Z0-9_.-]/_/g'\n\
+        }\n\nif [ -f \"/mnt/input/{{inputs.parameters.provided-regions-file}}\" ]; then\n  SOURCE_FILE=\"{{inputs.parameters.provided-regions-file}}\"\n  SANITIZED_FILENAME=$(sanitize_filename \"$(basename\
+        \ \"$SOURCE_FILE\")\")\n\n  # Copy with sanitized name\n  cp \"/mnt/input/$SOURCE_FILE\" \"/mnt/scratch/$SANITIZED_FILENAME\"\n  echo \"{{inputs.parameters.scratch-rel-dir}}/$SANITIZED_FILENAME\"\
+        \ > /tmp/regions-file-output.txt\n\nelse\n  SOURCE_FILE=\"{{inputs.parameters.enrichment-kit-regions-file}}\"\n  SANITIZED_FILENAME=$(sanitize_filename \"$(basename \"$SOURCE_FILE\")\")\n\n  # Copy\
+        \ with sanitized name\n  cp \"/mnt/ref/regions/$SOURCE_FILE\" \"/mnt/scratch/$SANITIZED_FILENAME\"\n  echo \"{{inputs.parameters.scratch-rel-dir}}/$SANITIZED_FILENAME\" > /tmp/regions-file-output.txt\n\
+        fi\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-rel-dir
+      - mountPath: /mnt/scratch/
+        name: scratch-rel-dir
+      - mountPath: /mnt/ref/regions/
+        name: ref-regions-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-rel-dir}}'
+        type: Directory
+      name: input-rel-dir
+    - hostPath:
+        path: '{{inputs.parameters.scratch-rel-dir}}'
+        type: DirectoryOrCreate
+      name: scratch-rel-dir
+    - hostPath:
+        path: '{{inputs.parameters.ref-regions-dir}}'
+        type: Directory
+      name: ref-regions-dir
+  - inputs:
+      parameters:
+      - name: provided-regions-file
+      - name: enrichment-kit-regions-file
+      - name: default-regions-file
+      - name: input-rel-dir
+      - name: scratch-rel-dir
+      - name: ref-regions-dir
+    name: copy-regions-file-to-scratch-v3
+    outputs:
+      parameters:
+      - name: regions-bed-f
+        valueFrom:
+          path: /tmp/regions-file-output.txt
+      - name: regions-file
+        valueFrom:
+          path: /tmp/regions-file-output.txt
+    script:
+      command:
+      - sh
+      image: alpine:latest
+      source: "#!/bin/sh\n\n# Function to sanitize filenames\nsanitize_filename() {\n  # Replace spaces with underscores and remove other problematic characters\n  echo \"$1\" | sed 's/ /_/g' | sed 's/[^a-zA-Z0-9_.-]/_/g'\n\
+        }\n\nif [ \"{{inputs.parameters.provided-regions-file}}\" != \".\" ] && [ -f \"/mnt/input/{{inputs.parameters.provided-regions-file}}\" ]; then\n  SOURCE_FILE=\"{{inputs.parameters.provided-regions-file}}\"\
+        \n  SANITIZED_FILENAME=$(sanitize_filename \"$(basename \"$SOURCE_FILE\")\")\n\n  # Copy with sanitized name\n  cp \"/mnt/input/$SOURCE_FILE\" \"/mnt/scratch/$SANITIZED_FILENAME\"\n  echo \"{{inputs.parameters.scratch-rel-dir}}/$SANITIZED_FILENAME\"\
+        \ > /tmp/regions-file-output.txt\n\nelif [ \"{{inputs.parameters.enrichment-kit-regions-file}}\" != \".\" ] && [ -f \"/mnt/ref/regions/{{inputs.parameters.enrichment-kit-regions-file}}\" ]; then\n\
+        \  SOURCE_FILE=\"{{inputs.parameters.enrichment-kit-regions-file}}\"\n  SANITIZED_FILENAME=$(sanitize_filename \"$(basename \"$SOURCE_FILE\")\")\n\n  # Copy with sanitized name\n  cp \"/mnt/ref/regions/$SOURCE_FILE\"\
+        \ \"/mnt/scratch/$SANITIZED_FILENAME\"\n  echo \"{{inputs.parameters.scratch-rel-dir}}/$SANITIZED_FILENAME\" > /tmp/regions-file-output.txt\n\nelse\n  SOURCE_FILE=\"{{=sprig.osBase(inputs.parameters['default-regions-file'])}}\"\
+        \n  SANITIZED_FILENAME=$(sanitize_filename \"$SOURCE_FILE\")\n\n  # Copy with sanitized name\n  cp \"/mnt/ref/regions/$SOURCE_FILE\" \"/mnt/scratch/$SANITIZED_FILENAME\"\n  echo \"{{inputs.parameters.scratch-rel-dir}}/$SANITIZED_FILENAME\"\
+        \ > /tmp/regions-file-output.txt\nfi\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-rel-dir
+      - mountPath: /mnt/scratch/
+        name: scratch-rel-dir
+      - mountPath: /mnt/ref/regions/
+        name: ref-regions-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-rel-dir}}'
+        type: Directory
+      name: input-rel-dir
+    - hostPath:
+        path: '{{inputs.parameters.scratch-rel-dir}}'
+        type: DirectoryOrCreate
+      name: scratch-rel-dir
+    - hostPath:
+        path: '{{inputs.parameters.ref-regions-dir}}'
+        type: Directory
+      name: ref-regions-dir
+  - inputs:
+      parameters:
+      - name: regions-file
+      - name: input-rel-dir
+      - name: scratch-rel-dir
+    name: copy-regions-file-to-scratch
+    outputs:
+      parameters:
+      - name: regions-file
+        valueFrom:
+          path: /tmp/regions-file-output.txt
+    script:
+      command:
+      - sh
+      image: alpine:latest
+      source: "#!/bin/sh\nif [ -f \"/mnt/input/{{inputs.parameters.regions-file}}\" ]; then\n  cp \"/mnt/input/{{inputs.parameters.regions-file}}\" /mnt/scratch/\n  echo \"{{inputs.parameters.scratch-rel-dir}}/{{inputs.parameters.regions-file}}\"\
+        \ > /tmp/regions-file-output.txt\nelse\n  echo \".\" > /tmp/regions-file-output.txt\nfi\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-rel-dir
+      - mountPath: /mnt/scratch/
+        name: scratch-rel-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-rel-dir}}'
+        type: Directory
+      name: input-rel-dir
+    - hostPath:
+        path: '{{inputs.parameters.scratch-rel-dir}}'
+        type: DirectoryOrCreate
+      name: scratch-rel-dir
+  - inputs:
+      parameters:
+      - name: genotype-file
+      - name: input-rel-dir
+      - name: scratch-rel-dir
+    name: copy-genotype-file-to-scratch
+    outputs:
+      parameters:
+      - name: genotype-file
+        valueFrom:
+          path: /tmp/genotype-file-output.txt
+    script:
+      command:
+      - sh
+      image: alpine:latest
+      source: "#!/bin/sh\nif [ -f \"/mnt/input/{{inputs.parameters.genotype-file}}\" ]; then\n  input_file=\"/mnt/input/{{inputs.parameters.genotype-file}}\"\n  filename=\"{{=sprig.osBase(inputs.parameters['genotype-file'])}}\"\
+        \n\n  # Test if the file is already gzip-compressed\n  if gzip -t \"$input_file\" 2>/dev/null; then\n    # File is already compressed, just copy it\n    cp \"$input_file\" \"/mnt/scratch/${filename}\"\
+        \n    echo \"{{inputs.parameters.scratch-rel-dir}}/${filename}\" > /tmp/genotype-file-output.txt\n  else\n    # File is not compressed, compress it while copying\n    output_filename=\"${filename}.gz\"\
+        \n    cat \"$input_file\" | gzip -c > \"/mnt/scratch/${output_filename}\"\n    echo \"{{inputs.parameters.scratch-rel-dir}}/${output_filename}\" > /tmp/genotype-file-output.txt\n  fi\nelse\n  echo\
+        \ \".\" > /tmp/genotype-file-output.txt\nfi\n"
+      volumeMounts:
+      - mountPath: /mnt/input/
+        name: input-rel-dir
+      - mountPath: /mnt/scratch/
+        name: scratch-rel-dir
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.input-rel-dir}}'
+        type: Directory
+      name: input-rel-dir
+    - hostPath:
+        path: '{{inputs.parameters.scratch-rel-dir}}'
+        type: DirectoryOrCreate
+      name: scratch-rel-dir

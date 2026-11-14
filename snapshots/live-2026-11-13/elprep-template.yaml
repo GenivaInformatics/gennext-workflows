@@ -1,0 +1,216 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: elprep-template
+  namespace: argo
+spec:
+  templates:
+  - inputs:
+      parameters:
+      - name: sample-name
+      - name: genome-ref
+      - default: .
+        name: regions-file
+      - name: dbsnp-elsites-f
+      - name: input-bam
+      - name: output-bam
+      - name: metrics-dir
+      - name: scratch-dir
+      - name: thread-count
+    name: elprep
+    outputs:
+      parameters:
+      - name: output-bam
+        value: '{{inputs.parameters.output-bam}}'
+      - name: bqsr-metrics
+        value: '{{inputs.parameters.metrics-dir}}/{{inputs.parameters.sample-name}}.bqsr.metrics'
+      - name: dupes-metrics
+        value: '{{inputs.parameters.metrics-dir}}/{{inputs.parameters.sample-name}}.dupes.metrics'
+    script:
+      command:
+      - sh
+      image: dceoy/elprep:latest
+      name: elprep-script
+      source: '
+
+        regionsFile="{{=sprig.osBase(inputs.parameters[''regions-file''])}}";
+
+
+        options=()
+
+        if [ ! "." = "$regionsFile" ]; then options+=("--target-regions /mnt/input/regions/$regionsFile"); fi
+
+
+        elprep sfm /mnt/input/{{=sprig.osBase(inputs.parameters[''input-bam''])}} \
+
+        /mnt/output/{{=sprig.osBase(inputs.parameters[''output-bam''])}} \
+
+        --nr-of-threads {{inputs.parameters.thread-count}} \
+
+        --sorting-order coordinate \
+
+        --mark-duplicates --mark-optical-duplicates /mnt/output/metrics/{{inputs.parameters.sample-name}}.dupes.metrics \
+
+        --bqsr /mnt/output/metrics/{{inputs.parameters.sample-name}}.bqsr.metrics \
+
+        --known-sites /mnt/known-sites/{{=sprig.osBase(inputs.parameters[''dbsnp-elsites-f''])}} \
+
+        --reference /mnt/ref/{{=sprig.osBase(inputs.parameters[''genome-ref''])}}.elfasta \
+
+        ${options[@]} \
+
+        --tmp-path /mnt/scratch/ \
+
+        --log-path /mnt/scratch/
+
+        '
+      volumeMounts:
+      - mountPath: /mnt/scratch/
+        name: scratch-dir
+      - mountPath: /mnt/input/
+        name: input-bam
+      - mountPath: /mnt/output/
+        name: output-bam
+      - mountPath: /mnt/output/metrics/
+        name: metrics-dir
+      - mountPath: /mnt/known-sites/{{=sprig.osBase(inputs.parameters['dbsnp-elsites-f'])}}
+        name: dbsnp-elsites-f
+      - mountPath: /mnt/ref/
+        name: genome-ref-dir
+      - mountPath: /mnt/input/regions/
+        name: regions-file
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-bam''])}}'
+        type: Directory
+      name: input-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-bam''])}}'
+        type: DirectoryOrCreate
+      name: output-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''metrics-dir''])}}'
+        type: DirectoryOrCreate
+      name: metrics-dir
+    - hostPath:
+        path: '{{inputs.parameters.dbsnp-elsites-f}}'
+        type: File
+      name: dbsnp-elsites-f
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''regions-file''])}}'
+        type: Directory
+      name: regions-file
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''genome-ref''])}}'
+        type: Directory
+      name: genome-ref-dir
+    - hostPath:
+        path: '{{inputs.parameters.scratch-dir}}'
+        type: DirectoryOrCreate
+      name: scratch-dir
+  - inputs:
+      parameters:
+      - name: sample-name
+      - name: genome-ref
+      - default: .
+        name: regions-file
+      - name: dbsnp-elsites-f
+      - name: input-bam
+      - name: output-bam
+      - name: metrics-dir
+      - name: scratch-dir
+      - name: thread-count
+      - name: on-node
+    name: elprep-nodeSelector
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.on-node}}'
+    outputs:
+      parameters:
+      - name: output-bam
+        value: '{{inputs.parameters.output-bam}}'
+      - name: bqsr-metrics
+        value: '{{inputs.parameters.metrics-dir}}/{{inputs.parameters.sample-name}}.bqsr.metrics'
+      - name: dupes-metrics
+        value: '{{inputs.parameters.metrics-dir}}/{{inputs.parameters.sample-name}}.dupes.metrics'
+    script:
+      command:
+      - sh
+      image: dceoy/elprep:latest
+      name: elprep-script
+      source: '
+
+        regionsFile="{{=sprig.osBase(inputs.parameters[''regions-file''])}}";
+
+
+        options=()
+
+        if [ ! "." = "$regionsFile" ]; then options+=("--target-regions /mnt/input/regions/$regionsFile"); fi
+
+
+        elprep sfm /mnt/input/{{=sprig.osBase(inputs.parameters[''input-bam''])}} \
+
+        /mnt/output/{{=sprig.osBase(inputs.parameters[''output-bam''])}} \
+
+        --nr-of-threads {{inputs.parameters.thread-count}} \
+
+        --sorting-order coordinate \
+
+        --mark-duplicates --mark-optical-duplicates /mnt/output/metrics/{{inputs.parameters.sample-name}}.dupes.metrics \
+
+        --bqsr /mnt/output/metrics/{{inputs.parameters.sample-name}}.bqsr.metrics \
+
+        --known-sites /mnt/known-sites/{{=sprig.osBase(inputs.parameters[''dbsnp-elsites-f''])}} \
+
+        --reference /mnt/ref/{{=sprig.osBase(inputs.parameters[''genome-ref''])}}.elfasta \
+
+        ${options[@]} \
+
+        --tmp-path /mnt/scratch/ \
+
+        --log-path /mnt/scratch/
+
+        '
+      volumeMounts:
+      - mountPath: /mnt/scratch/
+        name: scratch-dir
+      - mountPath: /mnt/input/
+        name: input-bam
+      - mountPath: /mnt/output/
+        name: output-bam
+      - mountPath: /mnt/output/metrics/
+        name: metrics-dir
+      - mountPath: /mnt/known-sites/{{=sprig.osBase(inputs.parameters['dbsnp-elsites-f'])}}
+        name: dbsnp-elsites-f
+      - mountPath: /mnt/ref/
+        name: genome-ref-dir
+      - mountPath: /mnt/input/regions/
+        name: regions-file
+    volumes:
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''input-bam''])}}'
+        type: Directory
+      name: input-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''output-bam''])}}'
+        type: DirectoryOrCreate
+      name: output-bam
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''metrics-dir''])}}'
+        type: DirectoryOrCreate
+      name: metrics-dir
+    - hostPath:
+        path: '{{inputs.parameters.dbsnp-elsites-f}}'
+        type: File
+      name: dbsnp-elsites-f
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''regions-file''])}}'
+        type: Directory
+      name: regions-file
+    - hostPath:
+        path: '{{=sprig.osDir(inputs.parameters[''genome-ref''])}}'
+        type: Directory
+      name: genome-ref-dir
+    - hostPath:
+        path: '{{inputs.parameters.scratch-dir}}'
+        type: DirectoryOrCreate
+      name: scratch-dir

@@ -1,0 +1,54 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: gennext-plot
+  namespace: argo
+spec:
+  arguments:
+    parameters:
+    - name: run-id
+    - name: node-name
+    - name: temp-dir
+    - name: ref-dir
+    - name: bad-sample-cutoff
+      value: '10.5'
+  entrypoint: plot
+  templates:
+  - container:
+      args:
+      - /app/scripts/plot.R
+      - --run-id
+      - '{{inputs.parameters.run-id}}'
+      - --bad-sample-cutoff
+      - '{{inputs.parameters.bad-sample-cutoff}}'
+      - --output-dir
+      - /data/outputs
+      command:
+      - Rscript
+      image: bergun/gennext-minfi:0.1.2
+      volumeMounts:
+      - mountPath: /data/outputs
+        name: temp-dir
+      - mountPath: /data/ref
+        name: ref-dir
+        readOnly: true
+    inputs:
+      parameters:
+      - name: run-id
+      - name: node-name
+      - name: temp-dir
+      - name: ref-dir
+      - default: '10.5'
+        name: bad-sample-cutoff
+    name: plot
+    nodeSelector:
+      kubernetes.io/hostname: '{{inputs.parameters.node-name}}'
+    volumes:
+    - hostPath:
+        path: '{{inputs.parameters.temp-dir}}'
+        type: DirectoryOrCreate
+      name: temp-dir
+    - hostPath:
+        path: '{{inputs.parameters.ref-dir}}'
+        type: Directory
+      name: ref-dir

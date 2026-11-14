@@ -1,0 +1,130 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: post-process-variant-counter
+  namespace: argo
+  annotations:
+    gennext.bio/post-process-steps: variant-counter
+    gennext.bio/workflow-type: post-process
+spec:
+  arguments:
+    parameters:
+    - name: run-id
+    - name: user-id
+    - name: enrichment-kit
+    - name: node-name
+    - name: sample-uuids
+    - name: post-process-steps
+    - name: post-process-job-id
+    - name: processing-group-id
+  entrypoint: main
+  onExit: on-exit-handler
+  serviceAccountName: gennext-workflows
+  templates:
+  - dag:
+      tasks:
+      - arguments:
+          parameters:
+          - name: sample-uuids
+            value: '{{workflow.parameters.sample-uuids}}'
+          - name: run-id
+            value: '{{workflow.parameters.run-id}}'
+        name: count-variants
+        template: count-variants-dummy
+      - arguments:
+          parameters:
+          - name: run-id
+            value: '{{workflow.parameters.run-id}}'
+          - name: sample-uuids
+            value: '{{workflow.parameters.sample-uuids}}'
+          - name: enrichment-kit
+            value: '{{workflow.parameters.enrichment-kit}}'
+          - name: completed-steps
+            value: '{{workflow.parameters.post-process-steps}}'
+          - name: post-process-job-id
+            value: '{{workflow.parameters.post-process-job-id}}'
+        depends: count-variants
+        name: set-postprocess-completed
+        template: notify-postprocess-complete
+    name: main
+  - inputs:
+      parameters:
+      - name: sample-uuids
+      - name: run-id
+    name: count-variants-dummy
+    script:
+      command:
+      - sh
+      image: alpine:3.19
+      source: 'echo "Counting variants for run: {{inputs.parameters.run-id}}"
+
+        echo "Samples: {{inputs.parameters.sample-uuids}}"
+
+        echo "Simulating variant counting..."
+
+        sleep 5
+
+        echo "Variant counting complete"
+
+        '
+  - inputs:
+      parameters:
+      - name: run-id
+      - name: sample-uuids
+      - name: enrichment-kit
+      - name: completed-steps
+      - name: post-process-job-id
+    name: notify-postprocess-complete
+    script:
+      command:
+      - python
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: blairy/requests
+      source: "import os, json, requests\ntoken = os.environ[\"GENNEXT_CLUSTER_TOKEN\"]\naddr = \"gennext-backend.gennext-prod.svc.cluster.local:3030\"\n\n# Set affected samples back to completed\nsample_uuids\
+        \ = json.loads('{{inputs.parameters.sample-uuids}}')\nif not \"{{inputs.parameters.post-process-job-id}}\":\n    for uuid in sample_uuids:\n        url = f\"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/samples/{uuid}/state\"\
+        \n        res = requests.post(url, json={\"state\": \"completed\", \"token\": token})\n        if res.status_code != 200:\n            print(f\"Warning: failed to set completed for {uuid}: {res.text}\"\
+        )\n\n# Notify postprocess-complete\ncompleted_steps = json.loads('{{inputs.parameters.completed-steps}}')\nurl = f\"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/postprocess-complete\"\n\
+        res = requests.post(url, json={\n    \"token\": token,\n    \"kit\": \"{{inputs.parameters.enrichment-kit}}\",\n    \"completed-steps\": completed_steps,\n    \"post-process-job-id\": \"{{inputs.parameters.post-process-job-id}}\"\
+        \n})\nif res.status_code != 200:\n    raise Exception(f\"postprocess-complete failed: {res.text}\")\n"
+  - name: on-exit-handler
+    steps:
+    - - arguments:
+          parameters:
+          - name: run-id
+            value: '{{workflow.parameters.run-id}}'
+          - name: sample-uuids
+            value: '{{workflow.parameters.sample-uuids}}'
+          - name: enrichment-kit
+            value: '{{workflow.parameters.enrichment-kit}}'
+          - name: post-process-job-id
+            value: '{{workflow.parameters.post-process-job-id}}'
+        name: set-postprocess-error
+        template: notify-postprocess-error
+        when: '{{workflow.status}} == Failed'
+  - inputs:
+      parameters:
+      - name: run-id
+      - name: sample-uuids
+      - name: enrichment-kit
+      - name: post-process-job-id
+    name: notify-postprocess-error
+    script:
+      command:
+      - python
+      env:
+      - name: GENNEXT_CLUSTER_TOKEN
+        valueFrom:
+          secretKeyRef:
+            key: gennext_cluster_token
+            name: gennext-cluster-secrets
+      image: blairy/requests
+      source: "import os, json, requests\ntoken = os.environ[\"GENNEXT_CLUSTER_TOKEN\"]\naddr = \"gennext-backend.gennext-prod.svc.cluster.local:3030\"\n\n# Set affected samples back to completed (their\
+        \ data is valid)\nsample_uuids = json.loads('{{inputs.parameters.sample-uuids}}')\nif not \"{{inputs.parameters.post-process-job-id}}\":\n    for uuid in sample_uuids:\n        url = f\"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/samples/{uuid}/state\"\
+        \n        res = requests.post(url, json={\"state\": \"completed\", \"token\": token})\n        print(f\"Reset {uuid} to completed: {res.status_code}\")\n\n# Notify postprocess-error\nurl = f\"http://{addr}/api/v0/runs/{{inputs.parameters.run-id}}/postprocess-error\"\
+        \nres = requests.post(url, json={\n    \"token\": token,\n    \"kit\": \"{{inputs.parameters.enrichment-kit}}\",\n    \"step\": \"variant-counter\",\n    \"post-process-job-id\": \"{{inputs.parameters.post-process-job-id}}\"\
+        \n})\nprint(f\"postprocess-error: {res.status_code}\")\n"
