@@ -1923,9 +1923,13 @@ spec:
       script:
         name: "duckdb-fusion-events-script"
         image: qldrsc/duckdb@sha256:fe7b9397f8f65b96c1920c4e5ca66dc71bc30a6872893572a643442d2379fa3d
-        command: ["duckdb", "-init"]
+        command: [sh]
         source: |
-          .open "/mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}"
+          set -eu
+          # SQL on stdin with .bail on, so a failing statement fails the step (under
+          # `duckdb -init` a failed statement still exits 0).
+          duckdb "/mnt/output/{{=sprig.osBase(inputs.parameters['output-duckdb'])}}" <<'SQL'
+          .bail on
           CREATE OR REPLACE TABLE fusion_events AS
           SELECT * REPLACE (
               coalesce(string_split(gene5_aliases, '|'), []::VARCHAR[]) AS gene5_aliases,
@@ -1981,7 +1985,7 @@ spec:
                 'bpview_contig': 'VARCHAR',
                 'builder_version': 'VARCHAR'
             });
-          .exit
+          SQL
         volumeMounts:
           - name: fusion-events-tsv
             mountPath: "/mnt/input/fusion_events.tsv"
