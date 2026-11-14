@@ -19,7 +19,7 @@
 #   - six failed calls on attempt 1 make the task retry, and attempt 2 passes;
 #   - six failed calls on every attempt make the task exit non-zero;
 #   - an annotator exit status of 3 fails the task;
-#   - the token is not printed.
+#   - the token is not printed, though the fake prints it as upstream can.
 #
 # Needs docker and python3 with PyYAML.
 set -euo pipefail
@@ -54,6 +54,11 @@ counter = "/tmp/fake-annotator-attempt"
 attempt = int(open(counter).read()) + 1 if os.path.exists(counter) else 1
 open(counter, "w").write(str(attempt))
 fail_on = {int(a) for a in os.environ.get("FAIL_ATTEMPTS", "").split(",") if a}
+# Upstream prints its token-validation URL in connection errors and retry
+# warnings; the task must mask it.
+token = os.environ.get("ONCOKB_API_TOKEN", "").strip()
+print(f"WARNING:urllib3: Retrying after connection broken: /api/v1/tokens/{token}")
+print(f"Traceback: GET /api/v1/tokens/{token}", file=sys.stderr)
 lines = open(src).read().splitlines()
 suffix = get_oncokb_annotation_column_headers(False, False)
 with open(dst, "w") as f:
