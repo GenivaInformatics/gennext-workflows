@@ -1,0 +1,11 @@
+--- repo tasks/base_tasks/exomedepth.yaml (spec)
++++ live exomedepth-template (spec)
+@@ -20,7 +20,7 @@
+     - Rscript
+     image: quay.io/biocontainers/r-exomedepth:1.1.16--r44h9f7ea62_4
+     name: exomedepth
+-    source: |-
++    source: |
+       if (!requireNamespace("Rsamtools", quietly = TRUE)) {
+         install.packages("BiocManager")
+         BiocManager::install("Rsamtools")

@@ -1,0 +1,11 @@
+--- repo tasks/copy_inputs_to_scratch.yaml (spec)
++++ live copy-inputs-to-scratch (spec)
+@@ -87,6 +87,8 @@
+     image: alpine:latest
+     source: |
+       #!/bin/sh
++      set -eu
++
+       # Function to sanitize filenames
+       sanitize_filename() {
+         # Replace spaces with underscores and remove other problematic characters

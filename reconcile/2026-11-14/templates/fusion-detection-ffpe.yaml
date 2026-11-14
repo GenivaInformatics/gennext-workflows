@@ -1,0 +1,87 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: fusion-detection-ffpe
+  namespace: argo
+  labels:
+    pipeline: fusion-detection
+  annotations:
+    workflows.argoproj.io/description: Fusion detection pipeline for FFPE RNA-seq samples using arriba, STAR-Fusion, and fusion-report for cross-validation.
+spec:
+  arguments:
+    parameters:
+    - name: sample-id
+    - name: sample-base
+    - name: output-base
+    - name: ref-base
+      value: /runspace/gennext/data/ref/hg38
+    - name: arriba-sensitivity
+      value: ultra_sensitivity
+    - name: starfusion-sensitivity
+      value: full_Monty
+    - name: threads
+      value: '20'
+    - name: node-selector
+      value: acurare-01
+  entrypoint: fusion-pipeline
+  nodeSelector:
+    kubernetes.io/hostname: '{{workflow.parameters.node-selector}}'
+  templates:
+  - dag:
+      tasks:
+      - arguments:
+          parameters:
+          - name: sample-id
+            value: '{{workflow.parameters.sample-id}}'
+          - name: sensitivity
+            value: '{{workflow.parameters.arriba-sensitivity}}'
+          - name: threads
+            value: '{{workflow.parameters.threads}}'
+        name: run-arriba
+        templateRef:
+          name: arriba-fusion-detection
+          template: run-arriba
+      - arguments:
+          parameters:
+          - name: sample-id
+            value: '{{workflow.parameters.sample-id}}'
+          - name: sensitivity
+            value: '{{workflow.parameters.starfusion-sensitivity}}'
+          - name: threads
+            value: '{{workflow.parameters.threads}}'
+        name: run-star-fusion
+        templateRef:
+          name: starfusion-detection
+          template: run-star-fusion
+      - arguments:
+          parameters:
+          - name: sample-id
+            value: '{{workflow.parameters.sample-id}}'
+        dependencies:
+        - run-arriba
+        - run-star-fusion
+        name: run-fusion-report
+        templateRef:
+          name: fusion-report-generation
+          template: run-fusion-report
+      - arguments:
+          parameters:
+          - name: sample-id
+            value: '{{workflow.parameters.sample-id}}'
+        dependencies:
+        - run-fusion-report
+        name: run-oncokb
+        templateRef:
+          name: oncokb-fusion-annotation
+          template: run-oncokb
+    name: fusion-pipeline
+  volumes:
+  - hostPath:
+      path: '{{workflow.parameters.sample-base}}'
+    name: sample-data
+  - hostPath:
+      path: '{{workflow.parameters.ref-base}}'
+    name: ref-data
+  - hostPath:
+      path: '{{workflow.parameters.output-base}}/results/fusions'
+    name: output-data
