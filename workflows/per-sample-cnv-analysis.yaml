@@ -90,7 +90,7 @@ spec:
           - name: annotsv-to-oncokb
             templateRef:
               name: filter-annotsv-template
-              template: annotsv-to-oncokb-format
+              template: annotsv-to-oncokb-cna-format
             arguments:
               parameters:
                 - name: sample-id
@@ -107,7 +107,7 @@ spec:
           - name: oncokb-cnv
             templateRef:
               name: oncokb-templates
-              template: oncokb-sv
+              template: oncokb-cnv
             arguments:
               parameters:
                 - name: oncokb-sv-in-f
