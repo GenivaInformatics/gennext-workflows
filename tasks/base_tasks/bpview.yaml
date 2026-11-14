@@ -12,11 +12,16 @@ spec:
     #
     # Runs next to FusionInspector (does not replace it). Inputs are the
     # same files FusionInspector's extract step reads: the fgbio-marked
-    # STAR BAM, the Arriba and STAR-Fusion TSVs, and the filtered
-    # (non-artifact) fusion list from filter-artifact-fusions.
+    # STAR BAM, the Arriba and STAR-Fusion TSVs, and FusionInspector's
+    # ranked candidate list from filter-artifact-fusions
+    # (output-fi-fusion-list-tsv). bpview keeps that list's order when
+    # it caps at max-events, so it shows what FusionInspector showed.
     #
     # Outputs in output-dir, prefix {sample}_bpview:
-    #   .fa/.fa.fai, .bam/.bam.bai, .bed, .events.json
+    #   .fa/.fa.fai, .bam/.bam.bai, .bed/.bed.gz/.bed.gz.tbi,
+    #   .gtf/.gtf.gz/.gtf.gz.tbi, .events.json
+    # events.json carries the fields the IGV view read from FusionInspector's
+    # abridged TSV (see the bpview.py docstring).
     # Older samples have no bpview outputs; readers must fall back to the
     # {sample}_finspector files.
     - name: bpview
@@ -31,7 +36,8 @@ spec:
           - name: fusion-list-tsv
           - name: output-dir
           - name: max-events
-            default: "300"
+            # The FI list had at most 1,103 pairs in a 35-sample cohort.
+            default: "1500"
           - name: max-context
             default: "40"
       outputs:
@@ -72,7 +78,7 @@ spec:
       script:
         name: bpview
         # Pin by digest when the tag is pushed.
-        image: bergun/gennext-bpview:0.1.0
+        image: bergun/gennext-bpview:0.2.0
         command: [bash]
         resources:
           requests:

@@ -72,17 +72,29 @@ def write_inputs(d):
     arriba = os.path.join(d, "arriba.tsv")
     with open(arriba, "w") as fh:
         fh.write("#gene1\tgene2\tstrand1(gene/fusion)\tstrand2(gene/fusion)\tbreakpoint1\tbreakpoint2\t"
-                 "split_reads1\tsplit_reads2\tdiscordant_mates\tconfidence\tdirection1\tdirection2\n")
-        fh.write(f"G1\tG2\t+/+\t+/+\tchrA:{BP1}\tchrB:{BP2}\t1\t0\t1\thigh\tdownstream\tupstream\n")
+                 "split_reads1\tsplit_reads2\tdiscordant_mates\tconfidence\tdirection1\tdirection2\ttags\n")
+        fh.write(f"G1\tG2\t+/+\t+/+\tchrA:{BP1}\tchrB:{BP2}\t1\t0\t1\thigh\tdownstream\tupstream\tMitelman\n")
     sf = os.path.join(d, "sf.tsv")
     with open(sf, "w") as fh:
         fh.write("#FusionName\tJunctionReadCount\tSpanningFragCount\tSpliceType\tLeftGene\tLeftBreakpoint\t"
-                 "RightGene\tRightBreakpoint\tFFPM\tLargeAnchorSupport\n")
-        fh.write(f"G1--G2\t1\t1\tONLY_REF_SPLICE\tG1^X\tchrA:{BP1 + 3}:+\tG2^Y\tchrB:{BP2 - 2}:+\t1.0\tYES\n")
+                 "RightGene\tRightBreakpoint\tFFPM\tLargeAnchorSupport\tannots\n")
+        fh.write(f"G1--G2\t1\t1\tONLY_REF_SPLICE\tG1^X\tchrA:{BP1 + 3}:+\tG2^Y\tchrB:{BP2 - 2}:+\t1.0\tYES\t"
+                 '["G1:Oncogene"];["Cosmic","Mitelman"];INTERCHROMOSOMAL[chrA--chrB]\n')
     return fa, gtf, bam, arriba, sf
 
 
+def test_gene_names():
+    sys.path.insert(0, os.path.join(HERE, ".."))
+    import bpview
+    assert bpview.gene_names("ENSG0001(731),ABL1(120799)") == ["ENSG0001", "ABL1"]
+    assert bpview.gene_names("ABL1(120799),ENSG0001(731)") == ["ENSG0001", "ABL1"]
+    assert bpview.gene_names("FGFR3") == ["FGFR3"]
+    assert bpview.gene_names("TACC3^ENSG00000013810.20") == ["TACC3"]
+    assert bpview.gene_names("RP11-1.2") == ["RP11-1.2"]
+
+
 def main():
+    test_gene_names()
     with tempfile.TemporaryDirectory() as d:
         fa, gtf, bam, arriba, sf = write_inputs(d)
         out = os.path.join(d, "out")
@@ -109,6 +121,26 @@ def main():
         wt = [r for r in recs if r.get_tag("XF") == "wt3"]
         assert wt and wt[0].cigarstring == "50S50M" and wt[0].reference_start == j, [r.cigarstring for r in wt]
         assert all(r.has_tag("YC") and r.has_tag("XK") for r in recs)
+        # fields the IGV view used to read from FusionInspector's abridged TSV
+        assert ev["fusion_name"] == "G1--G2" and ev["left_gene"] == "G1" and ev["right_gene"] == "G2"
+        assert (ev["left_local_breakpoint"], ev["right_local_breakpoint"]) == (j, j + 1)
+        assert ev["left_breakpoint"] == f"chrA:{BP1}:+" and ev["right_breakpoint"] == f"chrB:{BP2}:+", ev
+        assert ev["junction_read_count"] == 1 and ev["spanning_frag_count"] == 1
+        assert ev["junction_read_count_with_dups"] == 2
+        assert ev["splice_type"] == "ONLY_REF_SPLICE"
+        # both callers' own coordinates are kept, so rows keyed by either caller can be matched
+        assert ev["starfusion"]["left_breakpoint"] == f"chrA:{BP1 + 3}:+" and ev["arriba"]["breakpoint1"] == f"chrA:{BP1}"
+        assert ev["gene_names1"] == ["G1"] and ev["gene_names2"] == ["G2"]
+        assert ev["annots"] == ["G1:Oncogene", "Cosmic", "Mitelman", "INTERCHROMOSOMAL[chrA--chrB]"], ev["annots"]
+        assert ev["left_gene_locus"] == "chrA:100-2900:+" and ev["right_gene_locus"] == "chrB:100-2900:+"
+        # tabix-indexed tracks, queried per contig like gennext-api-edge does
+        for ext in (".bed.gz", ".bed.gz.tbi", ".gtf.gz", ".gtf.gz.tbi"):
+            assert os.path.exists(out + ext), ext
+        gtf = list(pysam.TabixFile(out + ".gtf.gz").fetch(ev["contig"]))
+        assert len(gtf) == 2 and all('orig_coord_info "chr' in l for l in gtf), gtf
+        g1 = [l.split("\t") for l in gtf if 'gene_name "G1"' in l][0]
+        assert (int(g1[3]), int(g1[4])) == (100, j) and 'orig_coord_info "chrA,100,2900,+"' in g1[8], g1
+        assert len(list(pysam.TabixFile(out + ".bed.gz").fetch(ev["contig"]))) == 2
     print("test_bpview: OK")
 
 

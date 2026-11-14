@@ -25,8 +25,16 @@ projected records, so the number reported equals the number of fragments drawn.
 Outputs (one set per sample, one contig per event):
   <prefix>.fa/.fa.fai    contigs
   <prefix>.bam/.bam.bai  projected alignments (coordinate sorted)
-  <prefix>.bed           partner exons (all transcripts in the GTF) in contig coordinates
+  <prefix>.bed[.gz/.tbi] partner exons (all transcripts in the GTF) in contig coordinates
+  <prefix>.gtf[.gz/.tbi] the same exons as GTF, with gene_name, transcript_id and
+                         orig_coord_info "chrom,start,end,strand" (FusionInspector convention)
   <prefix>.events.json   event list with breakpoints, callers and support per class
+
+Each event also carries the fields the FusionInspector abridged TSV provided to the IGV view,
+under FusionInspector-like names: left/right_local_breakpoint, left/right_breakpoint
+(chr:pos:strand), junction_read_count, spanning_frag_count, splice_type, annots and
+left/right_gene_locus. The counts are unique (non-duplicate) fragments; the *_with_dups
+counts include PCR duplicates, which is closer to what FusionInspector reported.
 """
 import argparse
 import collections
@@ -39,7 +47,7 @@ import sys
 
 import pysam
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 REF_CONSUME = {0, 2, 3, 7, 8}
 QRY_CONSUME = {0, 1, 4, 7, 8}
@@ -57,11 +65,20 @@ def revcomp(s):
     return s.translate(str.maketrans("ACGTNacgtn", "TGCANtgcan"))[::-1]
 
 
+def gene_names(name):
+    """All gene names in a caller's gene field, nearest first.
+    Arriba: 'GENE', or 'GENE1(1234),GENE2(567)' for a breakpoint between genes (distances);
+    STAR-Fusion: 'GENE^ENSG...'."""
+    out = []
+    for part in name.split("^")[0].split(","):
+        m = re.match(r"\s*([^()]+?)\s*(?:\((\d+)\))?\s*$", part)
+        if m and m.group(1):
+            out.append((int(m.group(2)) if m.group(2) else -1, m.group(1)))
+    return [n for _, n in sorted(out, key=lambda x: x[0])] or [name]
+
+
 def clean_gene(name):
-    """Arriba: 'GENE' or 'GENE1(1234),GENE2(567)'; STAR-Fusion: 'GENE^ENSG...'."""
-    name = name.split("^")[0]
-    name = name.split(",")[0]
-    return re.sub(r"\(.*?\)", "", name).strip()
+    return gene_names(name)[0]
 
 
 def safe(s):
@@ -137,7 +154,9 @@ def load_arriba(path):
             continue
         s1 = r.get("strand1(gene/fusion)", "./.").split("/")[-1]
         s2 = r.get("strand2(gene/fusion)", "./.").split("/")[-1]
-        out.append(dict(gene1=clean_gene(r["gene1"]), gene2=clean_gene(r["gene2"]),
+        n1, n2 = gene_names(r["gene1"]), gene_names(r["gene2"])
+        out.append(dict(gene1=n1[0], gene2=n2[0], names1=n1, names2=n2,
+                        intergenic1="(" in r["gene1"], intergenic2="(" in r["gene2"],
                         chr1=c1, pos1=p1, keep1="le" if d1 == "downstream" else "ge",
                         chr2=c2, pos2=p2, keep2="le" if d2 == "downstream" else "ge",
                         oriented=s1 in "+-" and s2 in "+-" and s1 != "." and s2 != ".",
@@ -146,7 +165,10 @@ def load_arriba(path):
                                     split_reads2=int(r.get("split_reads2") or 0),
                                     discordant_mates=int(r.get("discordant_mates") or 0),
                                     reading_frame=r.get("reading_frame"),
-                                    site1=r.get("site1"), site2=r.get("site2"))))
+                                    site1=r.get("site1"), site2=r.get("site2"),
+                                    tags=r.get("tags"),
+                                    gene1=r["gene1"], gene2=r["gene2"],
+                                    breakpoint1=r["breakpoint1"], breakpoint2=r["breakpoint2"])))
     return out
 
 
@@ -159,14 +181,19 @@ def load_starfusion(path):
             c2, p2, s2 = r["RightBreakpoint"].split(":")
         except (KeyError, ValueError):
             continue
-        out.append(dict(gene1=clean_gene(r["LeftGene"]), gene2=clean_gene(r["RightGene"]),
+        g1, g2 = clean_gene(r["LeftGene"]), clean_gene(r["RightGene"])
+        out.append(dict(gene1=g1, gene2=g2, names1=[g1], names2=[g2],
+                        intergenic1=False, intergenic2=False,
                         chr1=c1, pos1=int(p1), keep1="le" if s1 == "+" else "ge",
                         chr2=c2, pos2=int(p2), keep2="ge" if s2 == "+" else "le",
                         oriented=True,
                         starfusion=dict(junction_reads=int(r.get("JunctionReadCount") or 0),
                                         spanning_frags=int(r.get("SpanningFragCount") or 0),
                                         ffpm=float(r.get("FFPM") or 0), splice_type=r.get("SpliceType"),
-                                        large_anchor_support=r.get("LargeAnchorSupport"))))
+                                        large_anchor_support=r.get("LargeAnchorSupport"),
+                                        annots=r.get("annots"),
+                                        left_breakpoint=r["LeftBreakpoint"],
+                                        right_breakpoint=r["RightBreakpoint"])))
     return out
 
 
@@ -180,7 +207,9 @@ def _flip(e):
     """Same junction described from the other partner's side (unoriented Arriba calls)."""
     inv = {"le": "ge", "ge": "le"}
     f = dict(e)
-    f.update(gene1=e["gene2"], gene2=e["gene1"], chr1=e["chr2"], pos1=e["pos2"], keep1=inv[e["keep2"]],
+    f.update(gene1=e["gene2"], gene2=e["gene1"], names1=e["names2"], names2=e["names1"],
+             intergenic1=e["intergenic2"], intergenic2=e["intergenic1"],
+             chr1=e["chr2"], pos1=e["pos2"], keep1=inv[e["keep2"]],
              chr2=e["chr1"], pos2=e["pos1"], keep2=inv[e["keep1"]])
     return f
 
@@ -204,6 +233,12 @@ def merge_events(arriba, starfusion, tol=10):
         if hit:
             hit["starfusion"] = s["starfusion"]
             hit["callers"].append("starfusion")
+            for i in ("1", "2"):
+                sg = s["gene" + i]
+                hit["names" + i] = [sg] + [n for n in hit["names" + i] if n != sg]
+                if hit["intergenic" + i]:
+                    # Arriba only knows the neighbouring genes; STAR-Fusion's annotated gene is the better label
+                    hit["gene" + i] = sg
         else:
             events.append(dict(s, callers=["starfusion"]))
     return events
@@ -500,6 +535,86 @@ def project_event(bam, ev, segs, tid, opts, header):
     return out, counts, skipped
 
 
+def parse_annots(s):
+    """FusionAnnotator string -> list. Same rules as gennext-api-edge parse_annotations:
+    '["A:Oncogene","B"];["Cosmic"];INTRACHROMOSOMAL[chr4:0.05Mb]' -> [A:Oncogene, B, Cosmic, INTRA...]."""
+    out = []
+    for chunk in (s or "").split(";"):
+        chunk = chunk.strip()
+        if not chunk or chunk == ".":
+            continue
+        if chunk.startswith("[") and chunk.endswith("]"):
+            out += [i.strip().strip("\"'") for i in chunk[1:-1].split(",") if i.strip().strip("\"'")]
+        else:
+            out.append(chunk)
+    return out
+
+
+def splice_type(ev):
+    """STAR-Fusion's SpliceType when available; otherwise derived from Arriba's sites."""
+    sf, a = ev.get("starfusion") or {}, ev.get("arriba") or {}
+    if sf.get("splice_type"):
+        return sf["splice_type"]
+    if a.get("site1") or a.get("site2"):
+        both = a.get("site1") == "splice-site" and a.get("site2") == "splice-site"
+        return "ONLY_REF_SPLICE" if both else "INCL_NON_REF_SPLICE"
+    return None
+
+
+def gene_locus(g, chrom):
+    if not g or g["chrom"] != chrom:
+        return None
+    return f"{g['chrom']}:{g['start']}-{g['end']}:{g['strand']}"
+
+
+def fi_fields(ev, segs, nd, dup, genes):
+    """The fields the IGV fusion view used to read from FusionInspector's abridged TSV."""
+    j = segs[0].len
+    s5 = "+" if ev["keep1"] == "le" else "-"
+    s3 = "+" if ev["keep2"] == "ge" else "-"
+    annots = parse_annots((ev.get("starfusion") or {}).get("annots"))
+    for t in ((ev.get("arriba") or {}).get("tags") or "").split(","):
+        t = t.strip()
+        if t and t != "." and t not in annots:
+            annots.append(t)
+    return dict(
+        fusion_name=f"{ev['gene1']}--{ev['gene2']}",
+        left_gene=ev["gene1"], right_gene=ev["gene2"],
+        left_local_breakpoint=j, right_local_breakpoint=j + 1,
+        left_breakpoint=f"{ev['chr1']}:{ev['pos1']}:{s5}",
+        right_breakpoint=f"{ev['chr2']}:{ev['pos2']}:{s3}",
+        junction_read_count=nd.get("junction", 0),
+        spanning_frag_count=nd.get("spanning", 0),
+        junction_read_count_with_dups=nd.get("junction", 0) + dup.get("junction", 0),
+        spanning_frag_count_with_dups=nd.get("spanning", 0) + dup.get("spanning", 0),
+        splice_type=splice_type(ev), annots=annots,
+        left_gene_locus=gene_locus(genes.get(ev["gene1"]), ev["chr1"]),
+        right_gene_locus=gene_locus(genes.get(ev["gene2"]), ev["chr2"]))
+
+
+def exon_gtf(name, segs, ev, genes):
+    """Exons of both partners in contig coordinates, one record per transcript exon."""
+    lines = []
+    for s, gname in zip(segs, (ev["gene1"], ev["gene2"])):
+        g = genes.get(gname)
+        if not g or g["chrom"] != s.chrom:
+            continue
+        strand = g["strand"] if not s.rc else {"+": "-", "-": "+"}.get(g["strand"], ".")
+        for es, ee, tid in g["exons"]:
+            if ee < s.start or es > s.end:
+                continue
+            c1, c2 = sorted((s.to_contig(max(es, s.start)), s.to_contig(min(ee, s.end))))
+            attrs = (f'gene_id "{gname}"; transcript_id "{tid or gname}"; gene_name "{gname}"; '
+                     f'orig_coord_info "{g["chrom"]},{es},{ee},{g["strand"]}";')
+            lines.append((c1, c2, f"{name}\tbpview\texon\t{c1 + 1}\t{c2 + 1}\t.\t{strand}\t.\t{attrs}\n"))
+    return [l for *_, l in sorted(lines)]
+
+
+def bgzip_index(path, preset):
+    """Write path.gz + path.gz.tbi next to path (the plain file is kept)."""
+    pysam.tabix_index(path, preset=preset, force=True, keep_original=True)
+
+
 def exon_bed(name, segs, ev, genes):
     lines = []
     for s, gname in zip(segs, (ev["gene1"], ev["gene2"])):
@@ -529,7 +644,8 @@ def main(argv=None):
     ap.add_argument("--gtf", required=True, help="annotation for partner extents and exon track")
     ap.add_argument("--arriba-tsv")
     ap.add_argument("--starfusion-tsv")
-    ap.add_argument("--fusion-list", help="optional allow-list of GENE1--GENE2 pairs (one per line)")
+    ap.add_argument("--fusion-list", help="optional ranked allow-list of GENE1--GENE2 pairs (first column); "
+                                          "list order decides which events survive --max-events")
     ap.add_argument("--out-prefix", required=True)
     ap.add_argument("--max-events", type=int, default=300)
     ap.add_argument("--merge-tolerance", type=int, default=10)
@@ -548,11 +664,27 @@ def main(argv=None):
     events = merge_events(arriba, starf, opts.merge_tolerance)
     n_called = len(events)
     if opts.fusion_list:
-        allowed = {l.strip().split("\t")[0] for l in open(opts.fusion_list) if l.strip() and not l.startswith("#")}
-        events = [e for e in events if f"{e['gene1']}--{e['gene2']}" in allowed
-                  or f"{e['gene2']}--{e['gene1']}" in allowed]
+        # The list is ranked strongest-first upstream (filter-artifact-fusions: database-recorded
+        # fusions, then in-frame, then concordant). Its order decides which events survive the cap;
+        # bpview's own priority only orders events within one gene pair.
+        rank = {}
+        for l in open(opts.fusion_list):
+            if l.strip() and not l.startswith("#"):
+                rank.setdefault(l.strip().split("\t")[0], len(rank))
+
+        def list_rank(e):
+            r = [rank[k] for a in e["names1"] for b in e["names2"]
+                 for k in (f"{a}--{b}", f"{b}--{a}") if k in rank]
+            return min(r) if r else None
+
+        for e in events:
+            e["list_rank"] = list_rank(e)
+        events = [e for e in events if e["list_rank"] is not None]
+        events.sort(key=priority, reverse=True)
+        events.sort(key=lambda e: e["list_rank"])  # stable: priority breaks ties within a pair
+    else:
+        events.sort(key=priority, reverse=True)
     n_allowed = len(events)
-    events.sort(key=priority, reverse=True)
     events = events[:opts.max_events]
 
     genes = read_gtf(opts.gtf)
@@ -589,14 +721,16 @@ def main(argv=None):
         "PG": [{"ID": "bpview", "PN": "bpview", "VN": __version__, "CL": " ".join(sys.argv)}]})
     tmp = opts.out_prefix + ".unsorted.bam"
     summaries = []
-    with pysam.AlignmentFile(tmp, "wb", header=header) as ob, open(opts.out_prefix + ".bed", "w") as bed:
-        bed.write(f'track name="{opts.sample_id} partner exons"\n')
+    with pysam.AlignmentFile(tmp, "wb", header=header) as ob, open(opts.out_prefix + ".bed", "w") as bed, \
+            open(opts.out_prefix + ".gtf", "w") as gtf:
         for tid, c in enumerate(contigs):
             recs, counts, skipped = project_event(bam, c["ev"], c["segs"], tid, opts, header)
             for r in recs:
                 ob.write(r)
             for line in exon_bed(c["name"], c["segs"], c["ev"], genes):
                 bed.write(line)
+            for line in exon_gtf(c["name"], c["segs"], c["ev"], genes):
+                gtf.write(line)
             nd = counts["nondup"]
             j = nd["junction"] + nd["spanning"]
             ev = c["ev"]
@@ -606,15 +740,19 @@ def main(argv=None):
                 gene1=ev["gene1"], gene2=ev["gene2"],
                 breakpoint1=f"{ev['chr1']}:{ev['pos1']}", breakpoint2=f"{ev['chr2']}:{ev['pos2']}",
                 keep1=ev["keep1"], keep2=ev["keep2"], orientation_known=ev["oriented"],
+                gene_names1=ev["names1"], gene_names2=ev["names2"], fusion_list_rank=ev.get("list_rank"),
                 callers=ev["callers"], arriba=ev.get("arriba"), starfusion=ev.get("starfusion"),
                 segments=[s.as_dict() for s in c["segs"]],
                 fragments_nondup=dict(nd), fragments_dup=dict(counts["dup"]),
                 fusion_fraction_5p=round(j / (j + nd["wt5"]), 3) if j + nd["wt5"] else None,
                 fusion_fraction_3p=round(j / (j + nd["wt3"]), 3) if j + nd["wt3"] else None,
-                records_drawn=len(recs), skipped_length_mismatch=skipped))
+                records_drawn=len(recs), skipped_length_mismatch=skipped,
+                **fi_fields(ev, c["segs"], nd, counts["dup"], genes)))
     pysam.sort("-o", opts.out_prefix + ".bam", tmp)
     os.remove(tmp)
     pysam.index(opts.out_prefix + ".bam")
+    bgzip_index(opts.out_prefix + ".bed", "bed")
+    bgzip_index(opts.out_prefix + ".gtf", "gff")
 
     doc = dict(bpview_version=__version__, sample_id=opts.sample_id,
                inputs=dict(bam=opts.bam, arriba_tsv=opts.arriba_tsv, starfusion_tsv=opts.starfusion_tsv,
