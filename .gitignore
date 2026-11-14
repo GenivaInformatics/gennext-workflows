@@ -8,3 +8,14 @@
 /workflows/temp-workflows/
 /workflows/test-workflows/
 /tmp/
+# WorkflowTemplates of a separate product share the argo namespace; never commit them,
+# including in live snapshots.
+snapshots/**/gennext-assemble.yaml
+snapshots/**/gennext-ewas.yaml
+snapshots/**/gennext-finalize.yaml
+snapshots/**/gennext-normalize.yaml
+snapshots/**/gennext-plot.yaml
+snapshots/**/gennext-qc.yaml
+snapshots/**/gennext-read.yaml
+snapshots/**/gennext-report.yaml
+snapshots/**/gennext-score.yaml

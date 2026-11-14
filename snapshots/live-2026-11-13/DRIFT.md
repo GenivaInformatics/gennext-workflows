@@ -1,10 +1,10 @@
 # Live WorkflowTemplates vs origin/main
 
-Snapshot of namespace `argo` taken 2026-11-13 from the live cluster (196 templates), compared by `spec` with WorkflowTemplate documents on `origin/main` (c8c7807).
+Snapshot of namespace `argo` taken 2026-11-13 from the live cluster (196 templates; 9 templates of a separate product are excluded from this snapshot and its counts), compared by `spec` with WorkflowTemplate documents on `origin/main` (c8c7807).
 
 - matches-main: 125
 - drift (repo has the name, spec differs): 20
-- not-in-repo: 51
+- not-in-repo: 42
 
 | Template | Status | Created | Repo file(s) |
 |---|---|---|---|
@@ -74,17 +74,8 @@ Snapshot of namespace `argo` taken 2026-11-13 from the live cluster (196 templat
 | `fusion-report-generation` | not-in-repo | 2026-02-10 |  |
 | `fusion-report-template` | matches-main | 2026-04-11 | tasks/base_tasks/fusion-report.yaml |
 | `generate-run-info` | matches-main | 2024-09-05 | tasks/generate_run_info.yaml |
-| `gennext-assemble` | not-in-repo | 2026-02-18 |  |
-| `gennext-ewas` | not-in-repo | 2026-02-18 |  |
-| `gennext-finalize` | not-in-repo | 2026-02-18 |  |
-| `gennext-normalize` | not-in-repo | 2026-02-18 |  |
-| `gennext-plot` | not-in-repo | 2026-02-18 |  |
 | `gennext-prs-matcher-template` | matches-main | 2025-06-04 | tasks/prs/gennext_prs_matcher.yaml |
 | `gennext-prs-template` | matches-main | 2024-12-15 | tasks/prs/gennext_prs.yaml |
-| `gennext-qc` | not-in-repo | 2026-02-18 |  |
-| `gennext-read` | not-in-repo | 2026-02-18 |  |
-| `gennext-report` | not-in-repo | 2026-02-18 |  |
-| `gennext-score` | not-in-repo | 2026-02-18 |  |
 | `genotype-conditional-workflow-template` | drift | 2025-04-24 | tasks/prs/genotype_conditional_workflow.yaml |
 | `germline-rna-gpu-workflow` | matches-main | 2025-05-23 | workflows/germline/germline-rna-gpu-workflow.yaml |
 | `germline-tps-gpu-workflow` | matches-main | 2025-05-18 | workflows/germline/germline-tps-gpu-workflow.yaml |
