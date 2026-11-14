@@ -233,3 +233,225 @@ spec:
             mountPath: "/mnt/output/oncokb/"
           - name: annotsv-filtered-out-tsv
             mountPath: "/mnt/output/filtered/"
+    # Same as annotsv-to-oncokb-format, for CNVkit CNV calls only (the SV path
+    # keeps annotsv-to-oncokb-format). The filtered TSV is written the same
+    # way. The OncoKB TSV keeps AnnotSV_ID, GeneA, GeneB and Sv_Type, which
+    # duckdb-cnv joins on and shows, and adds Tumor_Sample_Barcode,
+    # Hugo_Symbol and Copy_Number_Alteration for oncokb-cnv (CnaAnnotator).
+    #
+    # Copy_Number_Alteration is one of OncoKB's copy-number classes (the
+    # GISTIC levels -2/-1/+1/+2), taken from the CNVkit call:
+    #   DEL, GT 1/1 (no copies left)            -> Deletion
+    #   DEL, GT 0/1 (copies left)               -> Loss
+    #   DUP, CN >= amplification-min-copies     -> Amplification
+    #   DUP, any other CN                       -> Gain
+    #   DEL without a usable GT: the same rule on its CN, if any
+    #   no GT/CN: FOLD_CHANGE_LOG, turned into a copy number with CNVkit's
+    #   default threshold cut-offs, then the same rule
+    #   nothing to go on, or a class against the call's direction (a DEL
+    #   that would be a gain, a DUP that would be a loss) -> empty (not
+    #   annotated)
+    #
+    # amplification-min-copies is the one setting for the Amplification
+    # cut-off. 4 is CNVkit's own level: `cnvkit.py call --method threshold`
+    # calls CN >= 4 exactly when log2 > 0.7 (not purity-adjusted). 5 would be
+    # stricter (about log2 > 1.0). Copy numbers are compared as on autosomes,
+    # so on a male X or Y a doubling (CN 2) is reported as Gain.
+    - name: annotsv-to-oncokb-cna-format
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: annotsv-tsv
+          - name: annotsv-filtered-out-tsv
+          - name: annotsv-oncokb-out-tsv
+          - name: amplification-min-copies
+            value: "4"
+      outputs:
+        parameters:
+          - name: annotsv-filtered-out-tsv
+            value: "{{inputs.parameters.annotsv-filtered-out-tsv}}"
+          - name: annotsv-oncokb-out-tsv
+            value: "{{inputs.parameters.annotsv-oncokb-out-tsv}}"
+      volumes:
+        - name: annotsv-tsv
+          hostPath:
+            path: "{{inputs.parameters.annotsv-tsv}}"
+            type: File
+        - name: annotsv-filtered-out-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['annotsv-filtered-out-tsv'])}}"
+            type: DirectoryOrCreate
+        - name: annotsv-oncokb-out-tsv
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['annotsv-oncokb-out-tsv'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: annotsv-to-oncokb-cna-script
+        image: quay.io/biocontainers/pyranges:0.0.129--pyh7cba7a3_0
+        workingDir: /mnt/input/
+        command: [python]
+        source: |
+          import math
+          import sys
+
+          sample_id = "{{inputs.parameters.sample-id}}"
+          tsv_file = "/mnt/input/annotsv/{{=sprig.osBase(inputs.parameters['annotsv-tsv'])}}"
+          tsv_filtered_file = "/mnt/output/filtered/{{=sprig.osBase(inputs.parameters['annotsv-filtered-out-tsv'])}}"
+          tsv_oncokb_file = "/mnt/output/oncokb/{{=sprig.osBase(inputs.parameters['annotsv-oncokb-out-tsv'])}}"
+
+          # The Amplification cut-off (see the comment above this task).
+          try:
+              AMPLIFICATION_MIN_COPIES = int("{{inputs.parameters.amplification-min-copies}}")
+          except ValueError:
+              sys.exit("amplification-min-copies must be an integer")
+          if AMPLIFICATION_MIN_COPIES < 3:
+              sys.exit("amplification-min-copies must be at least 3")
+
+          # CNVkit's default `call --method threshold` cut-offs (log2 ratio
+          # upper bounds for 0, 1, 2 and 3 copies), used only for rows that
+          # have a log2 ratio but no GT/CN.
+          CNVKIT_THRESHOLDS = (-1.1, -0.25, 0.2, 0.7)
+          EXPECTED_COPIES = 2
+
+          annotsv_to_oncokb_mapping = {
+                  "DEL": "DELETION",
+                  "INS": "INSERTION",
+                  "DUP": "DUPLICATION",
+                  "INV": "INVERSION",
+                  "CNV": "UNKNOWN",  # or DUPLICATION, depending on the context
+                  "BND": "UNKNOWN",  # or TRANSLOCATION/FUSION, depending on the context
+                  "LINE1": "UNKNOWN",
+                  "SVA": "UNKNOWN",
+                  "ALU": "UNKNOWN"
+          }
+
+
+          def copies_from_log2(log2):
+              # Same as CNVkit's absolute_threshold for a diploid chromosome.
+              for copies, threshold in enumerate(CNVKIT_THRESHOLDS):
+                  if log2 <= threshold:
+                      return copies
+              return int(math.ceil(EXPECTED_COPIES * 2 ** log2))
+
+
+          def class_from_copies(copies):
+              if copies == 0:
+                  return "Deletion"
+              if copies < EXPECTED_COPIES:
+                  return "Loss"
+              if copies >= AMPLIFICATION_MIN_COPIES:
+                  return "Amplification"
+              if copies > EXPECTED_COPIES:
+                  return "Gain"
+              return ""
+
+
+          def info_value(info, key):
+              for field in info.split(";"):
+                  name, _, value = field.partition("=")
+                  if name == key:
+                      return value
+              return None
+
+
+          # A class must agree with the call's direction: a DEL is never a
+          # gain and a DUP is never a loss. CNV (no direction) takes either.
+          ALLOWED_CLASSES = {
+              "DEL": {"Deletion", "Loss"},
+              "DUP": {"Gain", "Amplification"},
+              "CNV": {"Deletion", "Loss", "Gain", "Amplification"},
+          }
+
+
+          def parse_copies(value):
+              try:
+                  copies = float(value)
+              except ValueError:
+                  return None
+              if not math.isfinite(copies) or copies < 0 or copies != int(copies):
+                  return None
+              return int(copies)
+
+
+          def copy_number_alteration(sv_type, evidence, info):
+              allowed = ALLOWED_CLASSES.get(sv_type)
+              if allowed is None:
+                  return ""
+              gt = evidence.get("GT", "").replace("|", "/")
+              if sv_type == "DEL" and gt in ("1/1", "0/1"):
+                  return "Deletion" if gt == "1/1" else "Loss"
+              copies = parse_copies(evidence.get("CN", ""))
+              if copies is not None:
+                  if sv_type == "DUP":
+                      return "Amplification" if copies >= AMPLIFICATION_MIN_COPIES else "Gain"
+                  cna = class_from_copies(copies)
+                  if cna in allowed:
+                      return cna
+              try:
+                  log2 = float(info_value(info, "FOLD_CHANGE_LOG"))
+              except (TypeError, ValueError):
+                  return ""
+              if not math.isfinite(log2):
+                  return ""
+              cna = class_from_copies(copies_from_log2(log2))
+              return cna if cna in allowed else ""
+
+
+          # select columns for oncokb annotation, filter by genes lists
+          with open(tsv_file, 'r') as tsvfile:
+            with open(tsv_filtered_file, 'w') as filtered_tsvfile:
+                with open(tsv_oncokb_file, 'w') as oncokb_tsvfile:
+                    header = tsvfile.readline().strip().split("\t")
+                    svtype_idx = header.index('SV_type')
+                    header[svtype_idx+1:svtype_idx+1] = ['Paired_Reads', 'Split_Reads', 'Split_Reads_Mates']
+                    svtype_idx = header.index('SV_type')
+                    annotsv_id_idx = header.index('AnnotSV_ID')
+                    chrom_idx = header.index('SV_chrom')
+                    sample_data_idx = header.index(sample_id)
+                    annot_mode_idx = header.index('Annotation_mode')
+                    gene_idx = header.index('Gene_name')
+                    format_idx = header.index('FORMAT')
+                    info_idx = header.index('INFO') if 'INFO' in header else None
+                    pr_idx = header.index('Paired_Reads')
+                    sr_idx = header.index('Split_Reads')
+                    srm_idx = header.index('Split_Reads_Mates')
+
+                    oncokb_out_header_cols = ['AnnotSV_ID', 'GeneA', 'GeneB', 'Sv_Type',
+                                              'Tumor_Sample_Barcode', 'Hugo_Symbol', 'Copy_Number_Alteration']
+                    oncokb_tsvfile.write("\t".join(oncokb_out_header_cols) + "\n")
+
+                    header[sample_data_idx] = "SAMPLE_DATA"
+                    filtered_tsvfile.write("\t".join(header) + "\n")
+
+                    counts = {}
+                    while line := tsvfile.readline():
+                        values = line.strip().split('\t')
+                        values[svtype_idx+1:svtype_idx+1] = ['','','']
+                        gene = values[gene_idx]
+                        values[chrom_idx] = 'chr' + values[chrom_idx]
+
+                        evidence_format = values[format_idx].split(":")
+                        evidence_data = values[sample_data_idx].split(":")
+                        evidence_dict = dict(zip(evidence_format, evidence_data))
+
+                        values[pr_idx] = evidence_dict.get('PR', '')
+                        values[sr_idx] = evidence_dict.get('SR', '')
+                        values[srm_idx] = evidence_dict.get('SRM', '')
+
+                        if values[annot_mode_idx] == 'split':
+                          info = values[info_idx] if info_idx is not None else ""
+                          cna = copy_number_alteration(values[svtype_idx], evidence_dict, info)
+                          counts[cna or "(none)"] = counts.get(cna or "(none)", 0) + 1
+                          oncokb_tsvfile.write("\t".join([values[annotsv_id_idx], gene, gene, annotsv_to_oncokb_mapping.get(values[svtype_idx], "UNKNOWN"),
+                                                          sample_id, gene, cna]) + "\n")
+                        filtered_tsvfile.write("\t".join(values) + "\n")
+
+          print(f"Amplification at {AMPLIFICATION_MIN_COPIES}+ copies; split rows by class: {counts}")
+
+        volumeMounts:
+          - name: annotsv-tsv
+            mountPath: "/mnt/input/annotsv/{{=sprig.osBase(inputs.parameters['annotsv-tsv'])}}"
+          - name: annotsv-oncokb-out-tsv
+            mountPath: "/mnt/output/oncokb/"
+          - name: annotsv-filtered-out-tsv
+            mountPath: "/mnt/output/filtered/"

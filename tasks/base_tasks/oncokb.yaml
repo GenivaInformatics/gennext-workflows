@@ -642,6 +642,147 @@ spec:
               secretKeyRef:
                 name: oncokb-secrets
                 key: oncokb_api_token
+    # CNV calls from annotsv-to-oncokb-cna-format, annotated with OncoKB's
+    # copy-number endpoint (upstream CnaAnnotator.py, individual format, with
+    # Gain and Loss). The SV path keeps oncokb-sv. Parameter names match
+    # oncokb-sv, so a workflow switches by changing only the template name.
+    # The output is the input columns plus the same OncoKB columns oncokb-sv
+    # writes, in input order; rows without a class get empty OncoKB columns.
+    - name: oncokb-cnv
+      inputs:
+        parameters:
+          - name: oncokb-sv-in-f
+          - name: oncokb-sv-out-f
+          - name: regions-file
+            value: "."
+          - name: tumor-type
+            value: "."
+          - name: max-attempts
+            value: "3"
+          - name: retry-delay-seconds
+            value: "5"
+      outputs:
+        parameters:
+          - name: oncokb-sv-out-f
+            value: "{{inputs.parameters.oncokb-sv-out-f}}"
+      volumes:
+        - name: oncokb-sv-in-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['oncokb-sv-in-f'])}}"
+            type: Directory
+        - name: oncokb-sv-out-f
+          hostPath:
+            path: "{{=sprig.osDir(inputs.parameters['oncokb-sv-out-f'])}}"
+            type: DirectoryOrCreate
+      script:
+        name: oncokb-cnv-script
+        image: bergun/oncokb-annotator:0.2.0-upstream-v3.4.2@sha256:c73fb7dd9228d282889d4965b695474526f36d2f8bbe7b4715cf9d7d4e9cebeb
+        command: [python3]
+        source: |
+          import csv
+          import os
+          import subprocess
+          import sys
+          import time
+          from collections import defaultdict, deque
+          from pathlib import Path
+
+          sys.path.insert(0, "/app/oncokb")
+          from AnnotatorCore import get_oncokb_annotation_column_headers
+          from filtered_maf_annotator import is_genome_kit_regions_file
+          from filtered_sv_annotator import write_empty_annotations
+
+          csv.field_size_limit(sys.maxsize)
+
+          input_path = Path("/mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-sv-in-f'])}}")
+          output_path = Path("/mnt/output/{{=sprig.osBase(inputs.parameters['oncokb-sv-out-f'])}}")
+          raw_path = Path("/tmp/oncokb_cna_raw.tsv")
+          regions_file = "{{inputs.parameters.regions-file}}"
+          tumor_type = "{{inputs.parameters.tumor-type}}"
+          max_attempts = "{{inputs.parameters.max-attempts}}"
+          retry_delay_seconds = "{{inputs.parameters.retry-delay-seconds}}"
+          if not max_attempts.isdigit() or int(max_attempts) < 1:
+              sys.exit(f"max-attempts must be a positive integer: {max_attempts}")
+          if not retry_delay_seconds.isdigit():
+              sys.exit(f"retry-delay-seconds must be a non-negative integer: {retry_delay_seconds}")
+          print(f"OncoKB CNV: using tumor type '{tumor_type}'", flush=True)
+
+
+          def read_tsv(path):
+              with path.open(newline="") as source:
+                  rows = list(csv.reader(source, delimiter="\t"))
+              if not rows:
+                  raise RuntimeError(f"{path} has no header")
+              return rows[0], rows[1:]
+
+
+          def ascii_key(row):
+              # Upstream drops non-ASCII characters from annotated rows only.
+              return tuple(cell.encode("ascii", "ignore").decode("ascii") for cell in row)
+
+
+          def annotate():
+              command = [sys.executable, "/app/oncokb/CnaAnnotator.py", "-i", str(input_path), "-o", str(raw_path),
+                         "-b", os.environ["ONCOKB_API_TOKEN"], "-f", "individual", "-z"]
+              if tumor_type != ".":
+                  command.extend(["-t", tumor_type])
+              subprocess.run(command, check=True)
+
+              # Upstream writes rows that have no class first, without OncoKB
+              # columns. Put every row back in input order, padded to the header.
+              in_header, in_rows = read_tsv(input_path)
+              raw_header, raw_rows = read_tsv(raw_path)
+              header = in_header + get_oncokb_annotation_column_headers(False, False)
+              if raw_header != header:
+                  raise RuntimeError(f"unexpected CnaAnnotator header: {raw_header}")
+              by_input_row = defaultdict(deque)
+              for row in raw_rows:
+                  by_input_row[ascii_key(row[:len(in_header)])].append(row + [""] * (len(header) - len(row)))
+              if len(raw_rows) != len(in_rows):
+                  raise RuntimeError(f"CnaAnnotator wrote {len(raw_rows)} rows for {len(in_rows)} input rows")
+              temporary = output_path.with_name(output_path.name + ".tmp")
+              try:
+                  with temporary.open("w", newline="") as target:
+                      writer = csv.writer(target, delimiter="\t", lineterminator="\n")
+                      writer.writerow(header)
+                      for row in in_rows:
+                          matches = by_input_row[ascii_key(row)]
+                          if not matches:
+                              raise RuntimeError(f"no CnaAnnotator output for input row {row}")
+                          writer.writerow(matches.popleft())
+                  os.replace(temporary, output_path)
+              finally:
+                  temporary.unlink(missing_ok=True)
+              return len(in_rows)
+
+
+          if is_genome_kit_regions_file(regions_file):
+              total = write_empty_annotations(input_path, output_path)
+              print(f"Genome kit regions file: {regions_file}; skipped OncoKB for all {total} CNV rows")
+              sys.exit(0)
+
+          for attempt in range(1, int(max_attempts) + 1):
+              print(f"=== Attempt {attempt} of {max_attempts} ===", flush=True)
+              try:
+                  total = annotate()
+                  print(f"Annotated {total} CNV rows: {output_path}")
+                  sys.exit(0)
+              except (subprocess.CalledProcessError, RuntimeError, OSError) as error:
+                  print(f"Attempt {attempt} failed: {error}", flush=True)
+              if attempt < int(max_attempts):
+                  time.sleep(int(retry_delay_seconds))
+          sys.exit("All attempts failed.")
+        volumeMounts:
+          - name: oncokb-sv-in-f
+            mountPath: /mnt/input/
+          - name: oncokb-sv-out-f
+            mountPath: /mnt/output/
+        env:
+          - name: ONCOKB_API_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: oncokb-secrets
+                key: oncokb_api_token
 # apiVersion: argoproj.io/v1alpha1
 # kind: WorkflowTemplate
 # metadata:
