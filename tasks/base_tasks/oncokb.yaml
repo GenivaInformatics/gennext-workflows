@@ -75,13 +75,25 @@ spec:
               sleep 10
               
               if [ -f "$output_file" ] && [ -s "$output_file" ]; then
-                  # When a batch POST fails, upstream asks OncoKB once per query;
-                  # each query that still fails prints this line and leaves its
-                  # row unannotated (ANNOTATED=False), and upstream exits 0.
+                  # Upstream already retries 429/5xx and network errors 3 times and then
+                  # exits non-zero (handled above). A query that fails otherwise, e.g. a
+                  # 4xx for one malformed query, prints this line, leaves its row
+                  # unannotated, and upstream exits 0. A few such rows are logged and
+                  # kept; more than max(5, 1% of the rows) points at an outage, so the
+                  # attempt fails and is retried.
                   failed_calls=$(grep -c "Error on annotating the url" "$annotation_log" || true)
-                  if [ "${failed_calls:-0}" -gt 0 ]; then
-                      echo "OncoKB: $failed_calls API call(s) failed in this attempt; their rows have no annotation"
-                      return 1
+                  failed_calls=${failed_calls:-0}
+                  if [ "$failed_calls" -gt 0 ]; then
+                      rows=$(tail -n +2 "$input_file" | grep -vc "^#" || true)
+                      limit=$(( ${rows:-0} / 100 ))
+                      [ "$limit" -lt 5 ] && limit=5
+                      echo "OncoKB: $failed_calls API call(s) failed in this attempt; these rows stay unannotated:"
+                      grep "Error on annotating the url" "$annotation_log" | head -20
+                      if [ "$failed_calls" -gt "$limit" ]; then
+                          echo "OncoKB: more than $limit failed calls for $rows rows; failing this attempt"
+                          return 1
+                      fi
+                      echo "OncoKB: within the limit of $limit for $rows rows; keeping this output"
                   fi
                   echo "Output file validated successfully: $output_file"
                   return 0
@@ -208,13 +220,25 @@ spec:
               sleep 10
               
               if [ -f "$output_file" ] && [ -s "$output_file" ]; then
-                  # When a batch POST fails, upstream asks OncoKB once per query;
-                  # each query that still fails prints this line and leaves its
-                  # row unannotated (ANNOTATED=False), and upstream exits 0.
+                  # Upstream already retries 429/5xx and network errors 3 times and then
+                  # exits non-zero (handled above). A query that fails otherwise, e.g. a
+                  # 4xx for one malformed query, prints this line, leaves its row
+                  # unannotated, and upstream exits 0. A few such rows are logged and
+                  # kept; more than max(5, 1% of the rows) points at an outage, so the
+                  # attempt fails and is retried.
                   failed_calls=$(grep -c "Error on annotating the url" "$annotation_log" || true)
-                  if [ "${failed_calls:-0}" -gt 0 ]; then
-                      echo "OncoKB: $failed_calls API call(s) failed in this attempt; their rows have no annotation"
-                      return 1
+                  failed_calls=${failed_calls:-0}
+                  if [ "$failed_calls" -gt 0 ]; then
+                      rows=$(tail -n +2 "$input_file" | grep -vc "^#" || true)
+                      limit=$(( ${rows:-0} / 100 ))
+                      [ "$limit" -lt 5 ] && limit=5
+                      echo "OncoKB: $failed_calls API call(s) failed in this attempt; these rows stay unannotated:"
+                      grep "Error on annotating the url" "$annotation_log" | head -20
+                      if [ "$failed_calls" -gt "$limit" ]; then
+                          echo "OncoKB: more than $limit failed calls for $rows rows; failing this attempt"
+                          return 1
+                      fi
+                      echo "OncoKB: within the limit of $limit for $rows rows; keeping this output"
                   fi
                   echo "Output file validated successfully: $output_file"
                   return 0
@@ -339,13 +363,25 @@ spec:
               sleep 10
               
               if [ -f "$output_file" ] && [ -s "$output_file" ]; then
-                  # When a batch POST fails, upstream asks OncoKB once per query;
-                  # each query that still fails prints this line and leaves its
-                  # row unannotated (ANNOTATED=False), and upstream exits 0.
+                  # Upstream already retries 429/5xx and network errors 3 times and then
+                  # exits non-zero (handled above). A query that fails otherwise, e.g. a
+                  # 4xx for one malformed query, prints this line, leaves its row
+                  # unannotated, and upstream exits 0. A few such rows are logged and
+                  # kept; more than max(5, 1% of the rows) points at an outage, so the
+                  # attempt fails and is retried.
                   failed_calls=$(grep -c "Error on annotating the url" "$annotation_log" || true)
-                  if [ "${failed_calls:-0}" -gt 0 ]; then
-                      echo "OncoKB: $failed_calls API call(s) failed in this attempt; their rows have no annotation"
-                      return 1
+                  failed_calls=${failed_calls:-0}
+                  if [ "$failed_calls" -gt 0 ]; then
+                      rows=$(tail -n +2 "$input_file" | grep -vc "^#" || true)
+                      limit=$(( ${rows:-0} / 100 ))
+                      [ "$limit" -lt 5 ] && limit=5
+                      echo "OncoKB: $failed_calls API call(s) failed in this attempt; these rows stay unannotated:"
+                      grep "Error on annotating the url" "$annotation_log" | head -20
+                      if [ "$failed_calls" -gt "$limit" ]; then
+                          echo "OncoKB: more than $limit failed calls for $rows rows; failing this attempt"
+                          return 1
+                      fi
+                      echo "OncoKB: within the limit of $limit for $rows rows; keeping this output"
                   fi
                   echo "Output file validated successfully: $output_file"
                   return 0
@@ -487,13 +523,25 @@ spec:
               sleep 10
               
               if [ -f "$output_file" ] && [ -s "$output_file" ]; then
-                  # When a batch POST fails, upstream asks OncoKB once per query;
-                  # each query that still fails prints this line and leaves its
-                  # row unannotated (ANNOTATED=False), and upstream exits 0.
+                  # Upstream already retries 429/5xx and network errors 3 times and then
+                  # exits non-zero (handled above). A query that fails otherwise, e.g. a
+                  # 4xx for one malformed query, prints this line, leaves its row
+                  # unannotated, and upstream exits 0. A few such rows are logged and
+                  # kept; more than max(5, 1% of the rows) points at an outage, so the
+                  # attempt fails and is retried.
                   failed_calls=$(grep -c "Error on annotating the url" "$annotation_log" || true)
-                  if [ "${failed_calls:-0}" -gt 0 ]; then
-                      echo "OncoKB: $failed_calls API call(s) failed in this attempt; their rows have no annotation"
-                      return 1
+                  failed_calls=${failed_calls:-0}
+                  if [ "$failed_calls" -gt 0 ]; then
+                      rows=$(tail -n +2 "$input_file" | grep -vc "^#" || true)
+                      limit=$(( ${rows:-0} / 100 ))
+                      [ "$limit" -lt 5 ] && limit=5
+                      echo "OncoKB: $failed_calls API call(s) failed in this attempt; these rows stay unannotated:"
+                      grep "Error on annotating the url" "$annotation_log" | head -20
+                      if [ "$failed_calls" -gt "$limit" ]; then
+                          echo "OncoKB: more than $limit failed calls for $rows rows; failing this attempt"
+                          return 1
+                      fi
+                      echo "OncoKB: within the limit of $limit for $rows rows; keeping this output"
                   fi
                   echo "Output file validated successfully: $output_file"
                   return 0
@@ -623,13 +671,25 @@ spec:
               sleep 10
               
               if [ -f "$output_file" ] && [ -s "$output_file" ]; then
-                  # When a batch POST fails, upstream asks OncoKB once per query;
-                  # each query that still fails prints this line and leaves its
-                  # row unannotated (ANNOTATED=False), and upstream exits 0.
+                  # Upstream already retries 429/5xx and network errors 3 times and then
+                  # exits non-zero (handled above). A query that fails otherwise, e.g. a
+                  # 4xx for one malformed query, prints this line, leaves its row
+                  # unannotated, and upstream exits 0. A few such rows are logged and
+                  # kept; more than max(5, 1% of the rows) points at an outage, so the
+                  # attempt fails and is retried.
                   failed_calls=$(grep -c "Error on annotating the url" "$annotation_log" || true)
-                  if [ "${failed_calls:-0}" -gt 0 ]; then
-                      echo "OncoKB: $failed_calls API call(s) failed in this attempt; their rows have no annotation"
-                      return 1
+                  failed_calls=${failed_calls:-0}
+                  if [ "$failed_calls" -gt 0 ]; then
+                      rows=$(tail -n +2 "$input_file" | grep -vc "^#" || true)
+                      limit=$(( ${rows:-0} / 100 ))
+                      [ "$limit" -lt 5 ] && limit=5
+                      echo "OncoKB: $failed_calls API call(s) failed in this attempt; these rows stay unannotated:"
+                      grep "Error on annotating the url" "$annotation_log" | head -20
+                      if [ "$failed_calls" -gt "$limit" ]; then
+                          echo "OncoKB: more than $limit failed calls for $rows rows; failing this attempt"
+                          return 1
+                      fi
+                      echo "OncoKB: within the limit of $limit for $rows rows; keeping this output"
                   fi
                   echo "Output file validated successfully: $output_file"
                   return 0
@@ -786,17 +846,29 @@ spec:
               # fails prints this line and leaves its row unannotated, while the
               # annotator exits 0.
               failed_calls = 0
+              failed_urls = []
               with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     text=True, bufsize=1) as process:
                   for line in process.stdout:
                       print(line, end="", flush=True)
                       if "Error on annotating the url" in line:
                           failed_calls += 1
+                          failed_urls.append(line.strip())
               if process.returncode:
                   # Not the full command: it holds the token.
                   raise RuntimeError(f"CnaAnnotator exited with status {process.returncode}")
+              # Upstream retries 429/5xx and network errors and exits non-zero (above).
+              # Other failed queries (e.g. a 4xx) leave their rows unannotated: a few
+              # are kept, more than max(5, 1% of the rows) fails the attempt.
               if failed_calls:
-                  raise RuntimeError(f"{failed_calls} OncoKB API call(s) failed; their rows have no annotation")
+                  rows = max(sum(1 for _ in input_path.open()) - 1, 0)
+                  limit = max(5, rows // 100)
+                  print(f"OncoKB: {failed_calls} API call(s) failed; these rows stay unannotated:", flush=True)
+                  for url in failed_urls[:20]:
+                      print(url, flush=True)
+                  if failed_calls > limit:
+                      raise RuntimeError(f"more than {limit} failed OncoKB calls for {rows} rows")
+                  print(f"OncoKB: within the limit of {limit} for {rows} rows; keeping this output", flush=True)
 
               # Upstream writes rows that have no class first, without OncoKB
               # columns. Put every row back in input order, padded to the header.

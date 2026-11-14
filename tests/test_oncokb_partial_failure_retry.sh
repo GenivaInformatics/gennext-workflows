@@ -3,13 +3,22 @@
 # query. Each query that still fails prints "Error on annotating the url ..."
 # and leaves its row unannotated, and the annotator still exits 0 (#42).
 #
+# Upstream already retries 429/5xx and network errors and then exits
+# non-zero, which the tasks retry. What reaches that line is mostly a query
+# OncoKB rejects (4xx), which a retry won't fix. Policy: up to max(5, 1% of
+# the rows) such calls are logged and their rows kept unannotated; more fail
+# the attempt, so it is retried, and the task fails if every attempt has more.
+#
 # This runs the real task scripts from tasks/base_tasks/oncokb.yaml and
 # oncokb-fusion-annotation.yaml, in the image those tasks pin, with a fake
 # annotator mounted over the upstream script. The fake writes a valid output
-# and prints that line on the attempts listed in FAIL_ATTEMPTS. Checks:
-#   - a failed call on attempt 1 makes the task retry, and attempt 2 succeeds;
-#   - failed calls on every attempt make the task exit non-zero;
+# and prints FAIL_COUNT such lines on the attempts listed in FAIL_ATTEMPTS.
+# With a 1-row input the limit is 5. Checks:
 #   - a clean run passes on the first attempt;
+#   - one failed call on every attempt is logged and kept: exit 0, no retry;
+#   - six failed calls on attempt 1 make the task retry, and attempt 2 passes;
+#   - six failed calls on every attempt make the task exit non-zero;
+#   - an annotator exit status of 3 fails the task;
 #   - the token is not printed.
 #
 # Needs docker and python3 with PyYAML.
@@ -52,7 +61,8 @@ with open(dst, "w") as f:
     for line in lines[1:]:
         f.write("\t".join(line.split("\t") + ["True"] + [""] * (len(suffix) - 1)) + "\n")
 if attempt in fail_on:
-    print("Error on annotating the url https://www.oncokb.org/api/v1/annotate/x?hugoSymbol=BRAF")
+    for i in range(int(os.environ.get("FAIL_COUNT", "1"))):
+        print(f"Error on annotating the url https://www.oncokb.org/api/v1/annotate/x?hugoSymbol=BRAF&i={i}")
 sys.exit(int(os.environ.get("EXIT_CODE", "0")))
 PY
 
@@ -90,13 +100,13 @@ oncokb-sv-on-node:/app/oncokb/filtered_sv_annotator.py
 oncokb-fusions:/app/oncokb/FusionAnnotator.py
 oncokb-cnv:/app/oncokb/CnaAnnotator.py"
 
-run_case() {  # task fake-path fail-attempts exit-code -> prints the status
-  local task=$1 fake=$2 fails=$3 code=$4 dir="$WORK/run-$1-$3-$4" image cmd
+run_case() {  # task fake-path fail-attempts fail-count exit-code -> prints the status
+  local task=$1 fake=$2 fails=$3 count=$4 code=$5 dir="$WORK/run-$1-$3-$4-$5" image cmd
   mkdir -p "$dir/in" "$dir/out"
   read -r image cmd < <(extract_task tasks/base_tasks/oncokb.yaml "$task" "$dir/script")
   cp "$WORK/in.maf" "$WORK/in.tsv" "$dir/in/"
   set +e
-  docker run --rm -e ONCOKB_API_TOKEN="$TOKEN" -e FAIL_ATTEMPTS="$fails" -e EXIT_CODE="$code" \
+  docker run --rm -e ONCOKB_API_TOKEN="$TOKEN" -e FAIL_ATTEMPTS="$fails" -e FAIL_COUNT="$count" -e EXIT_CODE="$code" \
     -v "$dir/in:/mnt/input:ro" -v "$dir/out:/mnt/output" -v "$dir/script:/script:ro" \
     -v "$WORK/fake_annotator.py:$fake:ro" -w /app/oncokb "$image" "$cmd" /script >"$dir/log" 2>&1
   echo $?
@@ -104,19 +114,25 @@ run_case() {  # task fake-path fail-attempts exit-code -> prints the status
 }
 
 while IFS=: read -r task fake; do
-  status=$(run_case "$task" "$fake" "" 0)
+  status=$(run_case "$task" "$fake" "" 1 0)
   [ "$status" = 0 ] || fail "$task: a clean run exited $status"
-  status=$(run_case "$task" "$fake" 1 0)
-  log="$WORK/run-$task-1-0/log"
-  [ "$status" = 0 ] || { cat "$log" >&2; fail "$task: a failed call on attempt 1 should be retried and pass on attempt 2 (exit $status)"; }
-  grep -q "Attempt 2 of 2" "$log" || fail "$task: no second attempt after a failed call"
-  status=$(run_case "$task" "$fake" 1,2 0)
-  log="$WORK/run-$task-1,2-0/log"
-  [ "$status" != 0 ] || { cat "$log" >&2; fail "$task: failed calls on every attempt should fail the task"; }
-  status=$(run_case "$task" "$fake" "" 3)
+  status=$(run_case "$task" "$fake" 1,2 1 0)
+  log="$WORK/run-$task-1,2-1-0/log"
+  [ "$status" = 0 ] || { cat "$log" >&2; fail "$task: one failed call should be logged and kept (exit $status)"; }
+  grep -q "stay unannotated" "$log" && grep -q "hugoSymbol=BRAF&i=0" "$log" \
+    || fail "$task: the failed query should be logged"
+  if grep -q "Attempt 2 of 2" "$log"; then fail "$task: one failed call should not be retried"; fi
+  status=$(run_case "$task" "$fake" 1 6 0)
+  log="$WORK/run-$task-1-6-0/log"
+  [ "$status" = 0 ] || { cat "$log" >&2; fail "$task: six failed calls on attempt 1 should be retried and pass on attempt 2 (exit $status)"; }
+  grep -q "Attempt 2 of 2" "$log" || fail "$task: no second attempt after six failed calls"
+  status=$(run_case "$task" "$fake" 1,2 6 0)
+  log="$WORK/run-$task-1,2-6-0/log"
+  [ "$status" != 0 ] || { cat "$log" >&2; fail "$task: six failed calls on every attempt should fail the task"; }
+  status=$(run_case "$task" "$fake" "" 1 3)
   [ "$status" != 0 ] || fail "$task: an annotator exit status 3 should fail the task"
   if grep -rq "$TOKEN" "$WORK"/run-"$task"-*/log; then fail "$task: the token appears in the log"; fi
-  echo "ok  $task: retries on failed OncoKB calls, fails when they persist"
+  echo "ok  $task: keeps a few failed calls, retries and fails on many"
 done <<<"$cases"
 
 # oncokb-fusion-annotation runs FusionAnnotator from its own script.
@@ -144,22 +160,26 @@ head = "import os, subprocess, sys, time\nTUMOR_TYPE = 'MEL'\n"
 open(p, "w").write(head + s[start:end])
 PY
 printf 'Fusion\tHugo_Symbol\nBRAF-KIAA1549\tBRAF\n' >"$dir/in/fusions_input.tsv"
-for fails in "" 1 1,2,3; do
+for case in ":1" "1,2,3:1" "1:6" "1,2,3:6"; do
+  fails=${case%%:*}; count=${case#*:}
   set +e
-  docker run --rm -e ONCOKB_API_TOKEN="$TOKEN" -e FAIL_ATTEMPTS="$fails" \
+  docker run --rm -e ONCOKB_API_TOKEN="$TOKEN" -e FAIL_ATTEMPTS="$fails" -e FAIL_COUNT="$count" \
     -v "$dir/in/fusions_input.tsv:/tmp/fusions_input.tsv:ro" -v "$dir/script:/script.py:ro" \
     -v "$WORK/fake_annotator.py:/app/oncokb/FusionAnnotator.py:ro" -w /app/oncokb \
-    "$(cat "$dir/image")" python3 /script.py >"$dir/log-$fails" 2>&1
+    "$(cat "$dir/image")" python3 /script.py >"$dir/log-$fails-$count" 2>&1
   status=$?
   set -e
-  case "$fails" in
-    "") [ $status = 0 ] || fail "$task: a clean run exited $status" ;;
-    1) [ $status = 0 ] && grep -q "Attempt 2 of 3" "$dir/log-$fails" \
-         || fail "$task: a failed call on attempt 1 should be retried and pass" ;;
-    *) [ $status != 0 ] || fail "$task: failed calls on every attempt should fail the task" ;;
+  log="$dir/log-$fails-$count"
+  case "$case" in
+    ":1") [ $status = 0 ] || fail "$task: a clean run exited $status" ;;
+    "1,2,3:1") [ $status = 0 ] && grep -q "stay unannotated" "$log" && ! grep -q "Attempt 2 of 3" "$log" \
+         || fail "$task: one failed call should be logged and kept without a retry" ;;
+    "1:6") [ $status = 0 ] && grep -q "Attempt 2 of 3" "$log" \
+         || fail "$task: six failed calls on attempt 1 should be retried and pass" ;;
+    *) [ $status != 0 ] || fail "$task: six failed calls on every attempt should fail the task" ;;
   esac
 done
 if grep -q "$TOKEN" "$dir"/log-*; then fail "$task: the token appears in the log"; fi
-echo "ok  $task: retries on failed OncoKB calls, fails when they persist"
+echo "ok  $task: keeps a few failed calls, retries and fails on many"
 
-echo "PASS: OncoKB tasks retry when OncoKB calls fail partway"
+echo "PASS: OncoKB tasks keep a few failed calls and retry when many fail"

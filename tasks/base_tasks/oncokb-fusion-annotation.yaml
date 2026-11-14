@@ -105,16 +105,26 @@ spec:
               # batch POST fails it asks once per query, and each query that still
               # fails prints this line and leaves its row unannotated, while the
               # annotator exits 0.
-              failed_calls = 0
+              failed_urls = []
               with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     text=True, bufsize=1) as process:
                   for line in process.stdout:
                       print(line, end="", flush=True)
                       if "Error on annotating the url" in line:
-                          failed_calls += 1
+                          failed_urls.append(line.strip())
 
-              if process.returncode == 0 and failed_calls:
-                  print(f"OncoKB: {failed_calls} API call(s) failed on attempt {attempt}; their rows have no annotation")
+              # Upstream retries 429/5xx and network errors and exits non-zero. Other
+              # failed queries (e.g. a 4xx) leave their rows unannotated: a few are
+              # kept, more than max(5, 1% of the rows) fails the attempt.
+              rows = max(sum(1 for _ in open("/tmp/fusions_input.tsv")) - 1, 0)
+              limit = max(5, rows // 100)
+              if failed_urls:
+                  print(f"OncoKB: {len(failed_urls)} API call(s) failed on attempt {attempt}; these rows stay unannotated:")
+                  for url in failed_urls[:20]:
+                      print(url)
+
+              if process.returncode == 0 and len(failed_urls) > limit:
+                  print(f"OncoKB: more than {limit} failed calls for {rows} rows; failing this attempt")
               elif process.returncode == 0:
                   time.sleep(5)
                   if os.path.isfile("/tmp/fusions_annotated.tsv") and os.path.getsize("/tmp/fusions_annotated.tsv") > 0:
