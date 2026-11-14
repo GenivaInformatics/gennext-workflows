@@ -3,12 +3,13 @@
 
 import argparse
 import csv
+import logging
 import os
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
 
+import AnnotatorCore
 from AnnotatorCore import MutationStatus, get_oncokb_annotation_column_headers
 
 
@@ -36,6 +37,73 @@ def maf_annotation_header():
     """
     return get_oncokb_annotation_column_headers(
         False, True, MutationStatus.SOMATIC, combined_mode=True)
+
+
+# Rows per upstream call. Upstream v3 posted genomic-change queries to OncoKB
+# in batches of POST_QUERIES_THRESHOLD_GC_HGVSG (100). v4's mixed mode sends a
+# whole file's queries in one POST, which OncoKB answers with HTTP 500 for a
+# MAF of tens of thousands of rows. Annotating the MAF in chunks of that size
+# restores v3's request size.
+CHUNK_ROWS = AnnotatorCore.POST_QUERIES_THRESHOLD_GC_HGVSG
+
+
+def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
+                 api_url=None, chunk_rows=CHUNK_ROWS):
+    """MafAnnotator.py -q Genomic_Change, run chunk by chunk. Returns the rows sent.
+
+    Does what MafAnnotator.main does for our options, once: set the API URL and
+    token, validate the token. Then it calls upstream's processalterationevents
+    on consecutive chunks of the input and joins their output. Each chunk is
+    the input's header line plus a run of its data lines, copied byte for
+    byte, so upstream reads the same text as from the whole file. The token
+    is never put on a command line.
+    """
+    if api_url:
+        AnnotatorCore.setoncokbbaseurl(api_url)
+    AnnotatorCore.setoncokbapitoken(token)
+    AnnotatorCore.validate_oncokb_token()
+    query_type = AnnotatorCore.QueryType.GENOMIC_CHANGE
+    reference_genome = AnnotatorCore.ReferenceGenome[reference.upper()]
+    cancer_type = "" if tumor_type == "." else tumor_type
+
+    with tempfile.TemporaryDirectory(prefix="chunks-", dir=output_path.parent) as temp_dir, \
+            input_path.open(newline="") as source, output_path.open("w", newline="") as target:
+        chunk_in = Path(temp_dir) / "in.maf"
+        chunk_out = Path(temp_dir) / "out.maf"
+        header = None
+        state = {"sent": 0, "chunks": 0, "header_written": False}
+
+        def annotate(chunk):
+            with chunk_in.open("w", newline="") as part:
+                part.write(header)
+                part.writelines(chunk)
+            AnnotatorCore.processalterationevents(
+                str(chunk_in), str(chunk_out), "", cancer_type, {}, False,
+                query_type, reference_genome, False)
+            with chunk_out.open(newline="") as part:
+                part_header = part.readline()
+                if not state["header_written"]:
+                    target.write(part_header)
+                    state["header_written"] = True
+                target.writelines(part)
+            state["sent"] += len(chunk)
+            state["chunks"] += 1
+            if state["chunks"] % 20 == 0:
+                print(f"OncoKB: {state['sent']} MAF rows annotated", flush=True)
+
+        chunk = []
+        for line in source:
+            if header is None:
+                if line.strip() and not line.startswith("#"):
+                    header = line if line.endswith("\n") else line + "\n"
+                continue
+            chunk.append(line if line.endswith("\n") else line + "\n")
+            if len(chunk) == chunk_rows:
+                annotate(chunk)
+                chunk = []
+        if chunk:
+            annotate(chunk)
+        return state["sent"]
 
 
 def oncokb_echo(row):
@@ -117,7 +185,10 @@ def main():
     parser.add_argument("--reference", required=True)
     parser.add_argument("--tumor-type", default=".")
     parser.add_argument("--regions-file", default=".")
+    # Only for tests against demo.oncokb.org; production uses upstream's default.
+    parser.add_argument("--api-url", default=None)
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO)
     if is_genome_kit_regions_file(args.regions_file):
         with args.input.open(newline="") as source:
             header = read_header(csv.reader(source, delimiter="\t"))
@@ -130,13 +201,11 @@ def main():
         header, total = count_maf(args.input)
         print(f"MAF rows: {total}; sending all to OncoKB", flush=True)
         if total:
-            token = os.environ["ONCOKB_API_TOKEN"]
-            command = [sys.executable, "/app/oncokb/MafAnnotator.py", "-i", str(args.input),
-                       "-o", str(annotated), "-q", "Genomic_Change", "-r", args.reference,
-                       "-b", token]
-            if args.tumor_type != ".":
-                command.extend(["-t", args.tumor_type])
-            subprocess.run(command, check=True)
+            sent = annotate_maf(args.input, annotated, os.environ["ONCOKB_API_TOKEN"].strip(),
+                                args.reference, args.tumor_type, args.api_url)
+            if sent != total:
+                # A record spanning lines would split across chunks.
+                raise ValueError(f"MAF has {total} records but {sent} data lines")
         written = merge_maf(args.input, annotated, args.output, header, skip_all=not total)
         if written != total:
             raise ValueError("Merged MAF row count differs from input")

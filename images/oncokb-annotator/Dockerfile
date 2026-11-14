@@ -9,7 +9,10 @@
 #   0.2.0-upstream-v3.4.2  upstream tag v3.4.2 (1cbdfb2), same code and
 #                          Python packages as 0.1.7-unfiltered
 #   0.3.0-upstream-v4.1.0  upstream tag v4.1.0 (77521cd); the MAF wrapper
-#                          expects v4's mixed-mode MAF header
+#                          expects v4's mixed-mode MAF header. Not used: v4
+#                          posts a whole MAF in one request (HTTP 500)
+#   0.3.1-upstream-v4.1.0  as 0.3.0; the MAF wrapper annotates in chunks of
+#                          100 rows, v3's request size
 FROM python:3.12.12-alpine3.22@sha256:848ba4413eb897e225159b8fc1b02094576cbae4aa73fc13142608ae2c8c0e32
 
 ARG ONCOKB_ANNOTATOR_VERSION=v4.1.0

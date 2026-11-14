@@ -8,9 +8,11 @@ from unittest.mock import patch
 
 import io
 
+import AnnotatorCore
 from AnnotatorCore import MutationStatus, append_headers, get_oncokb_annotation_column_headers
 from filtered_maf_annotator import (
-    count_maf, is_genome_kit_regions_file, main, maf_annotation_header, merge_maf)
+    CHUNK_ROWS, annotate_maf, count_maf, is_genome_kit_regions_file, main,
+    maf_annotation_header, merge_maf)
 from filtered_sv_annotator import main as sv_main
 from backfill_filtered_maf import main as backfill_main
 
@@ -43,9 +45,11 @@ class FilteredMafTest(unittest.TestCase):
                     str(output), "--reference", "GRCh38", "--regions-file",
                     "/sample/hg38_canonical_chrom_contig_regions.bed"]
             with patch.object(sys, "argv", argv), patch.dict(os.environ, {}, clear=True), \
-                    patch("filtered_maf_annotator.subprocess.run") as run:
+                    patch("AnnotatorCore.validate_oncokb_token") as validate, \
+                    patch("AnnotatorCore.processalterationevents") as run:
                 main()
                 run.assert_not_called()
+                validate.assert_not_called()
             with output.open(newline="") as file:
                 rows = list(csv.reader(file, delimiter="\t"))
             annotation_header = maf_annotation_header()
@@ -73,17 +77,27 @@ class FilteredMafTest(unittest.TestCase):
             suffix = get_oncokb_annotation_column_headers(False, False)
             self.assertEqual(rows, [header + suffix, data[0] + [""] * len(suffix)])
 
-    def test_panel_kit_sends_every_row_to_oncokb(self):
+    def fake_processalterationevents(self, sent):
+        """Stands in for AnnotatorCore.processalterationevents: echoes the rows
+        it is given (ASCII-folded, as upstream does) with ONCOGENIC=Unknown."""
         annotation_header = maf_annotation_header()
 
-        def fake_annotator(command, check):
-            source = Path(command[command.index("-i") + 1])
-            target = Path(command[command.index("-o") + 1])
-            with source.open(newline="") as file:
-                rows = list(csv.reader(file, delimiter="\t"))
+        def fake(eventfile, outfile, *args):
+            with open(eventfile, newline="") as file:
+                text = file.read()
+            rows = list(csv.reader(text.splitlines(), delimiter="\t"))
+            sent.append(text)
             suffix = [""] * len(annotation_header)
             suffix[annotation_header.index("ONCOGENIC")] = "Unknown"
-            write_tsv(target, rows[0] + annotation_header, [row + suffix for row in rows[1:]])
+            with open(outfile, "w") as file:
+                for row in [rows[0] + annotation_header] + [r + suffix for r in rows[1:]]:
+                    file.write("\t".join(row).encode("ascii", "ignore").decode("ascii") + "\n")
+        return fake
+
+    def test_panel_kit_sends_every_row_to_oncokb(self):
+        annotation_header = maf_annotation_header()
+        sent = []
+        fake_annotator = self.fake_processalterationevents(sent)
 
         with tempfile.TemporaryDirectory() as temp:
             source, output = [Path(temp) / name for name in ("in.maf", "out.maf")]
@@ -91,10 +105,20 @@ class FilteredMafTest(unittest.TestCase):
             argv = ["filtered_maf_annotator.py", "--input", str(source), "--output",
                     str(output), "--reference", "GRCh38", "--regions-file", "/sample/panel.bed"]
             with patch.object(sys, "argv", argv), \
-                    patch.dict(os.environ, {"ONCOKB_API_TOKEN": "t"}, clear=True), \
-                    patch("filtered_maf_annotator.subprocess.run", side_effect=fake_annotator) as run:
+                    patch.dict(os.environ, {"ONCOKB_API_TOKEN": "t "}, clear=True), \
+                    patch("AnnotatorCore.validate_oncokb_token") as validate, \
+                    patch("AnnotatorCore.setoncokbapitoken") as set_token, \
+                    patch("AnnotatorCore.processalterationevents", side_effect=fake_annotator) as run:
                 main()
-                self.assertEqual(Path(run.call_args.args[0][run.call_args.args[0].index("-i") + 1]), source)
+                validate.assert_called_once()
+                set_token.assert_called_once_with("t")
+                self.assertEqual(run.call_count, 1)
+                # Genomic change, GRCh38, no tumour type, no hotspots/descriptions.
+                args = run.call_args.args
+                self.assertEqual(args[2:], ("", "", {}, False, AnnotatorCore.QueryType.GENOMIC_CHANGE,
+                                            AnnotatorCore.ReferenceGenome.GRCH38, False))
+            with source.open(newline="") as file:
+                self.assertEqual(sent, [file.read()])
             with output.open(newline="") as file:
                 rows = list(csv.reader(file, delimiter="\t"))
             self.assertEqual(rows[0], HEADER + annotation_header)
@@ -228,6 +252,54 @@ class FilteredMafTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "OncoKB annotation columns"):
                     backfill_main()
                 run.assert_not_called()
+
+
+    def test_annotates_in_chunks_of_v3_post_size(self):
+        self.assertEqual(CHUNK_ROWS, 100)
+        sent = []
+        rows = [row.copy() for row in ROWS]
+        rows[1][-1] = "Café"
+        with tempfile.TemporaryDirectory() as temp:
+            source, annotated, output = [Path(temp) / n for n in ("in.maf", "a.maf", "out.maf")]
+            write_tsv(source, HEADER, rows)
+            with source.open(newline="") as file:
+                lines = file.read().splitlines(keepends=True)
+            with patch("AnnotatorCore.validate_oncokb_token"), \
+                    patch("AnnotatorCore.processalterationevents",
+                          side_effect=self.fake_processalterationevents(sent)) as run:
+                self.assertEqual(annotate_maf(source, annotated, "t", "GRCh38", "MEL",
+                                              chunk_rows=2), 5)
+            self.assertEqual(run.call_count, 3)
+            self.assertEqual(run.call_args.args[3], "MEL")
+            # Each chunk is the header plus the next input lines, byte for byte.
+            self.assertEqual(sent, [lines[0] + "".join(lines[1:3]), lines[0] + "".join(lines[3:5]),
+                                    lines[0] + lines[5]])
+            with annotated.open(newline="") as file:
+                out = list(csv.reader(file, delimiter="\t"))
+            self.assertEqual(out[0], HEADER + maf_annotation_header())
+            self.assertEqual(len(out), 6)
+            header, _ = count_maf(source)
+            self.assertEqual(merge_maf(source, annotated, output, header), 5)
+            with output.open(newline="") as file:
+                merged = list(csv.reader(file, delimiter="\t"))
+            self.assertEqual([row[:len(HEADER)] for row in merged[1:]], rows)
+
+    def test_refuses_a_record_spanning_lines(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source, output = [Path(temp) / name for name in ("in.maf", "out.maf")]
+            rows = [row.copy() for row in ROWS]
+            rows[0][-1] = "PASS\nsecond line"
+            write_tsv(source, HEADER, rows)
+            argv = ["filtered_maf_annotator.py", "--input", str(source), "--output",
+                    str(output), "--reference", "GRCh38", "--regions-file", "/sample/panel.bed"]
+            with patch.object(sys, "argv", argv), \
+                    patch.dict(os.environ, {"ONCOKB_API_TOKEN": "t"}, clear=True), \
+                    patch("AnnotatorCore.validate_oncokb_token"), \
+                    patch("AnnotatorCore.processalterationevents",
+                          side_effect=self.fake_processalterationevents([])):
+                with self.assertRaisesRegex(ValueError, "records but"):
+                    main()
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

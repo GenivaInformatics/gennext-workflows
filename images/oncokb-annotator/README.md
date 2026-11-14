@@ -1,6 +1,6 @@
 # OncoKB annotator image
 
-`bergun/oncokb-annotator:0.3.0-upstream-v4.1.0` is upstream
+`bergun/oncokb-annotator:0.3.1-upstream-v4.1.0` is upstream
 [oncokb-annotator](https://github.com/oncokb/oncokb-annotator) at tag `v4.1.0`
 (commit `77521cd`), unmodified, plus the three wrapper scripts in this
 directory. The previous image, `0.2.0-upstream-v3.4.2`, is upstream `v3.4.2`
@@ -28,8 +28,23 @@ The same image serves `oncokb-templates` (SNV, SV/CNV, fusions) and
 
 ## SNV annotation wrapper
 
-`filtered_maf_annotator.py` sends every MAF row to the upstream
-`MafAnnotator.py`, then merges the result back onto the original input rows.
+`filtered_maf_annotator.py` sends every MAF row to OncoKB through upstream's
+`AnnotatorCore`, then merges the result back onto the original input rows.
+
+It does what `MafAnnotator.py` does for our options (`-q Genomic_Change -r
+<ref> [-t <tumour type>]`): set the token, validate it, call
+`processalterationevents`. But it calls `processalterationevents` once per
+chunk of 100 rows, because v4 sends all of a file's queries in one POST.
+Upstream v3 posted 100 genomic-change queries at a time
+(`POST_QUERIES_THRESHOLD_GC_HGVSG`). v4's mixed mode posts a whole file at
+once, and OncoKB answers a MAF of tens of thousands of rows with HTTP 500
+(upstream issue oncokb/oncokb-annotator#238 asks for request limits; there is
+no fix as of v4.1.0).
+
+Each chunk is the header line plus the next 100 data lines, copied byte for
+byte. The wrapper refuses a MAF whose records span lines. The token is no
+longer passed on a command line, so it doesn't show in a failed step's log.
+`0.3.0` lacks the chunking and isn't used.
 Upstream writes each output row through `encode('ascii', 'ignore')`, which
 drops non-ASCII characters from echoed input columns (ClinVar `CLNDN`
 "Muir-Torré"); the merge checks the echo against the ASCII-folded input and
