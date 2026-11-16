@@ -31,6 +31,12 @@ spec:
       script:
         name: "fastqc"
         image: quay.io/biocontainers/fastqc:0.12.1--hdfd78af_0
+        # --threads=2 at FastQC's default 512 MB per thread: the wrapper starts
+        # Java with -Xmx1024m. 1.5 GiB covers that heap plus the JVM's own
+        # memory (metaspace, code cache, thread stacks).
+        resources:
+          requests:
+            memory: 1536Mi
         command: [sh]
         source: |
           ls -lha  /mnt/input/r1/;
