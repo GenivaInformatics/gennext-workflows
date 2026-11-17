@@ -55,7 +55,14 @@ spec:
       script:
         name: "parabricks-germline-fq2bamfast-no-bqsr-script"
         image: "{{workflow.parameters.parabricksImage}}"
+        # Host memory: fq2bam sorts with --memory-limit GiB, which
+        # otherwise defaults to half of the host's RAM as /proc/meminfo shows
+        # it, not the pod's. Pinned to 30 (what a 62 GiB node got by default)
+        # so the request below holds on every node. Peak: 30 sort + ~5.5 BWA
+        # index + work queues and process memory.
         resources:
+          requests:
+            memory: 40Gi
           limits:
             nvidia.com/gpu: 1
         command: [sh]
@@ -71,6 +78,7 @@ spec:
             "{{inputs.parameters.read-group-str}}" \
             --tmp-dir /mnt/scratch/ \
             --low-memory \
+            --memory-limit 30 \
             --bwa-cpu-thread-pool {{inputs.parameters.thread_count}} \
             --out-duplicate-metrics /mnt/output/metrics/{{=sprig.osBase(inputs.parameters['output-dupes'])}} \
             --out-bam /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}
@@ -136,7 +144,14 @@ spec:
       script:
         name: "parabricks-germline-fq2bam-no-bqsr-script"
         image: "{{workflow.parameters.parabricksImage}}"
+        # Host memory: fq2bam sorts with --memory-limit GiB, which
+        # otherwise defaults to half of the host's RAM as /proc/meminfo shows
+        # it, not the pod's. Pinned to 30 (what a 62 GiB node got by default)
+        # so the request below holds on every node. Peak: 30 sort + ~5.5 BWA
+        # index + work queues and process memory.
         resources:
+          requests:
+            memory: 40Gi
           limits:
             nvidia.com/gpu: 1
         command: [sh]
@@ -147,6 +162,7 @@ spec:
             "{{inputs.parameters.read-group-str}}" \
             --tmp-dir /mnt/scratch/ \
             --low-memory \
+            --memory-limit 30 \
             --out-duplicate-metrics /mnt/output/metrics/{{=sprig.osBase(inputs.parameters['output-dupes'])}} \
             --out-bam /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}
         volumeMounts:
@@ -213,7 +229,14 @@ spec:
       script:
         name: "parabricks-germline-fq2bam-no-bqsr-script"
         image: "{{workflow.parameters.parabricksImage}}"
+        # Host memory: fq2bam sorts with --memory-limit GiB, which
+        # otherwise defaults to half of the host's RAM as /proc/meminfo shows
+        # it, not the pod's. Pinned to 30 (what a 62 GiB node got by default)
+        # so the request below holds on every node. Peak: 30 sort + ~5.5 BWA
+        # index + work queues and process memory.
         resources:
+          requests:
+            memory: 40Gi
           limits:
             nvidia.com/gpu: 1
         command: [sh]
@@ -224,6 +247,7 @@ spec:
             "{{inputs.parameters.read-group-str}}" \
             --tmp-dir /mnt/scratch/ \
             --low-memory \
+            --memory-limit 30 \
             --out-duplicate-metrics /mnt/output/metrics/{{=sprig.osBase(inputs.parameters['output-dupes'])}} \
             --out-bam /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}
         volumeMounts:
@@ -292,7 +316,14 @@ spec:
       script:
         name: "parabricks-germline-fq2bamfast-no-bqsr-script"
         image: "{{workflow.parameters.parabricksImage}}"
+        # Host memory: fq2bam sorts with --memory-limit GiB, which
+        # otherwise defaults to half of the host's RAM as /proc/meminfo shows
+        # it, not the pod's. Pinned to 30 (what a 62 GiB node got by default)
+        # so the request below holds on every node. Peak: 30 sort + ~5.5 BWA
+        # index + work queues and process memory.
         resources:
+          requests:
+            memory: 40Gi
           limits:
             nvidia.com/gpu: 1
         command: [sh]
@@ -307,6 +338,7 @@ spec:
             "{{inputs.parameters.read-group-str}}" \
             --tmp-dir /mnt/scratch/ \
             --low-memory \
+            --memory-limit 30 \
             --bwa-cpu-thread-pool {{inputs.parameters.thread_count}} \
             --out-duplicate-metrics /mnt/output/metrics/{{=sprig.osBase(inputs.parameters['output-dupes'])}} \
             --out-bam /mnt/output/bam/{{=sprig.osBase(inputs.parameters['output-bam'])}}

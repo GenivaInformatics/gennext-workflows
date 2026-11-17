@@ -124,7 +124,13 @@ spec:
       script:
         name: "parabricks-rnafq2bam-script"
         image: "{{workflow.parameters.parabricksImage}}"
+        # Host memory: STAR loads the CTAT genome index (~28 GiB: SA,
+        # Genome, SAindex) and sorts the BAM in up to the same again
+        # (--max-bam-sort-memory 0 = index size). A 62 GiB node fits one of
+        # these and little else.
         resources:
+          requests:
+            memory: 56Gi
           limits:
             nvidia.com/gpu: 1
         command: [bash]
