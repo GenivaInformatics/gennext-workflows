@@ -47,6 +47,46 @@ def maf_annotation_header():
 # restores v3's request size.
 CHUNK_ROWS = AnnotatorCore.POST_QUERIES_THRESHOLD_GC_HGVSG
 
+# What a row OncoKB cannot answer gets. ANNOTATED=False marks it; the other
+# values are the ones OncoKB returns for a variant it has no knowledge of, so
+# the columns gennext-api-edge requires (GENE_IN_ONCOKB, ONCOGENIC) are set.
+UNANSWERED = {
+    "ANNOTATED": "False",
+    "GENE_IN_ONCOKB": "False",
+    "VARIANT_IN_ONCOKB": "False",
+    "MUTATION_EFFECT": "Unknown",
+    "ONCOGENIC": "Unknown",
+}
+
+# Func.refGene values OncoKB must answer. Its knowledge is about these rows, so
+# the step fails rather than leave one unannotated.
+MUST_ANNOTATE_FUNC = {"exonic", "splicing"}
+
+
+class OncoKBServerError(Exception):
+    """OncoKB answered a request with HTTP 500 after upstream's retries."""
+
+
+def is_oncokb_500(error):
+    """True when upstream gave up on HTTP 500 responses.
+
+    Only 500: OncoKB answers 500 to some queries it cannot process, such as
+    indels in long homopolymers. 429, 502, 503 and 504 are the service, not
+    the rows, and connection errors are the network; those still fail the step.
+    """
+    import requests
+    from urllib3.exceptions import MaxRetryError, ResponseError
+
+    if not isinstance(error, requests.exceptions.RetryError):
+        return False
+    cause = error.args[0] if error.args else None
+    return (isinstance(cause, MaxRetryError) and isinstance(cause.reason, ResponseError)
+            and ResponseError.SPECIFIC_ERROR.format(status_code=500) in str(cause.reason))
+
+
+def unanswered_suffix():
+    return [UNANSWERED.get(name, "") for name in maf_annotation_header()]
+
 
 def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
                  api_url=None, chunk_rows=CHUNK_ROWS):
@@ -58,6 +98,12 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
     the input's header line plus a run of its data lines, copied byte for
     byte, so upstream reads the same text as from the whole file. The token
     is never put on a command line.
+
+    One query OncoKB answers with HTTP 500 fails its whole request. A chunk
+    that gets a 500 is split in halves until the rows that cause it stand
+    alone; those get UNANSWERED values, every other row its OncoKB answer.
+    A coding or splice-site row (MUST_ANNOTATE_FUNC) is never left
+    unanswered: the step fails instead.
     """
     if api_url:
         AnnotatorCore.setoncokbbaseurl(api_url)
@@ -72,20 +118,50 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
         chunk_in = Path(temp_dir) / "in.maf"
         chunk_out = Path(temp_dir) / "out.maf"
         header = None
-        state = {"sent": 0, "chunks": 0, "header_written": False}
+        header_fields = []
+        state = {"sent": 0, "chunks": 0, "header_written": False, "unanswered": 0}
+
+        def write_header(text):
+            if not state["header_written"]:
+                target.write(text)
+                state["header_written"] = True
+
+        def unanswered(line):
+            fields = next(csv.reader([line], delimiter="\t"))
+            func_column = header_fields.index("Func.refGene") if "Func.refGene" in header_fields else None
+            func = fields[func_column].split(";")[0] if func_column is not None else ""
+            location = "\t".join(fields[1:6])
+            if func in MUST_ANNOTATE_FUNC:
+                raise OncoKBServerError(
+                    f"OncoKB answers HTTP 500 for a {func} row ({location}); not leaving it unannotated")
+            print(f"OncoKB: HTTP 500 for one row, written unannotated: {location} ({func or 'no Func.refGene'})",
+                  flush=True)
+            write_header(header.rstrip("\r\n") + "\t" + "\t".join(maf_annotation_header()) + "\n")
+            echo = line.rstrip("\r\n").encode("ascii", "ignore").decode("ascii")
+            target.write(echo + "\t" + "\t".join(unanswered_suffix()) + "\n")
+            state["unanswered"] += 1
+            state["sent"] += 1
 
         def annotate(chunk):
             with chunk_in.open("w", newline="") as part:
                 part.write(header)
                 part.writelines(chunk)
-            AnnotatorCore.processalterationevents(
-                str(chunk_in), str(chunk_out), "", cancer_type, {}, False,
-                query_type, reference_genome, False)
+            try:
+                AnnotatorCore.processalterationevents(
+                    str(chunk_in), str(chunk_out), "", cancer_type, {}, False,
+                    query_type, reference_genome, False)
+            except Exception as error:
+                if not is_oncokb_500(error):
+                    raise
+                if len(chunk) == 1:
+                    unanswered(chunk[0])
+                else:
+                    half = len(chunk) // 2
+                    annotate(chunk[:half])
+                    annotate(chunk[half:])
+                return
             with chunk_out.open(newline="") as part:
-                part_header = part.readline()
-                if not state["header_written"]:
-                    target.write(part_header)
-                    state["header_written"] = True
+                write_header(part.readline())
                 target.writelines(part)
             state["sent"] += len(chunk)
             state["chunks"] += 1
@@ -97,6 +173,7 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
             if header is None:
                 if line.strip() and not line.startswith("#"):
                     header = line if line.endswith("\n") else line + "\n"
+                    header_fields = next(csv.reader([header.rstrip("\r\n")], delimiter="\t"))
                 continue
             chunk.append(line if line.endswith("\n") else line + "\n")
             if len(chunk) == chunk_rows:
@@ -104,6 +181,9 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
                 chunk = []
         if chunk:
             annotate(chunk)
+        if state["unanswered"]:
+            print(f"OncoKB: {state['unanswered']} of {state['sent']} rows got HTTP 500 and are written "
+                  "unannotated (ANNOTATED=False)", flush=True)
         return state["sent"]
 
 
