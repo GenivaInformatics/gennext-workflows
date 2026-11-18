@@ -13,7 +13,8 @@ import subprocess
 import AnnotatorCore
 from AnnotatorCore import MutationStatus, append_headers, get_oncokb_annotation_column_headers
 from filtered_maf_annotator import (
-    CHUNK_ROWS, OncoKBServerError, annotate_maf, count_maf, is_genome_kit_regions_file, main,
+    CHUNK_ROWS, OncoKBServerError, annotate_maf, count_maf, fail_fast_on_500,
+    is_genome_kit_regions_file, main,
     maf_annotation_header, mask_output, merge_maf, run_masked)
 from filtered_sv_annotator import main as sv_main
 from backfill_filtered_maf import main as backfill_main
@@ -392,13 +393,19 @@ class FilteredMafTest(unittest.TestCase):
 
     def poisoned_annotator(self, sent, poison, status=500):
         """fake_processalterationevents, except that a request holding a row
-        whose Start_Position is in `poison` fails as upstream does."""
+        whose Start_Position is in `poison` fails as upstream does. `poison`
+        maps a position to how many requests holding it fail (None: all)."""
         fake = self.fake_processalterationevents(sent)
+        failures = dict(poison) if isinstance(poison, dict) else {p: None for p in poison}
 
         def run(eventfile, outfile, *args):
             with open(eventfile, newline="") as file:
                 rows = list(csv.reader(file, delimiter="\t"))[1:]
-            if any(row[2] in poison for row in rows):
+            hit = [row[2] for row in rows if row[2] in failures]
+            if any(failures[p] is None or failures[p] > 0 for p in hit):
+                for p in hit:
+                    if failures[p]:
+                        failures[p] -= 1
                 raise self.retry_error(status)
             fake(eventfile, outfile, *args)
         return run
@@ -407,7 +414,7 @@ class FilteredMafTest(unittest.TestCase):
         rows = [row.copy() for row in ROWS] + [
             ["S1", "chr1", str(n), str(n), "TTTT", "-", "Unknown", "Intron", "intronic", "PASS"]
             for n in range(6, 10)]
-        sent = []
+        sent, waits = [], []
         with tempfile.TemporaryDirectory() as temp:
             source, annotated, output = [Path(temp) / n for n in ("in.maf", "a.maf", "out.maf")]
             write_tsv(source, HEADER, rows)
@@ -416,7 +423,8 @@ class FilteredMafTest(unittest.TestCase):
                     patch("AnnotatorCore.processalterationevents",
                           side_effect=self.poisoned_annotator(sent, {"1", "7"})), \
                     contextlib.redirect_stdout(out):
-                self.assertEqual(annotate_maf(source, annotated, "t", "GRCh38", chunk_rows=4), 9)
+                self.assertEqual(annotate_maf(source, annotated, "t", "GRCh38", chunk_rows=4,
+                                              sleep=waits.append), 9)
             header, _ = count_maf(source)
             self.assertEqual(merge_maf(source, annotated, output, header), 9)
             with output.open(newline="") as file:
@@ -434,7 +442,11 @@ class FilteredMafTest(unittest.TestCase):
         # Every answered row was sent in a request that succeeded.
         answered = [line.split("\t")[2] for text in sent for line in text.splitlines()[1:]]
         self.assertEqual(sorted(answered, key=int), ["2", "3", "4", "5", "6", "8", "9"])
-        self.assertIn("2 of 9 rows got HTTP 500", out.getvalue())
+        self.assertIn("2 written unannotated", out.getvalue())
+        # Each poisoned row is tried alone once in its chunk's pass and once after the pause.
+        self.assertEqual(waits, [60])
+        # Chunk 1-4 and 5-8 fail and go row by row; chunk 9 succeeds whole.
+        self.assertEqual(sorted(len(text.splitlines()) - 1 for text in sent), [1] * 7)
 
     def test_a_coding_row_oncokb_cannot_answer_fails_the_step(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -445,7 +457,66 @@ class FilteredMafTest(unittest.TestCase):
                           side_effect=self.poisoned_annotator([], {"3"})), \
                     contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaisesRegex(OncoKBServerError, "exonic row"):
-                    annotate_maf(source, annotated, "t", "GRCh38")
+                    annotate_maf(source, annotated, "t", "GRCh38", sleep=lambda s: None)
+
+    def test_a_row_oncokb_never_answers_is_handled_like_a_500(self):
+        import requests
+        from urllib3.exceptions import MaxRetryError, ReadTimeoutError
+        timeout = requests.exceptions.ConnectionError(
+            MaxRetryError(None, "/annotate", ReadTimeoutError(None, "/annotate", "Read timed out.")))
+        fake = self.fake_processalterationevents([])
+
+        def run(eventfile, outfile, *args):
+            with open(eventfile, newline="") as file:
+                rows = list(csv.reader(file, delimiter="\t"))[1:]
+            if any(row[2] == "1" for row in rows):
+                raise timeout
+            fake(eventfile, outfile, *args)
+        with tempfile.TemporaryDirectory() as temp:
+            source, annotated = [Path(temp) / n for n in ("in.maf", "a.maf")]
+            write_tsv(source, HEADER, ROWS)
+            with patch("AnnotatorCore.validate_oncokb_token"), \
+                    patch("AnnotatorCore.processalterationevents", side_effect=run), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(annotate_maf(source, annotated, "t", "GRCh38", sleep=lambda s: None), 5)
+            with annotated.open(newline="") as file:
+                out = list(csv.reader(file, delimiter="\t"))
+        names = maf_annotation_header()
+        self.assertEqual(dict(zip(names, out[1][len(HEADER):]))["ANNOTATED"], "False")
+
+    def test_many_failing_rows_are_an_outage(self):
+        rows = [["S1", "chr1", str(n), str(n), "TT", "-", "Unknown", "Intron", "intronic", "PASS"]
+                for n in range(1, 41)]
+        for failing, raises in ((10, False), (11, True)):
+            with tempfile.TemporaryDirectory() as temp:
+                source, annotated = [Path(temp) / n for n in ("in.maf", "a.maf")]
+                write_tsv(source, HEADER, rows)
+                with patch("AnnotatorCore.validate_oncokb_token"), \
+                        patch("AnnotatorCore.processalterationevents",
+                              side_effect=self.poisoned_annotator([], {str(n) for n in range(1, failing + 1)})), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    if raises:
+                        with self.assertRaisesRegex(OncoKBServerError, "outage"):
+                            annotate_maf(source, annotated, "t", "GRCh38", sleep=lambda s: None)
+                    else:
+                        self.assertEqual(annotate_maf(source, annotated, "t", "GRCh38",
+                                                      sleep=lambda s: None), 40)
+
+    def test_an_outage_stops_before_trying_every_row(self):
+        rows = [["S1", "chr1", str(n), str(n), "TT", "-", "Unknown", "Intron", "intronic", "PASS"]
+                for n in range(1, 101)]
+        calls = []
+        with tempfile.TemporaryDirectory() as temp:
+            source, annotated = [Path(temp) / n for n in ("in.maf", "a.maf")]
+            write_tsv(source, HEADER, rows)
+            with patch("AnnotatorCore.validate_oncokb_token"), \
+                    patch("AnnotatorCore.processalterationevents",
+                          side_effect=lambda *a: calls.append(1) or (_ for _ in ()).throw(OncoKBServerError("500"))), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(OncoKBServerError, "outage"):
+                    annotate_maf(source, annotated, "t", "GRCh38", sleep=lambda s: None)
+        # One chunk request, then single rows until more than 2 x 10 failed.
+        self.assertEqual(len(calls), 1 + 21)
 
     def test_other_oncokb_errors_still_fail_the_step(self):
         import requests
@@ -459,6 +530,49 @@ class FilteredMafTest(unittest.TestCase):
                     with self.assertRaises(type(error)):
                         annotate_maf(source, annotated, "t", "GRCh38")
                 self.assertEqual(run.call_count, 1)
+
+
+    def test_a_row_that_fails_only_next_to_others_is_annotated_on_retry(self):
+        # Position 3 is exonic and fails twice (in its chunk and alone right
+        # after), then succeeds after the first pause: annotated, step passes.
+        sent, waits = [], []
+        with tempfile.TemporaryDirectory() as temp:
+            source, annotated, output = [Path(temp) / n for n in ("in.maf", "a.maf", "out.maf")]
+            write_tsv(source, HEADER, ROWS)
+            with patch("AnnotatorCore.validate_oncokb_token"), \
+                    patch("AnnotatorCore.processalterationevents",
+                          side_effect=self.poisoned_annotator(sent, {"3": 2})), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(annotate_maf(source, annotated, "t", "GRCh38", sleep=waits.append), 5)
+            header, _ = count_maf(source)
+            self.assertEqual(merge_maf(source, annotated, output, header), 5)
+            with output.open(newline="") as file:
+                merged = list(csv.reader(file, delimiter="\t"))
+        self.assertEqual(waits, [60])
+        names = maf_annotation_header()
+        self.assertEqual([dict(zip(names, row[len(HEADER):]))["ANNOTATED"] for row in merged[1:]],
+                         [""] * 5)
+
+    def test_upstream_requests_raise_on_500_without_retrying_it(self):
+        import requests
+        fail_fast_on_500()
+        fail_fast_on_500()
+        session = AnnotatorCore.requests_retry_session(allowed_methods=["POST"])
+        retry = session.get_adapter("https://www.oncokb.org").max_retries
+        self.assertNotIn(500, retry.status_forcelist)
+        self.assertIn(503, retry.status_forcelist)
+        self.assertEqual(retry.read, 0)
+        self.assertEqual(retry.connect, 3)
+        self.assertEqual(AnnotatorCore.REQUEST_TIMEOUT, 90)
+        self.assertEqual(len(session.hooks["response"]), 1)
+        response = requests.models.Response()
+        response.status_code = 500
+        response.url = "https://www.oncokb.org/api/v1/annotate?x=1"
+        response.request = requests.Request("POST", response.url).prepare()
+        with self.assertRaisesRegex(OncoKBServerError, "POST https://www.oncokb.org/api/v1/annotate$"):
+            session.hooks["response"][0](response)
+        response.status_code = 200
+        session.hooks["response"][0](response)
 
 
 if __name__ == "__main__":

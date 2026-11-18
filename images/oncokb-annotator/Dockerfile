@@ -23,6 +23,10 @@
 #                          is split until the offending rows stand alone;
 #                          those are written with ANNOTATED=False, and a
 #                          coding or splice-site row among them fails the step
+#   0.3.5-upstream-v4.1.0  as 0.3.4, but a failing chunk goes row by row and
+#                          failed rows are tried again after 60 s; 500 and
+#                          read timeouts (90 s) are not retried by upstream;
+#                          more than max(10, 5%) unanswered rows fail the step
 FROM python:3.12.12-alpine3.22@sha256:848ba4413eb897e225159b8fc1b02094576cbae4aa73fc13142608ae2c8c0e32
 
 ARG ONCOKB_ANNOTATOR_VERSION=v4.1.0

@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 
 import AnnotatorCore
 from AnnotatorCore import MutationStatus, get_oncokb_annotation_column_headers
@@ -63,20 +64,43 @@ UNANSWERED = {
 MUST_ANNOTATE_FUNC = {"exonic", "splicing"}
 
 
+# Pauses before each extra pass over the rows that failed. A query OncoKB
+# cannot process takes it about 31 s to answer with HTTP 500, or it never
+# answers; requests sent right after one can fail too, and succeed alone a
+# little later.
+RETRY_WAITS = (60,)
+
+# Seconds to wait for OncoKB's answer to one annotation request (upstream: 240,
+# retried 3 times on a read timeout). A healthy 100-row request takes seconds.
+REQUEST_TIMEOUT = 90
+
+# More rows than this left unanswered is an outage, not a few queries OncoKB
+# cannot process: the step fails.
+def max_unanswered(rows):
+    return max(10, rows // 20)
+
+
 class OncoKBServerError(Exception):
-    """OncoKB answered a request with HTTP 500 after upstream's retries."""
+    """OncoKB answered a request with HTTP 500."""
 
 
-def is_oncokb_500(error):
-    """True when upstream gave up on HTTP 500 responses.
+def is_row_failure(error):
+    """True when OncoKB failed on what was sent rather than being unavailable.
 
-    Only 500: OncoKB answers 500 to some queries it cannot process, such as
-    indels in long homopolymers. 429, 502, 503 and 504 are the service, not
-    the rows, and connection errors are the network; those still fail the step.
+    That is an HTTP 500 (raised by our hook, or by upstream's retries) or no
+    answer within REQUEST_TIMEOUT: OncoKB does both for queries it cannot
+    process, such as some indels in long homopolymers. 429, 502, 503, 504 and
+    connection errors are the service or the network; those fail the step.
     """
     import requests
-    from urllib3.exceptions import MaxRetryError, ResponseError
+    from urllib3.exceptions import MaxRetryError, ReadTimeoutError, ResponseError
 
+    if isinstance(error, (OncoKBServerError, requests.exceptions.ReadTimeout)):
+        return True
+    if isinstance(error, requests.exceptions.ConnectionError):
+        cause = error.args[0] if error.args else None
+        return isinstance(cause, ReadTimeoutError) or (
+            isinstance(cause, MaxRetryError) and isinstance(cause.reason, ReadTimeoutError))
     if not isinstance(error, requests.exceptions.RetryError):
         return False
     cause = error.args[0] if error.args else None
@@ -84,27 +108,71 @@ def is_oncokb_500(error):
             and ResponseError.SPECIFIC_ERROR.format(status_code=500) in str(cause.reason))
 
 
+def raise_on_500(response, *args, **kwargs):
+    if response.status_code == 500:
+        raise OncoKBServerError(f"HTTP 500 from {response.request.method} {response.url.split('?')[0]}")
+
+
+def fail_fast_on_500():
+    """Make upstream's requests fail fast on queries OncoKB cannot process.
+
+    - HTTP 500 raises OncoKBServerError, unretried. Upstream retries 500 three
+      times, about two minutes for each such query. Without the raise, a POST
+      answered with 500 would reach upstream's fallback, which re-sends each
+      row as a GET without the reference genome (OncoKB then assumes GRCh37).
+    - Requests time out after REQUEST_TIMEOUT and a read timeout is not
+      retried; upstream waits 240 s and retries 3 times.
+    429, 502, 503, 504 and connection failures keep upstream's retries.
+    Idempotent.
+    """
+    original = AnnotatorCore.requests_retry_session
+    if getattr(original, "_fails_fast_on_500", False):
+        return
+
+    def session(*args, **kwargs):
+        if len(args) >= 3:
+            args = list(args)
+            args[2] = [code for code in args[2] if code != 500]
+        else:
+            kwargs["status_forcelist"] = [
+                code for code in kwargs.get("status_forcelist",
+                                            AnnotatorCore.API_REQUEST_RETRY_STATUS_FORCELIST)
+                if code != 500]
+        result = original(*args, **kwargs)
+        for prefix, adapter in list(result.adapters.items()):
+            adapter.max_retries = adapter.max_retries.new(read=0)
+        result.hooks["response"].append(raise_on_500)
+        return result
+
+    session._fails_fast_on_500 = True
+    AnnotatorCore.requests_retry_session = session
+    AnnotatorCore.REQUEST_TIMEOUT = REQUEST_TIMEOUT
+
+
 def unanswered_suffix():
     return [UNANSWERED.get(name, "") for name in maf_annotation_header()]
 
 
 def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
-                 api_url=None, chunk_rows=CHUNK_ROWS):
-    """MafAnnotator.py -q Genomic_Change, run chunk by chunk. Returns the rows sent.
+                 api_url=None, chunk_rows=CHUNK_ROWS, retry_waits=RETRY_WAITS, sleep=time.sleep):
+    """MafAnnotator.py -q Genomic_Change, run chunk by chunk. Returns the rows written.
 
     Does what MafAnnotator.main does for our options, once: set the API URL and
     token, validate the token. Then it calls upstream's processalterationevents
-    on consecutive chunks of the input and joins their output. Each chunk is
-    the input's header line plus a run of its data lines, copied byte for
-    byte, so upstream reads the same text as from the whole file. The token
-    is never put on a command line.
+    on consecutive chunks of the input and joins their output in input order.
+    Each chunk is the input's header line plus data lines, copied byte for
+    byte, so upstream reads the same text as from the whole file. The token is
+    never put on a command line.
 
-    One query OncoKB answers with HTTP 500 fails its whole request. A chunk
-    that gets a 500 is split in halves until the rows that cause it stand
-    alone; those get UNANSWERED values, every other row its OncoKB answer.
-    A coding or splice-site row (MUST_ANNOTATE_FUNC) is never left
-    unanswered: the step fails instead.
+    One query OncoKB cannot process fails its whole request (HTTP 500 or no
+    answer, see is_row_failure). Such a chunk is sent again one row per
+    request. Rows that still fail are tried again, alone, after each pause in
+    retry_waits. Rows that fail every time are written with UNANSWERED
+    values; every other row keeps its OncoKB answer. The step fails instead
+    when one of them is a coding or splice-site row (MUST_ANNOTATE_FUNC), or
+    when there are more than max_unanswered of them.
     """
+    fail_fast_on_500()
     if api_url:
         AnnotatorCore.setoncokbbaseurl(api_url)
     AnnotatorCore.setoncokbapitoken(token)
@@ -113,78 +181,110 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
     reference_genome = AnnotatorCore.ReferenceGenome[reference.upper()]
     cancer_type = "" if tumor_type == "." else tumor_type
 
-    with tempfile.TemporaryDirectory(prefix="chunks-", dir=output_path.parent) as temp_dir, \
-            input_path.open(newline="") as source, output_path.open("w", newline="") as target:
+    header = None
+    lines = []
+    with input_path.open(newline="") as source:
+        for line in source:
+            if header is None:
+                if line.strip() and not line.startswith("#"):
+                    header = line if line.endswith("\n") else line + "\n"
+                continue
+            lines.append(line if line.endswith("\n") else line + "\n")
+    if header is None:
+        raise ValueError("MAF has no header")
+    records = sum(1 for _ in csv.reader(lines, delimiter="\t"))
+    if records != len(lines):
+        # Upstream is sent whole lines, so a record spanning lines would split.
+        raise ValueError(f"MAF has {records} records but {len(lines)} data lines")
+    header_fields = next(csv.reader([header.rstrip("\r\n")], delimiter="\t"))
+    func_column = header_fields.index("Func.refGene") if "Func.refGene" in header_fields else None
+
+    results = [None] * len(lines)
+    state = {"header": None, "requests": 0}
+
+    with tempfile.TemporaryDirectory(prefix="chunks-", dir=output_path.parent) as temp_dir:
         chunk_in = Path(temp_dir) / "in.maf"
         chunk_out = Path(temp_dir) / "out.maf"
-        header = None
-        header_fields = []
-        state = {"sent": 0, "chunks": 0, "header_written": False, "unanswered": 0}
 
-        def write_header(text):
-            if not state["header_written"]:
-                target.write(text)
-                state["header_written"] = True
-
-        def unanswered(line):
-            fields = next(csv.reader([line], delimiter="\t"))
-            func_column = header_fields.index("Func.refGene") if "Func.refGene" in header_fields else None
-            func = fields[func_column].split(";")[0] if func_column is not None else ""
-            location = "\t".join(fields[1:6])
-            if func in MUST_ANNOTATE_FUNC:
-                raise OncoKBServerError(
-                    f"OncoKB answers HTTP 500 for a {func} row ({location}); not leaving it unannotated")
-            print(f"OncoKB: HTTP 500 for one row, written unannotated: {location} ({func or 'no Func.refGene'})",
-                  flush=True)
-            write_header(header.rstrip("\r\n") + "\t" + "\t".join(maf_annotation_header()) + "\n")
-            echo = line.rstrip("\r\n").encode("ascii", "ignore").decode("ascii")
-            target.write(echo + "\t" + "\t".join(unanswered_suffix()) + "\n")
-            state["unanswered"] += 1
-            state["sent"] += 1
-
-        def annotate(chunk):
+        def run(indices):
+            """Annotate these lines in one upstream call. False on a row failure."""
             with chunk_in.open("w", newline="") as part:
                 part.write(header)
-                part.writelines(chunk)
+                part.writelines(lines[i] for i in indices)
+            state["requests"] += 1
             try:
                 AnnotatorCore.processalterationevents(
                     str(chunk_in), str(chunk_out), "", cancer_type, {}, False,
                     query_type, reference_genome, False)
             except Exception as error:
-                if not is_oncokb_500(error):
-                    raise
-                if len(chunk) == 1:
-                    unanswered(chunk[0])
-                else:
-                    half = len(chunk) // 2
-                    annotate(chunk[:half])
-                    annotate(chunk[half:])
-                return
+                if is_row_failure(error):
+                    return False
+                raise
             with chunk_out.open(newline="") as part:
-                write_header(part.readline())
-                target.writelines(part)
-            state["sent"] += len(chunk)
-            state["chunks"] += 1
-            if state["chunks"] % 20 == 0:
-                print(f"OncoKB: {state['sent']} MAF rows annotated", flush=True)
+                part_header = part.readline()
+                out = part.readlines()
+            if len(out) != len(indices):
+                raise ValueError(f"OncoKB output has {len(out)} rows for {len(indices)} sent")
+            if state["header"] is None:
+                state["header"] = part_header
+            for i, line in zip(indices, out):
+                results[i] = line
+            return True
 
-        chunk = []
-        for line in source:
-            if header is None:
-                if line.strip() and not line.startswith("#"):
-                    header = line if line.endswith("\n") else line + "\n"
-                    header_fields = next(csv.reader([header.rstrip("\r\n")], delimiter="\t"))
-                continue
-            chunk.append(line if line.endswith("\n") else line + "\n")
-            if len(chunk) == chunk_rows:
-                annotate(chunk)
-                chunk = []
-        if chunk:
-            annotate(chunk)
-        if state["unanswered"]:
-            print(f"OncoKB: {state['unanswered']} of {state['sent']} rows got HTTP 500 and are written "
-                  "unannotated (ANNOTATED=False)", flush=True)
-        return state["sent"]
+        limit = max_unanswered(len(lines))
+
+        def one_by_one(indices, earlier=0):
+            still = []
+            for i in indices:
+                if not run([i]):
+                    still.append(i)
+                    if earlier + len(still) > 2 * limit:
+                        # Stop early: an outage would take REQUEST_TIMEOUT per row.
+                        raise OncoKBServerError(
+                            f"OncoKB failed on more than {2 * limit} of {len(lines)} rows; "
+                            "treated as an outage")
+            return still
+
+        failed = []
+        starts = range(0, len(lines), chunk_rows)
+        for number, start in enumerate(starts, 1):
+            indices = list(range(start, min(start + chunk_rows, len(lines))))
+            if not run(indices):
+                failed += one_by_one(indices, len(failed))
+            if number % 5 == 0 or number == len(starts):
+                print(f"OncoKB: {indices[-1] + 1} of {len(lines)} MAF rows done, "
+                      f"{len(failed)} failed so far", flush=True)
+        for wait in retry_waits:
+            if not failed:
+                break
+            print(f"OncoKB: {len(failed)} rows failed; trying them again alone in {wait} s", flush=True)
+            sleep(wait)
+            failed = one_by_one(failed)
+
+        if len(failed) > limit:
+            raise OncoKBServerError(
+                f"OncoKB failed on {len(failed)} of {len(lines)} rows every time; "
+                f"more than {limit} is treated as an outage")
+        for i in failed:
+            fields = next(csv.reader([lines[i].rstrip("\r\n")], delimiter="\t"))
+            func = fields[func_column].split(";")[0] if func_column is not None else ""
+            location = "\t".join(fields[1:6])
+            if func in MUST_ANNOTATE_FUNC:
+                raise OncoKBServerError(
+                    f"OncoKB fails on a {func} row ({location}) every time; "
+                    "not leaving it unannotated")
+            print(f"OncoKB: failed every time, written unannotated: {location} ({func or 'no Func.refGene'})",
+                  flush=True)
+            echo = lines[i].rstrip("\r\n").encode("ascii", "ignore").decode("ascii")
+            results[i] = echo + "\t" + "\t".join(unanswered_suffix()) + "\n"
+
+    with output_path.open("w", newline="") as target:
+        target.write(state["header"] or
+                     header.rstrip("\r\n") + "\t" + "\t".join(maf_annotation_header()) + "\n")
+        target.writelines(results)
+    print(f"OncoKB: {len(lines)} rows in {state['requests']} requests; {len(failed)} written unannotated "
+          "(ANNOTATED=False)", flush=True)
+    return len(lines)
 
 
 TOKEN_MASK = "***"

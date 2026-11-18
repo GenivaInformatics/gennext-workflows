@@ -1,6 +1,6 @@
 # OncoKB annotator image
 
-`bergun/oncokb-annotator:0.3.4-upstream-v4.1.0` is upstream
+`bergun/oncokb-annotator:0.3.5-upstream-v4.1.0` is upstream
 [oncokb-annotator](https://github.com/oncokb/oncokb-annotator) at tag `v4.1.0`
 (commit `77521cd`), unmodified, plus the three wrapper scripts in this
 directory. The previous image, `0.2.0-upstream-v3.4.2`, is upstream `v3.4.2`
@@ -46,24 +46,34 @@ byte. The wrapper refuses a MAF whose records span lines. The token is no
 longer passed on a command line, so it doesn't show in a failed step's log.
 `0.3.0` lacks the chunking and isn't used.
 
-**Rows OncoKB answers with HTTP 500.** One query OncoKB cannot process fails
-its whole request with HTTP 500, which upstream retries and then raises. The
-NanOnCT panel produces such queries: insertions and deletions in long
-homopolymers at its MSI and intronic sites (for example a poly-T run at
-chr1:119,510,721-119,510,740). From `0.3.4`, a chunk that gets a 500 is split
-in halves until the rows that cause it stand alone. Every other row keeps its
-OncoKB answer. A row left alone with a 500 is written with `ANNOTATED=False`,
-`GENE_IN_ONCOKB=False`, `VARIANT_IN_ONCOKB=False`, `MUTATION_EFFECT=Unknown`
-and `ONCOGENIC=Unknown`, so the columns gennext-api-edge requires are set, and
-the step log lists it. Two limits:
+**Rows OncoKB cannot process.** One query OncoKB cannot process fails its
+whole request. OncoKB works on it for about 31 s and answers HTTP 500, or
+does not answer at all; requests sent right after such a query can fail too,
+and succeed when sent alone a little later. The NanOnCT panel produces such
+queries: insertions and deletions in long homopolymers at its MSI and intronic
+sites (for example the poly-T run at chr1:119,510,721-119,510,740).
 
-- an `exonic` or `splicing` row (`Func.refGene`) is never left unanswered: the
-  step fails, as before;
-- only HTTP 500 is handled this way. 429, 502, 503, 504 and connection errors
-  still fail the step, because they are the service or the network, not a row.
+From `0.3.4`, with the handling below from `0.3.5`:
+
+- upstream no longer retries a 500 or a read timeout, and waits 90 s for an
+  answer instead of 240 s (`fail_fast_on_500()`). A 500 must raise: upstream's
+  fallback for a failed POST re-sends each row as a GET without the reference
+  genome, which OncoKB reads as GRCh37;
+- a 100-row chunk that fails is sent again one row per request;
+- rows that still fail are tried again, alone, after 60 s;
+- a row that fails every time is written with `ANNOTATED=False`,
+  `GENE_IN_ONCOKB=False`, `VARIANT_IN_ONCOKB=False`, `MUTATION_EFFECT=Unknown`
+  and `ONCOGENIC=Unknown`, the rest empty, so the columns gennext-api-edge
+  requires are set. The step log lists it. In DuckDB it looks like a variant
+  OncoKB has no knowledge of; `ANNOTATED` is not carried into DuckDB.
+
+The step fails instead when such a row is `exonic` or `splicing`
+(`Func.refGene`), or when more than max(10, 5% of rows) are left (an outage).
+429, 502, 503, 504 and connection errors still fail the step.
 
 Rows are not filtered by gene: OncoKB maps intronic rows our MAF calls
-`Unknown` to their gene, and the TERT promoter rows are `upstream`.
+`Unknown` to their gene, MET exon 14 skipping variants can be intronic, and
+the TERT promoter rows are `upstream`.
 
 **The token in logs.** The token reaches output in more ways than a command
 line: upstream validates it with `GET /tokens/<token>`, so a connection error,
