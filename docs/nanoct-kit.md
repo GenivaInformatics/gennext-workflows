@@ -20,11 +20,11 @@ CNV uses the covered (probe) footprint.
 
 ## Files for `hg38/regions/`
 
-| File | SHA-256 source | Notes |
-| --- | --- | --- |
-| `NanOnCT_Panel_v1.0_target_hg38.bed` | vendor file, unchanged | 895 intervals, 258,288 bp |
-| `NanOnCT_Panel_v1.0_covered_hg38.bed` | vendor file with CRLF removed | 832 intervals, 374,693 bp; the `-source` key |
-| `NanOnCT_Panel_v1.0_covered_hg38.valid.bed` | bed-validator 0.2.1, `--canonical-only` | 3 columns, same coordinates; hg38 confirmed |
+| File | Origin | SHA-256 | Notes |
+| --- | --- | --- | --- |
+| `NanOnCT_Panel_v1.0_target_hg38.bed` | vendor file, unchanged | `f72f115f931dcd9c62cf1f7223328bc61de0b8c6d07d7e34087edcf0f1768007` | 895 intervals, 258,288 bp |
+| `NanOnCT_Panel_v1.0_covered_hg38.bed` | vendor file with CRLF removed | `df3c7ec8268e0742299f9a1c6a87be112c38983aa4b0ea7fa571accd717e7244` | 832 intervals, 374,693 bp; the `-source` key |
+| `NanOnCT_Panel_v1.0_covered_hg38.valid.bed` | bed-validator 0.2.1, `--canonical-only` | `a2a2bd6d48fdd902afb1349acb573ad6fb9e01152bdab2f9ca1afe9065b367bb` | 3 columns, same coordinates; hg38 confirmed |
 
 Copy all three to `/runspace/gennext/data/ref/hg38/regions/` on every node
 that will run the kit, before admitting NanOnCT samples there.
