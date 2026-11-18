@@ -1,0 +1,12 @@
+# Merge patch for argo/gennext-references: NanOnCT Panel v1.0 (Nanodigmbio).
+# Kit row `NanOnCT_Panel_v1.0` resolves to design id `NanOnCT`.
+# CNV uses the panel's covered BED; SNV uses the target BED through the kit
+# row's `filename`, not this ConfigMap. The `-source` file is the vendor
+# covered BED with CRLF line endings removed; the `.valid.bed` is its
+# bed-validator 0.2.1 output (hg38 confirmed, coordinates unchanged).
+# The CNVkit pooled reference is built from the WGS healthy cohort by
+# ensure-kit-reference on first use.
+data:
+  hg38.somtest.NanOnCT.regions.sv-cnv: hg38/regions/NanOnCT_Panel_v1.0_covered_hg38.valid.bed
+  hg38.somtest.NanOnCT.regions.sv-cnv-source: hg38/regions/NanOnCT_Panel_v1.0_covered_hg38.bed
+  hg38.somtest.NanOnCT.ref-flat: hg38/gene_annots/refFlat_mane.txt
