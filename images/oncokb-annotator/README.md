@@ -1,6 +1,6 @@
 # OncoKB annotator image
 
-`bergun/oncokb-annotator:0.3.6-upstream-v4.1.0` is upstream
+`bergun/oncokb-annotator:0.3.7-upstream-v4.1.0` is upstream
 [oncokb-annotator](https://github.com/oncokb/oncokb-annotator) at tag `v4.1.0`
 (commit `77521cd`), unmodified, plus the three wrapper scripts in this
 directory. The previous image, `0.2.0-upstream-v3.4.2`, is upstream `v3.4.2`
@@ -82,14 +82,20 @@ twice on each of them and stops sending OncoKB the same queries again.
 - refhub URL: `REFHUB_URL`, default `https://api.gennext.bio/api/v0/refhub`;
   empty turns the cache off. `--api-url` (demo.oncokb.org tests) turns it off
   too: refhub caches production OncoKB.
-- A row refhub reports `bad` is written with the `ANNOTATED=False` values above
-  at once, without the 60 s retry; an `exonic` or `splicing` one still fails
-  the step. A row refhub reports `failed` (OncoKB failed on it but it is not
-  confirmed bad) goes through the row-by-row and retry handling above.
+- From `0.3.7`, upstream is called on 500 rows at a time and refhub answers
+  every row in one go (it batches, parallelises and bisects its own OncoKB
+  requests). A row refhub reports `bad` comes back marked
+  (`ONCOKB_CONSEQUENCE=refhub:known_bad`) and is written with the
+  `ANNOTATED=False` values above; its chunk is not sent again and there is no
+  60 s retry. Known-bad rows don't count towards the outage cap (a NanOnCT
+  MAF holds hundreds); an `exonic` or `splicing` one still fails the step. A
+  row refhub reports `failed` or `unavailable` (`refhub:not_answered`) is
+  tried again after 60 s, with the other such rows, and is then handled as
+  above (filled, or the step fails).
 - The cache never fails a step. refhub unreachable, slow (30 min), answering
-  anything but 200, or reporting OncoKB `unavailable` sends that request to
-  OncoKB directly, with a warning in the log; after 3 refhub failures in a row
-  the rest of the run asks OncoKB directly. The outage cap is unchanged.
+  anything but 200, or reporting OncoKB `unavailable` for every query sends
+  that request to OncoKB directly, 100 queries a request, with a warning;
+  after 3 refhub failures in a row the rest of the run asks OncoKB directly.
 - The step log ends with refhub's counts (hits, asked of OncoKB, known bad,
   sent directly).
 
