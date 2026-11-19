@@ -261,23 +261,27 @@ class RefhubCache:
             self.counts["direct"] += 1
             self.log(f"refhub cache could not reach OncoKB ({', '.join(reasons)}); asking OncoKB directly")
             return None
-        for answer in answers:
-            key = answer.get("source") if answer["status"] == "annotation" else answer["status"]
-            if key in self.counts:
-                self.counts[key] += 1
         bad = [q["genomicLocation"] for q, a in zip(queries, answers) if a["status"] == "bad"]
-        if bad:
-            raise OncoKBKnownBad(f"refhub: OncoKB fails on {', '.join(bad)} (known bad)")
         failed = [q["genomicLocation"] for q, a in zip(queries, answers) if a["status"] == "failed"]
+        if bad and len(queries) == 1:
+            self.counts["bad"] += 1
+        if bad:
+            # A request with more queries is sent again row by row; its
+            # answers are counted then.
+            raise OncoKBKnownBad(f"refhub: OncoKB fails on {', '.join(bad)} (known bad)")
         if failed:
+            self.counts["failed"] += len(queries) == 1
             raise OncoKBServerError(f"refhub: OncoKB failed on {', '.join(failed)}")
+        for answer in answers:
+            if answer.get("source") in self.counts:
+                self.counts[answer["source"]] += 1
         return _response(url, 200, [answer["annotation"] for answer in answers])
 
     def summary(self):
         c = self.counts
-        return (f"refhub cache: {c['requests']} requests, {c['hit']} hits, "
+        return (f"refhub cache: {c['requests']} requests; rows: {c['hit']} hits, "
                 f"{c['miss'] + c['refreshed']} asked of OncoKB, {c['stale']} stale, "
-                f"{c['bad']} known bad, {c['direct']} sent to OncoKB directly")
+                f"{c['bad']} known bad, {c['direct']} requests sent to OncoKB directly")
 
 
 # The RefhubCache upstream's POSTs go through, or None; set by annotate_maf.

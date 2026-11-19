@@ -765,7 +765,8 @@ class RefhubCacheTest(unittest.TestCase):
         self.assertEqual([len(c["queries"]) for c in calls], [3, 3, 1, 1, 1])
         self.assertEqual(waits, [])
         self.assertIn("known bad in refhub's cache, written unannotated", out)
-        self.assertIn("refhub cache: 5 requests", out)
+        self.assertIn("refhub cache: 5 requests; rows: 5 hits, 0 asked of OncoKB, 0 stale, 1 known bad, "
+                      "0 requests sent to OncoKB directly", out)
 
     def test_a_coding_row_refhub_knows_is_bad_fails_the_step(self):
         with self.assertRaisesRegex(OncoKBServerError, "exonic row"):
