@@ -163,10 +163,20 @@ def unanswered_suffix():
 # "OncoKB cache").
 DEFAULT_REFHUB_URL = "https://api.gennext.bio/api/v0/refhub"
 
-# Seconds to connect to refhub, and to wait for its answer. refhub may itself
-# wait for OncoKB (up to 90 s a request) and, for a query that failed, pause
-# before confirming it bad, so the answer can take minutes.
+# Seconds to connect to refhub, and to wait for its answer. On a cold cache
+# refhub asks OncoKB for every row, in parallel, and bisects batches OncoKB
+# fails on, so a chunk can take minutes.
 REFHUB_TIMEOUT = (10, 1800)
+
+# MAF rows per upstream call when refhub answers: refhub batches and
+# parallelises its OncoKB requests itself, and takes up to 1000 queries.
+REFHUB_CHUNK_ROWS = 500
+
+# What a query refhub could not annotate becomes in upstream's answer list,
+# marked in ONCOKB_CONSEQUENCE so the wrapper finds the row after upstream
+# wrote it: known bad (filled at once) or not answered (tried again).
+REFHUB_BAD = "refhub:known_bad"
+REFHUB_RETRY = "refhub:not_answered"
 
 # After this many refhub failures in a row, this run stops asking it.
 REFHUB_MAX_FAILURES = 3
@@ -179,9 +189,11 @@ REFHUB_ENDPOINTS = {
 }
 
 
-class OncoKBKnownBad(OncoKBServerError):
-    """refhub knows OncoKB fails on this query alone (HTTP 500 or no answer),
-    confirmed after a pause. Trying again later won't help."""
+def _marker_annotation(marker):
+    """An OncoKB-shaped answer upstream writes as a row whose
+    ONCOKB_CONSEQUENCE is `marker`."""
+    return {"geneExist": False, "variantExist": False, "oncogenic": "Unknown", "treatments": [],
+            "query": {"hugoSymbol": "", "alteration": "", "consequence": marker}}
 
 
 def _response(url, status, payload):
@@ -198,12 +210,14 @@ def _response(url, status, payload):
 class RefhubCache:
     """Posts upstream's genomic-change queries to refhub instead of OncoKB.
 
-    post() returns what upstream expects from OncoKB (a 200 response holding
-    one annotation per query), raises OncoKBKnownBad / OncoKBServerError when
-    refhub reports queries OncoKB fails on, or returns None: then the request
-    goes to OncoKB directly, as without the cache. refhub unreachable, refusing
-    the request or reporting OncoKB unavailable all give None, with a warning.
-    The cache never fails a step.
+    post() returns what upstream expects from OncoKB: a 200 response holding
+    one answer per query. A query refhub knows OncoKB fails on gets a marker
+    answer (REFHUB_BAD), one it could not get answered another
+    (REFHUB_RETRY); the wrapper finds those rows in upstream's output. Or it
+    returns None: then the request goes to OncoKB directly, as without the
+    cache. refhub unreachable, refusing the request, or reporting OncoKB
+    unavailable for every query all give None, with a warning. The cache
+    never fails a step.
     """
 
     def __init__(self, base_url, token, session=None, log=None):
@@ -256,32 +270,31 @@ class RefhubCache:
             return self._give_up(f"sent {len(answers)} answers for {len(queries)} queries")
         self.failures = 0
 
-        if "unavailable" in statuses:
-            reasons = sorted({a.get("reason", "") for a in answers if a["status"] == "unavailable"})
+        if all(status == "unavailable" for status in statuses):
+            reasons = sorted({a.get("reason", "") for a in answers})
             self.counts["direct"] += 1
             self.log(f"refhub cache could not reach OncoKB ({', '.join(reasons)}); asking OncoKB directly")
             return None
-        bad = [q["genomicLocation"] for q, a in zip(queries, answers) if a["status"] == "bad"]
-        failed = [q["genomicLocation"] for q, a in zip(queries, answers) if a["status"] == "failed"]
-        if bad and len(queries) == 1:
-            self.counts["bad"] += 1
-        if bad:
-            # A request with more queries is sent again row by row; its
-            # answers are counted then.
-            raise OncoKBKnownBad(f"refhub: OncoKB fails on {', '.join(bad)} (known bad)")
-        if failed:
-            self.counts["failed"] += len(queries) == 1
-            raise OncoKBServerError(f"refhub: OncoKB failed on {', '.join(failed)}")
+        reply_answers = []
         for answer in answers:
-            if answer.get("source") in self.counts:
-                self.counts[answer["source"]] += 1
-        return _response(url, 200, [answer["annotation"] for answer in answers])
+            status = answer["status"]
+            if status == "annotation":
+                self.counts[answer.get("source")] = self.counts.get(answer.get("source"), 0) + 1
+                reply_answers.append(answer["annotation"])
+            elif status == "bad":
+                self.counts["bad"] += 1
+                reply_answers.append(_marker_annotation(REFHUB_BAD))
+            else:
+                self.counts["failed"] += 1
+                reply_answers.append(_marker_annotation(REFHUB_RETRY))
+        return _response(url, 200, reply_answers)
 
     def summary(self):
         c = self.counts
-        return (f"refhub cache: {c['requests']} requests; rows: {c['hit']} hits, "
+        return (f"refhub cache: {c['requests']} requests; answers: {c['hit']} hits, "
                 f"{c['miss'] + c['refreshed']} asked of OncoKB, {c['stale']} stale, "
-                f"{c['bad']} known bad, {c['direct']} requests sent to OncoKB directly")
+                f"{c['bad']} known bad, {c['failed']} not answered; "
+                f"{c['direct']} requests sent to OncoKB directly")
 
 
 # The RefhubCache upstream's POSTs go through, or None; set by annotate_maf.
@@ -295,7 +308,23 @@ def _post(url, body):
         response = _refhub.post(url, body)
         if response is not None:
             return response
+        return _direct_in_parts(url, body)
     return _direct_post(url, body)
+
+
+def _direct_in_parts(url, body):
+    """Upstream's own POST, at most POST_QUERIES_THRESHOLD_GC_HGVSG queries at
+    a time: refhub's chunks are larger than OncoKB takes in one request."""
+    size = AnnotatorCore.POST_QUERIES_THRESHOLD_GC_HGVSG
+    if len(body) <= size:
+        return _direct_post(url, body)
+    answers = []
+    for start in range(0, len(body), size):
+        response = _direct_post(url, body[start:start + size])
+        if response.status_code != 200:
+            return response
+        answers += response.json()
+    return _response(url, 200, answers)
 
 
 def route_through_refhub():
@@ -316,7 +345,7 @@ def refhub_url_for(api_url):
 
 def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
                  api_url=None, chunk_rows=CHUNK_ROWS, retry_waits=RETRY_WAITS, sleep=time.sleep,
-                 refhub_url=None, refhub_session=None):
+                 refhub_url=None, refhub_session=None, refhub_chunk_rows=REFHUB_CHUNK_ROWS):
     """MafAnnotator.py -q Genomic_Change, run chunk by chunk. Returns the rows written.
 
     Does what MafAnnotator.main does for our options, once: set the API URL and
@@ -335,8 +364,11 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
     when there are more than max_unanswered of them.
 
     With refhub_url, upstream's genomic-change POSTs ask refhub's OncoKB
-    cache first (RefhubCache). A row refhub knows OncoKB fails on is not
-    tried again after the pauses.
+    cache first (RefhubCache), refhub_chunk_rows rows per upstream call.
+    refhub answers row by row, so a chunk is not sent again row by row: a row
+    refhub knows OncoKB fails on is filled at once (not retried, and not
+    counted towards max_unanswered: it is no outage); a row refhub could not
+    get answered is tried again after the pauses, with the other such rows.
     """
     global _refhub
     fail_fast_on_500()
@@ -348,6 +380,7 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
     _refhub = RefhubCache(refhub_url, token, refhub_session) if refhub_url else None
     if _refhub:
         print(f"OncoKB: asking refhub's cache first ({refhub_url})", flush=True)
+        chunk_rows = refhub_chunk_rows
     query_type = AnnotatorCore.QueryType.GENOMIC_CHANGE
     reference_genome = AnnotatorCore.ReferenceGenome[reference.upper()]
     cancer_type = "" if tumor_type == "." else tumor_type
@@ -373,13 +406,16 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
     results = [None] * len(lines)
     state = {"header": None, "requests": 0}
     known_bad = set()
+    annotation_columns = len(maf_annotation_header())
+    consequence = maf_annotation_header().index("ONCOKB_CONSEQUENCE") - annotation_columns
 
     with tempfile.TemporaryDirectory(prefix="chunks-", dir=output_path.parent) as temp_dir:
         chunk_in = Path(temp_dir) / "in.maf"
         chunk_out = Path(temp_dir) / "out.maf"
 
         def run(indices):
-            """Annotate these lines in one upstream call. False on a row failure."""
+            """Annotate these lines in one upstream call. Returns the rows left
+            unanswered (refhub's markers), or None on a row failure."""
             with chunk_in.open("w", newline="") as part:
                 part.write(header)
                 part.writelines(lines[i] for i in indices)
@@ -390,9 +426,7 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
                     query_type, reference_genome, False)
             except Exception as error:
                 if is_row_failure(error):
-                    if isinstance(error, OncoKBKnownBad) and len(indices) == 1:
-                        known_bad.add(indices[0])
-                    return False
+                    return None
                 raise
             with chunk_out.open(newline="") as part:
                 part_header = part.readline()
@@ -401,44 +435,68 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
                 raise ValueError(f"OncoKB output has {len(out)} rows for {len(indices)} sent")
             if state["header"] is None:
                 state["header"] = part_header
+            left = []
             for i, line in zip(indices, out):
-                results[i] = line
-            return True
+                marker = line.rstrip("\r\n").rsplit("\t", annotation_columns)[consequence]
+                if marker == REFHUB_BAD:
+                    known_bad.add(i)
+                    left.append(i)
+                elif marker == REFHUB_RETRY:
+                    left.append(i)
+                else:
+                    results[i] = line
+            return left
 
         limit = max_unanswered(len(lines))
 
         def one_by_one(indices, earlier=0):
             still = []
             for i in indices:
-                if not run([i]):
+                if run([i]) != []:
                     still.append(i)
-                    if earlier + len(still) > 2 * limit:
+                    if earlier + len([j for j in still if j not in known_bad]) > 2 * limit:
                         # Stop early: an outage would take REQUEST_TIMEOUT per row.
                         raise OncoKBServerError(
                             f"OncoKB failed on more than {2 * limit} of {len(lines)} rows; "
                             "treated as an outage")
             return still
 
+        def unknown(rows):
+            """Rows OncoKB left unanswered that refhub doesn't know are bad."""
+            return len([i for i in rows if i not in known_bad])
+
+        def again(rows):
+            """Rows still unanswered after another try."""
+            if not (_refhub and _refhub.enabled):
+                return one_by_one(rows)
+            still = []
+            for start in range(0, len(rows), chunk_rows):
+                part = rows[start:start + chunk_rows]
+                left = run(part)
+                still += one_by_one(part, unknown(still)) if left is None else left
+            return still
+
         failed = []
         starts = range(0, len(lines), chunk_rows)
         for number, start in enumerate(starts, 1):
             indices = list(range(start, min(start + chunk_rows, len(lines))))
-            if not run(indices):
-                failed += one_by_one(indices, len(failed))
+            left = run(indices)
+            failed += one_by_one(indices, unknown(failed)) if left is None else left
             if number % 5 == 0 or number == len(starts):
                 print(f"OncoKB: {indices[-1] + 1} of {len(lines)} MAF rows done, "
-                      f"{len(failed)} failed so far", flush=True)
+                      f"{unknown(failed)} failed so far, {len(failed) - unknown(failed)} known bad",
+                      flush=True)
         for wait in retry_waits:
             retry = [i for i in failed if i not in known_bad]
             if not retry:
                 break
             print(f"OncoKB: {len(retry)} rows failed; trying them again alone in {wait} s", flush=True)
             sleep(wait)
-            failed = [i for i in failed if i in known_bad] + one_by_one(retry, len(failed) - len(retry))
+            failed = [i for i in failed if i in known_bad] + again(retry)
 
-        if len(failed) > limit:
+        if unknown(failed) > limit:
             raise OncoKBServerError(
-                f"OncoKB failed on {len(failed)} of {len(lines)} rows every time; "
+                f"OncoKB failed on {unknown(failed)} of {len(lines)} rows every time; "
                 f"more than {limit} is treated as an outage")
         for i in failed:
             fields = next(csv.reader([lines[i].rstrip("\r\n")], delimiter="\t"))

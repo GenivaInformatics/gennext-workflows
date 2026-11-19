@@ -14,7 +14,7 @@ import AnnotatorCore
 from AnnotatorCore import MutationStatus, append_headers, get_oncokb_annotation_column_headers
 import filtered_maf_annotator
 from filtered_maf_annotator import (
-    CHUNK_ROWS, DEFAULT_REFHUB_URL, OncoKBKnownBad, OncoKBServerError, RefhubCache, _response,
+    CHUNK_ROWS, DEFAULT_REFHUB_URL, REFHUB_BAD, REFHUB_RETRY, OncoKBServerError, RefhubCache, _response,
     annotate_maf, count_maf, fail_fast_on_500, refhub_url_for, route_through_refhub,
     is_genome_kit_regions_file, main,
     maf_annotation_header, mask_output, merge_maf, run_masked)
@@ -693,19 +693,32 @@ class RefhubCacheTest(unittest.TestCase):
         self.assertIsNone(cache.post(ONCOKB_POST, self.queries("5")))
         self.assertEqual(len(refhub.calls), 1)
 
-    def test_oncokb_unavailable_to_refhub_goes_to_oncokb_directly(self):
-        cache, _ = self.cache(refhub_answers(unavailable={"6"}))
+    def test_oncokb_unavailable_to_refhub_for_every_query_goes_to_oncokb_directly(self):
+        cache, _ = self.cache(refhub_answers(unavailable={"5", "6"}))
         self.assertIsNone(cache.post(ONCOKB_POST, self.queries("5", "6")))
         self.assertIn("could not reach OncoKB (http_503)", self.log[0])
 
-    def test_known_bad_and_failed_queries_are_row_failures(self):
-        cache, _ = self.cache(refhub_answers(bad={"6"}, failed={"7"}))
-        with self.assertRaisesRegex(OncoKBKnownBad, "1,6,6,A,G"):
-            cache.post(ONCOKB_POST, self.queries("5", "6", "7"))
-        with self.assertRaises(OncoKBServerError) as failed:
-            cache.post(ONCOKB_POST, self.queries("5", "7"))
-        self.assertNotIsInstance(failed.exception, OncoKBKnownBad)
-        self.assertTrue(filtered_maf_annotator.is_row_failure(failed.exception))
+    def test_rows_refhub_cannot_annotate_come_back_marked_in_one_answer(self):
+        cache, _ = self.cache(refhub_answers(bad={"6"}, failed={"7"}, unavailable={"8"}))
+        answers = cache.post(ONCOKB_POST, self.queries("5", "6", "7", "8")).json()
+        self.assertEqual([a["query"]["consequence"] for a in answers],
+                         ["missense_variant", REFHUB_BAD, REFHUB_RETRY, REFHUB_RETRY])
+        self.assertEqual((cache.counts["hit"], cache.counts["bad"], cache.counts["failed"]), (1, 1, 2))
+
+    def test_direct_fallback_sends_oncokb_at_most_100_queries_a_request(self):
+        import requests
+        route_through_refhub()
+        cache, _ = self.cache(lambda q: requests.exceptions.ConnectionError("no route"))
+        filtered_maf_annotator._refhub = cache
+        sizes = []
+
+        def direct(url, body):
+            sizes.append(len(body))
+            return _response(url, 200, [{"n": i} for i in range(len(body))])
+        with patch("filtered_maf_annotator._direct_post", side_effect=direct):
+            response = AnnotatorCore.makeoncokbpostrequest(ONCOKB_POST, self.queries(*map(str, range(250))))
+        self.assertEqual(sizes, [100, 100, 50])
+        self.assertEqual(len(response.json()), 250)
 
     def test_upstream_posts_fall_back_to_oncokb_when_refhub_cannot_answer(self):
         import requests
@@ -730,7 +743,8 @@ class RefhubCacheTest(unittest.TestCase):
 
     def run_upstream(self, rows, reply, sleep=None):
         """annotate_maf with upstream's real processalterationevents, refhub
-        faked and OncoKB itself unreachable. Returns (rows by position, refhub calls, out)."""
+        faked and OncoKB itself unreachable. Returns (rows by position, refhub
+        calls, waits, out); refhub chunks of 3 rows."""
         session = FakeRefhub(reply)
         waits = []
         with tempfile.TemporaryDirectory() as temp:
@@ -742,7 +756,7 @@ class RefhubCacheTest(unittest.TestCase):
                           side_effect=AssertionError("OncoKB asked directly")), \
                     contextlib.redirect_stdout(out):
                 annotate_maf(source, annotated, "tok", "GRCh38", refhub_url=REFHUB,
-                             refhub_session=session, chunk_rows=3, sleep=waits.append)
+                             refhub_session=session, refhub_chunk_rows=3, sleep=waits.append)
             header, _ = count_maf(source)
             merge_maf(source, annotated, output, header)
             with output.open(newline="") as file:
@@ -761,12 +775,28 @@ class RefhubCacheTest(unittest.TestCase):
             self.assertEqual(by_position[position]["GENE_IN_ONCOKB"], "True")
         bad = by_position["119510721"]
         self.assertEqual((bad["ANNOTATED"], bad["GENE_IN_ONCOKB"], bad["ONCOGENIC"]), ("False", "False", "Unknown"))
-        # Chunks 1-3 and 4-6; 4-6 holds the bad row, goes row by row; no pause.
-        self.assertEqual([len(c["queries"]) for c in calls], [3, 3, 1, 1, 1])
+        # Chunks 1-3 and 4-6, each once: the bad row needs no resend, no pause.
+        self.assertEqual([len(c["queries"]) for c in calls], [3, 3])
         self.assertEqual(waits, [])
         self.assertIn("known bad in refhub's cache, written unannotated", out)
-        self.assertIn("refhub cache: 5 requests; rows: 5 hits, 0 asked of OncoKB, 0 stale, 1 known bad, "
-                      "0 requests sent to OncoKB directly", out)
+        self.assertIn("refhub cache: 2 requests; answers: 5 hits, 0 asked of OncoKB, 0 stale, 1 known bad, "
+                      "0 not answered; 0 requests sent to OncoKB directly", out)
+
+    def test_known_bad_rows_are_no_outage(self):
+        # 40 known-bad intronic rows of 45: more than max_unanswered (10).
+        rows = [row.copy() for row in ROWS] + [
+            ["S1", "chr1", str(n), str(n), "TTTT", "-", "NOTCH2", "Intron", "intronic", "PASS"]
+            for n in range(100, 140)]
+        by_position, calls, waits, out = self.run_upstream(rows, refhub_answers(bad={str(n) for n in range(100, 140)}))
+        self.assertEqual(sum(1 for r in by_position.values() if r["ANNOTATED"] == "False"), 40)
+        self.assertEqual(len(calls), 15)
+        self.assertEqual(waits, [])
+
+    def test_many_rows_refhub_could_not_answer_are_still_an_outage(self):
+        rows = [["S1", "chr1", str(n), str(n), "TTTT", "-", "NOTCH2", "Intron", "intronic", "PASS"]
+                for n in range(100, 140)]
+        with self.assertRaisesRegex(OncoKBServerError, "outage"):
+            self.run_upstream(rows, refhub_answers(failed={str(n) for n in range(100, 140)}))
 
     def test_a_coding_row_refhub_knows_is_bad_fails_the_step(self):
         with self.assertRaisesRegex(OncoKBServerError, "exonic row"):
@@ -774,12 +804,15 @@ class RefhubCacheTest(unittest.TestCase):
 
     def test_a_row_refhub_could_not_confirm_is_tried_again_after_the_pause(self):
         replies = {"n": 0}
+
         def reply(queries):
             replies["n"] += 1
-            return refhub_answers(failed={"2"} if replies["n"] <= 3 else set())(queries)
+            return refhub_answers(failed={"2"} if replies["n"] <= 2 else set())(queries)
         by_position, calls, waits, _ = self.run_upstream(ROWS, reply)
         self.assertEqual(waits, [60])
         self.assertEqual(by_position["2"]["ANNOTATED"], "True")
+        # Chunks 1-3 and 4-5; then row 2 again with the other unanswered rows.
+        self.assertEqual([len(c["queries"]) for c in calls], [3, 2, 1])
 
 
 if __name__ == "__main__":
