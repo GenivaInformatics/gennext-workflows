@@ -34,6 +34,11 @@
 #   0.3.7-upstream-v4.1.0  as 0.3.6; refhub answers 500 rows a call, row by
 #                          row: known-bad rows are filled without resending
 #                          their chunk and don't count towards the outage cap
+#   0.3.8-upstream-v4.1.0  as 0.3.7; asks refhub by protein change
+#                          (?path=protein; REFHUB_ONCOKB_PATH=genomic opts
+#                          out); rows refhub can't get answered, or a chunk
+#                          whose direct fallback fails, are retried together
+#                          through refhub, not row by row
 FROM python:3.12.12-alpine3.22@sha256:848ba4413eb897e225159b8fc1b02094576cbae4aa73fc13142608ae2c8c0e32
 
 ARG ONCOKB_ANNOTATOR_VERSION=v4.1.0
