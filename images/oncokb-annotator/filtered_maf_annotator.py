@@ -181,6 +181,13 @@ REFHUB_RETRY = "refhub:not_answered"
 # After this many refhub failures in a row, this run stops asking it.
 REFHUB_MAX_FAILURES = 3
 
+# How refhub asks OncoKB for somatic queries: "protein" (refhub maps the
+# genomic change to a protein change itself and asks byProteinChange, so
+# Genome Nexus, where OncoKB's failing queries hang, is out of the path) or
+# "genomic" (byGenomicChange). REFHUB_ONCOKB_PATH overrides. refhub before
+# 0.8 ignores the setting and answers by genomic change.
+DEFAULT_REFHUB_PATH = "protein"
+
 # OncoKB endpoints refhub caches, by the path upstream posts to.
 REFHUB_ENDPOINTS = {
     "/annotate/mutations/byGenomicChange": "/oncokb/cache/annotate/mutations/byGenomicChange",
@@ -220,9 +227,10 @@ class RefhubCache:
     never fails a step.
     """
 
-    def __init__(self, base_url, token, session=None, log=None):
+    def __init__(self, base_url, token, session=None, log=None, path=None):
         import requests
         self.base_url = base_url.rstrip("/")
+        self.path = path or os.environ.get("REFHUB_ONCOKB_PATH", DEFAULT_REFHUB_PATH).strip() or "genomic"
         self.token = token
         self.session = session or requests.Session()
         self.log = log or (lambda message: print(f"OncoKB: {message}", flush=True))
@@ -251,9 +259,12 @@ class RefhubCache:
         # Serialized as upstream serializes its POST body.
         queries = json.loads(json.dumps(body, default=lambda o: o.__dict__))
         self.counts["requests"] += 1
+        target = self.base_url + endpoint
+        if self.path != "genomic" and "/germline/" not in endpoint:
+            target += f"?path={self.path}"
         try:
             reply = self.session.post(
-                self.base_url + endpoint, json=queries, timeout=REFHUB_TIMEOUT,
+                target, json=queries, timeout=REFHUB_TIMEOUT,
                 headers={"Authorization": f"Bearer {self.token}"})
         except requests.exceptions.RequestException as error:
             return self._give_up(f"unreachable ({type(error).__name__})")
@@ -271,10 +282,12 @@ class RefhubCache:
         self.failures = 0
 
         if all(status == "unavailable" for status in statuses):
+            # OncoKB is down for refhub: asking it directly would fail too, and
+            # a chunk failing directly goes row by row. Mark the rows; they are
+            # tried again through refhub after the pause.
             reasons = sorted({a.get("reason", "") for a in answers})
-            self.counts["direct"] += 1
-            self.log(f"refhub cache could not reach OncoKB ({', '.join(reasons)}); asking OncoKB directly")
-            return None
+            self.log(f"refhub cache could not reach OncoKB ({', '.join(reasons)}); "
+                     "trying these rows again later")
         reply_answers = []
         for answer in answers:
             status = answer["status"]
@@ -465,15 +478,22 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
             """Rows OncoKB left unanswered that refhub doesn't know are bad."""
             return len([i for i in rows if i not in known_bad])
 
+        def through_refhub():
+            return bool(_refhub and _refhub.enabled)
+
         def again(rows):
             """Rows still unanswered after another try."""
-            if not (_refhub and _refhub.enabled):
+            if not through_refhub():
                 return one_by_one(rows)
             still = []
             for start in range(0, len(rows), chunk_rows):
                 part = rows[start:start + chunk_rows]
                 left = run(part)
-                still += one_by_one(part, unknown(still)) if left is None else left
+                if left is None:
+                    # The direct fallback failed; refhub is still on: keep the
+                    # rows for the next pass rather than send them one by one.
+                    left = part if through_refhub() else one_by_one(part, unknown(still))
+                still += left
             return still
 
         failed = []
@@ -481,7 +501,12 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
         for number, start in enumerate(starts, 1):
             indices = list(range(start, min(start + chunk_rows, len(lines))))
             left = run(indices)
-            failed += one_by_one(indices, unknown(failed)) if left is None else left
+            if left is None:
+                # A row failure from asking OncoKB directly. With refhub still
+                # on, the rows are tried again together after the pause (a
+                # 500-row chunk one by one took 15 min in run c1125512).
+                left = indices if through_refhub() else one_by_one(indices, unknown(failed))
+            failed += left
             if number % 5 == 0 or number == len(starts):
                 print(f"OncoKB: {indices[-1] + 1} of {len(lines)} MAF rows done, "
                       f"{unknown(failed)} failed so far, {len(failed) - unknown(failed)} known bad",

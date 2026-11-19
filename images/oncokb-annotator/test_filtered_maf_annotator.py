@@ -645,6 +645,7 @@ class RefhubCacheTest(unittest.TestCase):
 
     def test_answers_come_back_as_oncokb_would_send_them(self):
         cache, refhub = self.cache(refhub_answers())
+        cache.path = "genomic"
         response = cache.post(ONCOKB_POST, self.queries("5", "6"))
         self.assertEqual(response.status_code, 200)
         self.assertEqual([a["query"]["genomicLocation"] for a in response.json()],
@@ -693,10 +694,27 @@ class RefhubCacheTest(unittest.TestCase):
         self.assertIsNone(cache.post(ONCOKB_POST, self.queries("5")))
         self.assertEqual(len(refhub.calls), 1)
 
-    def test_oncokb_unavailable_to_refhub_for_every_query_goes_to_oncokb_directly(self):
+    def test_oncokb_unavailable_to_refhub_marks_rows_for_later_not_direct(self):
         cache, _ = self.cache(refhub_answers(unavailable={"5", "6"}))
-        self.assertIsNone(cache.post(ONCOKB_POST, self.queries("5", "6")))
-        self.assertIn("could not reach OncoKB (http_503)", self.log[0])
+        answers = cache.post(ONCOKB_POST, self.queries("5", "6")).json()
+        self.assertEqual([a["query"]["consequence"] for a in answers], [REFHUB_RETRY, REFHUB_RETRY])
+        self.assertIn("could not reach OncoKB (http_503); trying these rows again later", self.log[0])
+        self.assertEqual(cache.counts["direct"], 0)
+
+    def test_somatic_queries_ask_refhub_by_protein_change_by_default(self):
+        cache, refhub = self.cache(refhub_answers())
+        with patch.dict(os.environ, {}, clear=True):
+            RefhubCache(REFHUB, "tok", refhub).post(ONCOKB_POST, self.queries("5"))
+            RefhubCache(REFHUB, "tok", refhub).post(
+                "https://www.oncokb.org/api/v1/annotate/germline/mutations/byGenomicChange", self.queries("5"))
+        with patch.dict(os.environ, {"REFHUB_ONCOKB_PATH": "genomic"}):
+            RefhubCache(REFHUB, "tok", refhub).post(ONCOKB_POST, self.queries("5"))
+        urls = [c["url"] for c in refhub.calls]
+        self.assertEqual(urls, [
+            REFHUB + "/oncokb/cache/annotate/mutations/byGenomicChange?path=protein",
+            REFHUB + "/oncokb/cache/annotate/germline/mutations/byGenomicChange",
+            REFHUB + "/oncokb/cache/annotate/mutations/byGenomicChange",
+        ])
 
     def test_rows_refhub_cannot_annotate_come_back_marked_in_one_answer(self):
         cache, _ = self.cache(refhub_answers(bad={"6"}, failed={"7"}, unavailable={"8"}))
@@ -791,6 +809,41 @@ class RefhubCacheTest(unittest.TestCase):
         self.assertEqual(sum(1 for r in by_position.values() if r["ANNOTATED"] == "False"), 40)
         self.assertEqual(len(calls), 15)
         self.assertEqual(waits, [])
+
+    def test_a_chunk_refhub_cannot_answer_is_retried_together_not_row_by_row(self):
+        # OncoKB down for refhub on the first pass (all unavailable), then back.
+        replies = {"n": 0}
+
+        def reply(queries):
+            replies["n"] += 1
+            return refhub_answers(unavailable={r[2] for r in ROWS} if replies["n"] <= 2 else set())(queries)
+        by_position, calls, waits, out = self.run_upstream(ROWS, reply)
+        self.assertEqual([len(c["queries"]) for c in calls], [3, 2, 3, 2])
+        self.assertEqual(waits, [60])
+        self.assertTrue(all(r["ANNOTATED"] == "True" for r in by_position.values()))
+
+    def test_a_failed_direct_fallback_keeps_the_rows_for_refhub(self):
+        # refhub answers HTTP 502 once; the direct fallback fails (500).
+        replies = {"n": 0}
+
+        def reply(queries):
+            replies["n"] += 1
+            return (502, "Bad Gateway") if replies["n"] == 1 else refhub_answers()(queries)
+        session = FakeRefhub(reply)
+        waits = []
+        with tempfile.TemporaryDirectory() as temp:
+            source, annotated = [Path(temp) / n for n in ("in.maf", "a.maf")]
+            write_tsv(source, HEADER, ROWS)
+            with patch("AnnotatorCore.validate_oncokb_token"), \
+                    patch("filtered_maf_annotator._direct_post", side_effect=OncoKBServerError("HTTP 500")) as direct, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                annotate_maf(source, annotated, "tok", "GRCh38", refhub_url=REFHUB,
+                             refhub_session=session, refhub_chunk_rows=3, sleep=waits.append)
+        # One direct try for chunk 1-3; its rows went again with chunk 4-5's
+        # leftovers after the pause, never one by one.
+        self.assertEqual(direct.call_count, 1)
+        self.assertEqual([len(c["queries"]) for c in session.calls], [3, 2, 3])
+        self.assertEqual(waits, [60])
 
     def test_many_rows_refhub_could_not_answer_are_still_an_outage(self):
         rows = [["S1", "chr1", str(n), str(n), "TTTT", "-", "NOTCH2", "Intron", "intronic", "PASS"]
