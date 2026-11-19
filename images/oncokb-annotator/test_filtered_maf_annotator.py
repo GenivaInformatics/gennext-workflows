@@ -12,8 +12,11 @@ import subprocess
 
 import AnnotatorCore
 from AnnotatorCore import MutationStatus, append_headers, get_oncokb_annotation_column_headers
+import filtered_maf_annotator
 from filtered_maf_annotator import (
-    CHUNK_ROWS, annotate_maf, count_maf, is_genome_kit_regions_file, main,
+    CHUNK_ROWS, DEFAULT_REFHUB_URL, REFHUB_BAD, REFHUB_RETRY, OncoKBServerError, RefhubCache, _response,
+    annotate_maf, count_maf, fail_fast_on_500, refhub_url_for, route_through_refhub,
+    is_genome_kit_regions_file, main,
     maf_annotation_header, mask_output, merge_maf, run_masked)
 from filtered_sv_annotator import main as sv_main
 from backfill_filtered_maf import main as backfill_main
@@ -380,6 +383,436 @@ class FilteredMafTest(unittest.TestCase):
             self.assertEqual(stop.exception.code, 1)
             self.assertIn("token missing, rejected or expired", err.getvalue())
             self.assertFalse(output.exists())
+
+
+    @staticmethod
+    def retry_error(status):
+        """What upstream raises when OncoKB keeps answering `status`."""
+        import requests
+        from urllib3.exceptions import MaxRetryError, ResponseError
+        reason = ResponseError(ResponseError.SPECIFIC_ERROR.format(status_code=status))
+        return requests.exceptions.RetryError(MaxRetryError(None, "/annotate", reason))
+
+    def poisoned_annotator(self, sent, poison, status=500):
+        """fake_processalterationevents, except that a request holding a row
+        whose Start_Position is in `poison` fails as upstream does. `poison`
+        maps a position to how many requests holding it fail (None: all)."""
+        fake = self.fake_processalterationevents(sent)
+        failures = dict(poison) if isinstance(poison, dict) else {p: None for p in poison}
+
+        def run(eventfile, outfile, *args):
+            with open(eventfile, newline="") as file:
+                rows = list(csv.reader(file, delimiter="\t"))[1:]
+            hit = [row[2] for row in rows if row[2] in failures]
+            if any(failures[p] is None or failures[p] > 0 for p in hit):
+                for p in hit:
+                    if failures[p]:
+                        failures[p] -= 1
+                raise self.retry_error(status)
+            fake(eventfile, outfile, *args)
+        return run
+
+    def test_rows_oncokb_answers_with_500_are_isolated_and_marked(self):
+        rows = [row.copy() for row in ROWS] + [
+            ["S1", "chr1", str(n), str(n), "TTTT", "-", "Unknown", "Intron", "intronic", "PASS"]
+            for n in range(6, 10)]
+        sent, waits = [], []
+        with tempfile.TemporaryDirectory() as temp:
+            source, annotated, output = [Path(temp) / n for n in ("in.maf", "a.maf", "out.maf")]
+            write_tsv(source, HEADER, rows)
+            out = io.StringIO()
+            with patch("AnnotatorCore.validate_oncokb_token"), \
+                    patch("AnnotatorCore.processalterationevents",
+                          side_effect=self.poisoned_annotator(sent, {"1", "7"})), \
+                    contextlib.redirect_stdout(out):
+                self.assertEqual(annotate_maf(source, annotated, "t", "GRCh38", chunk_rows=4,
+                                              sleep=waits.append), 9)
+            header, _ = count_maf(source)
+            self.assertEqual(merge_maf(source, annotated, output, header), 9)
+            with output.open(newline="") as file:
+                merged = list(csv.reader(file, delimiter="\t"))
+        names = maf_annotation_header()
+        self.assertEqual([row[:len(HEADER)] for row in merged[1:]], rows)
+        annotation = {row[2]: dict(zip(names, row[len(HEADER):])) for row in merged[1:]}
+        for position in ("1", "7"):
+            self.assertEqual(annotation[position]["ANNOTATED"], "False")
+            self.assertEqual(annotation[position]["GENE_IN_ONCOKB"], "False")
+            self.assertEqual(annotation[position]["ONCOGENIC"], "Unknown")
+        for position in ("2", "3", "4", "5", "6", "8", "9"):
+            self.assertEqual(annotation[position]["ONCOGENIC"], "Unknown")
+            self.assertEqual(annotation[position]["ANNOTATED"], "")  # the fake leaves it empty
+        # Every answered row was sent in a request that succeeded.
+        answered = [line.split("\t")[2] for text in sent for line in text.splitlines()[1:]]
+        self.assertEqual(sorted(answered, key=int), ["2", "3", "4", "5", "6", "8", "9"])
+        self.assertIn("2 written unannotated", out.getvalue())
+        # Each poisoned row is tried alone once in its chunk's pass and once after the pause.
+        self.assertEqual(waits, [60])
+        # Chunk 1-4 and 5-8 fail and go row by row; chunk 9 succeeds whole.
+        self.assertEqual(sorted(len(text.splitlines()) - 1 for text in sent), [1] * 7)
+
+    def test_a_coding_row_oncokb_cannot_answer_fails_the_step(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source, annotated = [Path(temp) / n for n in ("in.maf", "a.maf")]
+            write_tsv(source, HEADER, ROWS)
+            with patch("AnnotatorCore.validate_oncokb_token"), \
+                    patch("AnnotatorCore.processalterationevents",
+                          side_effect=self.poisoned_annotator([], {"3"})), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(OncoKBServerError, "exonic row"):
+                    annotate_maf(source, annotated, "t", "GRCh38", sleep=lambda s: None)
+
+    def test_a_row_oncokb_never_answers_is_handled_like_a_500(self):
+        import requests
+        from urllib3.exceptions import MaxRetryError, ReadTimeoutError
+        timeout = requests.exceptions.ConnectionError(
+            MaxRetryError(None, "/annotate", ReadTimeoutError(None, "/annotate", "Read timed out.")))
+        fake = self.fake_processalterationevents([])
+
+        def run(eventfile, outfile, *args):
+            with open(eventfile, newline="") as file:
+                rows = list(csv.reader(file, delimiter="\t"))[1:]
+            if any(row[2] == "1" for row in rows):
+                raise timeout
+            fake(eventfile, outfile, *args)
+        with tempfile.TemporaryDirectory() as temp:
+            source, annotated = [Path(temp) / n for n in ("in.maf", "a.maf")]
+            write_tsv(source, HEADER, ROWS)
+            with patch("AnnotatorCore.validate_oncokb_token"), \
+                    patch("AnnotatorCore.processalterationevents", side_effect=run), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(annotate_maf(source, annotated, "t", "GRCh38", sleep=lambda s: None), 5)
+            with annotated.open(newline="") as file:
+                out = list(csv.reader(file, delimiter="\t"))
+        names = maf_annotation_header()
+        self.assertEqual(dict(zip(names, out[1][len(HEADER):]))["ANNOTATED"], "False")
+
+    def test_many_failing_rows_are_an_outage(self):
+        rows = [["S1", "chr1", str(n), str(n), "TT", "-", "Unknown", "Intron", "intronic", "PASS"]
+                for n in range(1, 41)]
+        for failing, raises in ((10, False), (11, True)):
+            with tempfile.TemporaryDirectory() as temp:
+                source, annotated = [Path(temp) / n for n in ("in.maf", "a.maf")]
+                write_tsv(source, HEADER, rows)
+                with patch("AnnotatorCore.validate_oncokb_token"), \
+                        patch("AnnotatorCore.processalterationevents",
+                              side_effect=self.poisoned_annotator([], {str(n) for n in range(1, failing + 1)})), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    if raises:
+                        with self.assertRaisesRegex(OncoKBServerError, "outage"):
+                            annotate_maf(source, annotated, "t", "GRCh38", sleep=lambda s: None)
+                    else:
+                        self.assertEqual(annotate_maf(source, annotated, "t", "GRCh38",
+                                                      sleep=lambda s: None), 40)
+
+    def test_an_outage_stops_before_trying_every_row(self):
+        rows = [["S1", "chr1", str(n), str(n), "TT", "-", "Unknown", "Intron", "intronic", "PASS"]
+                for n in range(1, 101)]
+        calls = []
+        with tempfile.TemporaryDirectory() as temp:
+            source, annotated = [Path(temp) / n for n in ("in.maf", "a.maf")]
+            write_tsv(source, HEADER, rows)
+            with patch("AnnotatorCore.validate_oncokb_token"), \
+                    patch("AnnotatorCore.processalterationevents",
+                          side_effect=lambda *a: calls.append(1) or (_ for _ in ()).throw(OncoKBServerError("500"))), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(OncoKBServerError, "outage"):
+                    annotate_maf(source, annotated, "t", "GRCh38", sleep=lambda s: None)
+        # One chunk request, then single rows until more than 2 x 10 failed.
+        self.assertEqual(len(calls), 1 + 21)
+
+    def test_other_oncokb_errors_still_fail_the_step(self):
+        import requests
+        for error in (self.retry_error(503), self.retry_error(429),
+                      requests.exceptions.ConnectionError("network")):
+            with tempfile.TemporaryDirectory() as temp:
+                source, annotated = [Path(temp) / n for n in ("in.maf", "a.maf")]
+                write_tsv(source, HEADER, ROWS)
+                with patch("AnnotatorCore.validate_oncokb_token"), \
+                        patch("AnnotatorCore.processalterationevents", side_effect=error) as run:
+                    with self.assertRaises(type(error)):
+                        annotate_maf(source, annotated, "t", "GRCh38")
+                self.assertEqual(run.call_count, 1)
+
+
+    def test_a_row_that_fails_only_next_to_others_is_annotated_on_retry(self):
+        # Position 3 is exonic and fails twice (in its chunk and alone right
+        # after), then succeeds after the first pause: annotated, step passes.
+        sent, waits = [], []
+        with tempfile.TemporaryDirectory() as temp:
+            source, annotated, output = [Path(temp) / n for n in ("in.maf", "a.maf", "out.maf")]
+            write_tsv(source, HEADER, ROWS)
+            with patch("AnnotatorCore.validate_oncokb_token"), \
+                    patch("AnnotatorCore.processalterationevents",
+                          side_effect=self.poisoned_annotator(sent, {"3": 2})), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(annotate_maf(source, annotated, "t", "GRCh38", sleep=waits.append), 5)
+            header, _ = count_maf(source)
+            self.assertEqual(merge_maf(source, annotated, output, header), 5)
+            with output.open(newline="") as file:
+                merged = list(csv.reader(file, delimiter="\t"))
+        self.assertEqual(waits, [60])
+        names = maf_annotation_header()
+        self.assertEqual([dict(zip(names, row[len(HEADER):]))["ANNOTATED"] for row in merged[1:]],
+                         [""] * 5)
+
+    def test_upstream_requests_raise_on_500_without_retrying_it(self):
+        import requests
+        fail_fast_on_500()
+        fail_fast_on_500()
+        session = AnnotatorCore.requests_retry_session(allowed_methods=["POST"])
+        retry = session.get_adapter("https://www.oncokb.org").max_retries
+        self.assertNotIn(500, retry.status_forcelist)
+        self.assertIn(503, retry.status_forcelist)
+        self.assertEqual(retry.read, 0)
+        self.assertEqual(retry.connect, 3)
+        self.assertEqual(AnnotatorCore.REQUEST_TIMEOUT, 90)
+        self.assertEqual(len(session.hooks["response"]), 1)
+        response = requests.models.Response()
+        response.status_code = 500
+        response.url = "https://www.oncokb.org/api/v1/annotate?x=1"
+        response.request = requests.Request("POST", response.url).prepare()
+        with self.assertRaisesRegex(OncoKBServerError, "POST https://www.oncokb.org/api/v1/annotate$"):
+            session.hooks["response"][0](response)
+        response.status_code = 200
+        session.hooks["response"][0](response)
+
+
+ONCOKB_POST = "https://www.oncokb.org/api/v1/annotate/mutations/byGenomicChange"
+REFHUB = "https://refhub.test/api/v0/refhub"
+
+
+def oncokb_answer(query):
+    """An OncoKB genomic-change answer, enough for upstream to write a row."""
+    return {"geneExist": True, "variantExist": False, "oncogenic": "Unknown",
+            "mutationEffect": {"knownEffect": "Unknown", "description": "",
+                               "citations": {"pmids": [], "abstracts": []}},
+            "treatments": [], "query": {"hugoSymbol": "GENE1", "alteration": "X1Y",
+                                        "consequence": "missense_variant",
+                                        "genomicLocation": query["genomicLocation"]},
+            "dataVersion": "v6.0", "lastUpdate": "11/01/2026"}
+
+
+class FakeRefhub:
+    """A requests session standing in for refhub. `reply(queries)` returns
+    (status, payload) or an exception to raise."""
+
+    def __init__(self, reply):
+        self.reply, self.calls = reply, []
+
+    def post(self, url, json=None, timeout=None, headers=None):
+        self.calls.append({"url": url, "queries": json, "headers": headers, "timeout": timeout})
+        result = self.reply(json)
+        if isinstance(result, Exception):
+            raise result
+        status, payload = result
+        return _response(url, status, payload)
+
+
+def refhub_answers(bad=(), failed=(), unavailable=()):
+    """refhub's reply: an annotation per query, except queries whose
+    genomicLocation starts with a position in `bad`, `failed`, `unavailable`."""
+    def reply(queries):
+        answers = []
+        for query in queries:
+            position = query["genomicLocation"].split(",")[1]
+            if position in bad:
+                answers.append({"status": "bad", "reason": "http_500", "source": "hit"})
+            elif position in failed:
+                answers.append({"status": "failed", "reason": "http_500"})
+            elif position in unavailable:
+                answers.append({"status": "unavailable", "reason": "http_503"})
+            else:
+                answers.append({"status": "annotation", "source": "hit", "annotation": oncokb_answer(query)})
+        return 200, answers
+    return reply
+
+
+class RefhubCacheTest(unittest.TestCase):
+    def setUp(self):
+        self.log = []
+
+    def tearDown(self):
+        filtered_maf_annotator._refhub = None
+
+    def cache(self, reply):
+        session = FakeRefhub(reply)
+        return RefhubCache(REFHUB, "tok", session, log=self.log.append), session
+
+    @staticmethod
+    def queries(*positions):
+        return [AnnotatorCore.GenomicChangeQuery("chr1", p, p, "A", "G", "", AnnotatorCore.ReferenceGenome.GRCH38)
+                for p in positions]
+
+    def test_answers_come_back_as_oncokb_would_send_them(self):
+        cache, refhub = self.cache(refhub_answers())
+        response = cache.post(ONCOKB_POST, self.queries("5", "6"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([a["query"]["genomicLocation"] for a in response.json()],
+                         ["1,5,5,A,G", "1,6,6,A,G"])
+        call, = refhub.calls
+        self.assertEqual(call["url"], REFHUB + "/oncokb/cache/annotate/mutations/byGenomicChange")
+        self.assertEqual(call["headers"], {"Authorization": "Bearer tok"})
+        # The query objects upstream would post to OncoKB, unchanged.
+        self.assertEqual(call["queries"][0],
+                         {"genomicLocation": "1,5,5,A,G", "tumorType": "", "referenceGenome": "GRCh38"})
+        self.assertEqual(self.log, [])
+
+    def test_germline_goes_to_its_own_endpoint_and_others_skip_refhub(self):
+        cache, refhub = self.cache(refhub_answers())
+        cache.post("https://www.oncokb.org/api/v1/annotate/germline/mutations/byGenomicChange", self.queries("5"))
+        self.assertTrue(refhub.calls[0]["url"].endswith("/oncokb/cache/annotate/germline/mutations/byGenomicChange"))
+        self.assertIsNone(cache.post("https://www.oncokb.org/api/v1/annotate/copyNumberAlterations", []))
+        self.assertEqual(len(refhub.calls), 1)
+
+    def test_unreachable_refhub_falls_back_and_is_dropped_after_three_failures(self):
+        import requests
+        cache, refhub = self.cache(lambda q: requests.exceptions.ConnectionError("no route"))
+        for _ in range(4):
+            self.assertIsNone(cache.post(ONCOKB_POST, self.queries("5")))
+        self.assertEqual(len(refhub.calls), 3)
+        self.assertFalse(cache.enabled)
+        self.assertIn("WARNING: refhub cache unreachable (ConnectionError); asking OncoKB directly", self.log)
+        self.assertIn("for the rest of this run", self.log[-1])
+
+    def test_refhub_errors_fall_back_and_a_success_resets_the_count(self):
+        replies = iter([(503, {"error": "OncoKB cache is not configured"}), (200, "not a list"),
+                        (200, [{"status": "annotation", "annotation": {}, "source": "hit"}]),
+                        (502, "Bad Gateway"), (504, "Gateway Timeout")])
+        cache, refhub = self.cache(lambda q: next(replies))
+        self.assertIsNone(cache.post(ONCOKB_POST, self.queries("5")))
+        self.assertIsNone(cache.post(ONCOKB_POST, self.queries("5")))
+        self.assertEqual(cache.post(ONCOKB_POST, self.queries("5")).status_code, 200)
+        self.assertIsNone(cache.post(ONCOKB_POST, self.queries("5")))
+        self.assertIsNone(cache.post(ONCOKB_POST, self.queries("5")))
+        self.assertTrue(cache.enabled)
+        self.assertIn("HTTP 503", self.log[0])
+
+    def test_a_rejected_token_stops_asking_refhub(self):
+        cache, refhub = self.cache(lambda q: (401, {"error": "send refhub's OncoKB token"}))
+        self.assertIsNone(cache.post(ONCOKB_POST, self.queries("5")))
+        self.assertIsNone(cache.post(ONCOKB_POST, self.queries("5")))
+        self.assertEqual(len(refhub.calls), 1)
+
+    def test_oncokb_unavailable_to_refhub_for_every_query_goes_to_oncokb_directly(self):
+        cache, _ = self.cache(refhub_answers(unavailable={"5", "6"}))
+        self.assertIsNone(cache.post(ONCOKB_POST, self.queries("5", "6")))
+        self.assertIn("could not reach OncoKB (http_503)", self.log[0])
+
+    def test_rows_refhub_cannot_annotate_come_back_marked_in_one_answer(self):
+        cache, _ = self.cache(refhub_answers(bad={"6"}, failed={"7"}, unavailable={"8"}))
+        answers = cache.post(ONCOKB_POST, self.queries("5", "6", "7", "8")).json()
+        self.assertEqual([a["query"]["consequence"] for a in answers],
+                         ["missense_variant", REFHUB_BAD, REFHUB_RETRY, REFHUB_RETRY])
+        self.assertEqual((cache.counts["hit"], cache.counts["bad"], cache.counts["failed"]), (1, 1, 2))
+
+    def test_direct_fallback_sends_oncokb_at_most_100_queries_a_request(self):
+        import requests
+        route_through_refhub()
+        cache, _ = self.cache(lambda q: requests.exceptions.ConnectionError("no route"))
+        filtered_maf_annotator._refhub = cache
+        sizes = []
+
+        def direct(url, body):
+            sizes.append(len(body))
+            return _response(url, 200, [{"n": i} for i in range(len(body))])
+        with patch("filtered_maf_annotator._direct_post", side_effect=direct):
+            response = AnnotatorCore.makeoncokbpostrequest(ONCOKB_POST, self.queries(*map(str, range(250))))
+        self.assertEqual(sizes, [100, 100, 50])
+        self.assertEqual(len(response.json()), 250)
+
+    def test_upstream_posts_fall_back_to_oncokb_when_refhub_cannot_answer(self):
+        import requests
+        route_through_refhub()
+        route_through_refhub()
+        cache, _ = self.cache(lambda q: requests.exceptions.ReadTimeout("slow"))
+        filtered_maf_annotator._refhub = cache
+        with patch("filtered_maf_annotator._direct_post", return_value="direct") as direct:
+            self.assertEqual(AnnotatorCore.makeoncokbpostrequest(ONCOKB_POST, self.queries("5")), "direct")
+            filtered_maf_annotator._refhub = None
+            self.assertEqual(AnnotatorCore.makeoncokbpostrequest(ONCOKB_POST, []), "direct")
+        self.assertEqual(direct.call_count, 2)
+
+    def test_refhub_url(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(refhub_url_for(None), DEFAULT_REFHUB_URL)
+            self.assertIsNone(refhub_url_for("https://demo.oncokb.org"))
+        with patch.dict(os.environ, {"REFHUB_URL": " "}):
+            self.assertIsNone(refhub_url_for(None))
+        with patch.dict(os.environ, {"REFHUB_URL": REFHUB}):
+            self.assertEqual(refhub_url_for(None), REFHUB)
+
+    def run_upstream(self, rows, reply, sleep=None):
+        """annotate_maf with upstream's real processalterationevents, refhub
+        faked and OncoKB itself unreachable. Returns (rows by position, refhub
+        calls, waits, out); refhub chunks of 3 rows."""
+        session = FakeRefhub(reply)
+        waits = []
+        with tempfile.TemporaryDirectory() as temp:
+            source, annotated, output = [Path(temp) / n for n in ("in.maf", "a.maf", "out.maf")]
+            write_tsv(source, HEADER, rows)
+            out = io.StringIO()
+            with patch("AnnotatorCore.validate_oncokb_token"), \
+                    patch("filtered_maf_annotator._direct_post",
+                          side_effect=AssertionError("OncoKB asked directly")), \
+                    contextlib.redirect_stdout(out):
+                annotate_maf(source, annotated, "tok", "GRCh38", refhub_url=REFHUB,
+                             refhub_session=session, refhub_chunk_rows=3, sleep=waits.append)
+            header, _ = count_maf(source)
+            merge_maf(source, annotated, output, header)
+            with output.open(newline="") as file:
+                merged = list(csv.reader(file, delimiter="\t"))
+        names = maf_annotation_header()
+        by_position = {row[2]: dict(zip(names, row[len(HEADER):])) for row in merged[1:]}
+        return by_position, session.calls, waits, out.getvalue()
+
+    def test_upstream_annotates_through_refhub_and_known_bad_rows_are_not_retried(self):
+        rows = [row.copy() for row in ROWS] + [
+            ["S1", "chr1", "119510721", "119510740", "TTTTTTTTTTTTTTTTTTTT", "-", "NOTCH2", "Intron",
+             "intronic", "PASS"]]
+        by_position, calls, waits, out = self.run_upstream(rows, refhub_answers(bad={"119510721"}))
+        for position in ("1", "2", "3", "4", "5"):
+            self.assertEqual(by_position[position]["ANNOTATED"], "True")
+            self.assertEqual(by_position[position]["GENE_IN_ONCOKB"], "True")
+        bad = by_position["119510721"]
+        self.assertEqual((bad["ANNOTATED"], bad["GENE_IN_ONCOKB"], bad["ONCOGENIC"]), ("False", "False", "Unknown"))
+        # Chunks 1-3 and 4-6, each once: the bad row needs no resend, no pause.
+        self.assertEqual([len(c["queries"]) for c in calls], [3, 3])
+        self.assertEqual(waits, [])
+        self.assertIn("known bad in refhub's cache, written unannotated", out)
+        self.assertIn("refhub cache: 2 requests; answers: 5 hits, 0 asked of OncoKB, 0 stale, 1 known bad, "
+                      "0 not answered; 0 requests sent to OncoKB directly", out)
+
+    def test_known_bad_rows_are_no_outage(self):
+        # 40 known-bad intronic rows of 45: more than max_unanswered (10).
+        rows = [row.copy() for row in ROWS] + [
+            ["S1", "chr1", str(n), str(n), "TTTT", "-", "NOTCH2", "Intron", "intronic", "PASS"]
+            for n in range(100, 140)]
+        by_position, calls, waits, out = self.run_upstream(rows, refhub_answers(bad={str(n) for n in range(100, 140)}))
+        self.assertEqual(sum(1 for r in by_position.values() if r["ANNOTATED"] == "False"), 40)
+        self.assertEqual(len(calls), 15)
+        self.assertEqual(waits, [])
+
+    def test_many_rows_refhub_could_not_answer_are_still_an_outage(self):
+        rows = [["S1", "chr1", str(n), str(n), "TTTT", "-", "NOTCH2", "Intron", "intronic", "PASS"]
+                for n in range(100, 140)]
+        with self.assertRaisesRegex(OncoKBServerError, "outage"):
+            self.run_upstream(rows, refhub_answers(failed={str(n) for n in range(100, 140)}))
+
+    def test_a_coding_row_refhub_knows_is_bad_fails_the_step(self):
+        with self.assertRaisesRegex(OncoKBServerError, "exonic row"):
+            self.run_upstream(ROWS, refhub_answers(bad={"3"}))
+
+    def test_a_row_refhub_could_not_confirm_is_tried_again_after_the_pause(self):
+        replies = {"n": 0}
+
+        def reply(queries):
+            replies["n"] += 1
+            return refhub_answers(failed={"2"} if replies["n"] <= 2 else set())(queries)
+        by_position, calls, waits, _ = self.run_upstream(ROWS, reply)
+        self.assertEqual(waits, [60])
+        self.assertEqual(by_position["2"]["ANNOTATED"], "True")
+        # Chunks 1-3 and 4-5; then row 2 again with the other unanswered rows.
+        self.assertEqual([len(c["queries"]) for c in calls], [3, 2, 1])
 
 
 if __name__ == "__main__":

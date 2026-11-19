@@ -1,6 +1,6 @@
 # OncoKB annotator image
 
-`bergun/oncokb-annotator:0.3.3-upstream-v4.1.0` is upstream
+`bergun/oncokb-annotator:0.3.7-upstream-v4.1.0` is upstream
 [oncokb-annotator](https://github.com/oncokb/oncokb-annotator) at tag `v4.1.0`
 (commit `77521cd`), unmodified, plus the three wrapper scripts in this
 directory. The previous image, `0.2.0-upstream-v3.4.2`, is upstream `v3.4.2`
@@ -45,6 +45,63 @@ Each chunk is the header line plus the next 100 data lines, copied byte for
 byte. The wrapper refuses a MAF whose records span lines. The token is no
 longer passed on a command line, so it doesn't show in a failed step's log.
 `0.3.0` lacks the chunking and isn't used.
+
+**Rows OncoKB cannot process.** One query OncoKB cannot process fails its
+whole request. OncoKB works on it for about 31 s and answers HTTP 500, or
+does not answer at all; requests sent right after such a query can fail too,
+and succeed when sent alone a little later. The NanOnCT panel produces such
+queries: insertions and deletions in long homopolymers at its MSI and intronic
+sites (for example the poly-T run at chr1:119,510,721-119,510,740).
+
+From `0.3.4`, with the handling below from `0.3.5`:
+
+- upstream no longer retries a 500 or a read timeout, and waits 90 s for an
+  answer instead of 240 s (`fail_fast_on_500()`). A 500 must raise: upstream's
+  fallback for a failed POST re-sends each row as a GET without the reference
+  genome, which OncoKB reads as GRCh37;
+- a 100-row chunk that fails is sent again one row per request;
+- rows that still fail are tried again, alone, after 60 s;
+- a row that fails every time is written with `ANNOTATED=False`,
+  `GENE_IN_ONCOKB=False`, `VARIANT_IN_ONCOKB=False`, `MUTATION_EFFECT=Unknown`
+  and `ONCOGENIC=Unknown`, the rest empty, so the columns gennext-api-edge
+  requires are set. The step log lists it. In DuckDB it looks like a variant
+  OncoKB has no knowledge of; `ANNOTATED` is not carried into DuckDB.
+
+The step fails instead when such a row is `exonic` or `splicing`
+(`Func.refGene`), or when more than max(10, 5% of rows) are left (an outage).
+429, 502, 503, 504 and connection errors still fail the step.
+
+**refhub's OncoKB cache.** From `0.3.6`, upstream's genomic-change POSTs go
+to gennext-refhub's OncoKB cache first (`RefhubCache`, refhub's README
+"OncoKB cache"), with the same query objects and the same token. refhub
+answers from its cache (annotations kept 1 month), asks OncoKB for the rest,
+and knows the locations OncoKB fails on (kept 3 months, after a confirming
+second try alone after a quiet pause), so each run stops spending 31-90 s
+twice on each of them and stops sending OncoKB the same queries again.
+
+- refhub URL: `REFHUB_URL`, default `https://api.gennext.bio/api/v0/refhub`;
+  empty turns the cache off. `--api-url` (demo.oncokb.org tests) turns it off
+  too: refhub caches production OncoKB.
+- From `0.3.7`, upstream is called on 500 rows at a time and refhub answers
+  every row in one go (it batches, parallelises and bisects its own OncoKB
+  requests). A row refhub reports `bad` comes back marked
+  (`ONCOKB_CONSEQUENCE=refhub:known_bad`) and is written with the
+  `ANNOTATED=False` values above; its chunk is not sent again and there is no
+  60 s retry. Known-bad rows don't count towards the outage cap (a NanOnCT
+  MAF holds hundreds); an `exonic` or `splicing` one still fails the step. A
+  row refhub reports `failed` or `unavailable` (`refhub:not_answered`) is
+  tried again after 60 s, with the other such rows, and is then handled as
+  above (filled, or the step fails).
+- The cache never fails a step. refhub unreachable, slow (30 min), answering
+  anything but 200, or reporting OncoKB `unavailable` for every query sends
+  that request to OncoKB directly, 100 queries a request, with a warning;
+  after 3 refhub failures in a row the rest of the run asks OncoKB directly.
+- The step log ends with refhub's counts (hits, asked of OncoKB, known bad,
+  sent directly).
+
+Rows are not filtered by gene: OncoKB maps intronic rows our MAF calls
+`Unknown` to their gene, MET exon 14 skipping variants can be intronic, and
+the TERT promoter rows are `upstream`.
 
 **The token in logs.** The token reaches output in more ways than a command
 line: upstream validates it with `GET /tokens/<token>`, so a connection error,

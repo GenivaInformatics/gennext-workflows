@@ -19,6 +19,21 @@
 #   0.3.3-upstream-v4.1.0  as 0.3.2; every wrapper masks the token in all it
 #                          and upstream print; a rejected token fails the MAF
 #                          step (upstream's exit() is status 0 in-process)
+#   0.3.4-upstream-v4.1.0  as 0.3.3; a MAF chunk OncoKB answers with HTTP 500
+#                          is split until the offending rows stand alone;
+#                          those are written with ANNOTATED=False, and a
+#                          coding or splice-site row among them fails the step
+#   0.3.5-upstream-v4.1.0  as 0.3.4, but a failing chunk goes row by row and
+#                          failed rows are tried again after 60 s; 500 and
+#                          read timeouts (90 s) are not retried by upstream;
+#                          more than max(10, 5%) unanswered rows fail the step
+#   0.3.6-upstream-v4.1.0  as 0.3.5; genomic-change POSTs ask gennext-refhub's
+#                          OncoKB cache first (REFHUB_URL), OncoKB directly
+#                          when refhub can't answer; known-bad rows skip the
+#                          60 s retry
+#   0.3.7-upstream-v4.1.0  as 0.3.6; refhub answers 500 rows a call, row by
+#                          row: known-bad rows are filled without resending
+#                          their chunk and don't count towards the outage cap
 FROM python:3.12.12-alpine3.22@sha256:848ba4413eb897e225159b8fc1b02094576cbae4aa73fc13142608ae2c8c0e32
 
 ARG ONCOKB_ANNOTATOR_VERSION=v4.1.0

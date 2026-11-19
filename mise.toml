@@ -1,0 +1,18 @@
+# Local check gate: `mise run ci` must pass before a PR is merged; GitHub
+# checks are advisory only. Needs Docker. The first run builds the
+# oncokb-annotator image (network); later runs use the build cache.
+
+[tasks."test:oncokb-annotator"]
+description = "Wrapper tests in the oncokb-annotator image, against upstream's real AnnotatorCore"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+docker build -q -t oncokb-annotator:ci images/oncokb-annotator >/dev/null
+docker run --rm --network none --entrypoint sh \
+  -v "$PWD/images/oncokb-annotator:/work:ro" oncokb-annotator:ci \
+  -c 'cd /tmp && PYTHONPATH=/work:/app/oncokb python3 -m unittest test_filtered_maf_annotator >/tmp/log 2>&1; rc=$?; grep -E "^(FAIL|ERROR):" /tmp/log; tail -4 /tmp/log; exit $rc'
+"""
+
+[tasks.ci]
+description = "The check gate"
+depends = ["test:oncokb-annotator"]
