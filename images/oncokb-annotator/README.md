@@ -1,6 +1,6 @@
 # OncoKB annotator image
 
-`bergun/oncokb-annotator:0.3.5-upstream-v4.1.0` is upstream
+`bergun/oncokb-annotator:0.3.6-upstream-v4.1.0` is upstream
 [oncokb-annotator](https://github.com/oncokb/oncokb-annotator) at tag `v4.1.0`
 (commit `77521cd`), unmodified, plus the three wrapper scripts in this
 directory. The previous image, `0.2.0-upstream-v3.4.2`, is upstream `v3.4.2`
@@ -70,6 +70,28 @@ From `0.3.4`, with the handling below from `0.3.5`:
 The step fails instead when such a row is `exonic` or `splicing`
 (`Func.refGene`), or when more than max(10, 5% of rows) are left (an outage).
 429, 502, 503, 504 and connection errors still fail the step.
+
+**refhub's OncoKB cache.** From `0.3.6`, upstream's genomic-change POSTs go
+to gennext-refhub's OncoKB cache first (`RefhubCache`, refhub's README
+"OncoKB cache"), with the same query objects and the same token. refhub
+answers from its cache (annotations kept 1 month), asks OncoKB for the rest,
+and knows the locations OncoKB fails on (kept 3 months, after a confirming
+second try alone after a quiet pause), so each run stops spending 31-90 s
+twice on each of them and stops sending OncoKB the same queries again.
+
+- refhub URL: `REFHUB_URL`, default `https://api.gennext.bio/api/v0/refhub`;
+  empty turns the cache off. `--api-url` (demo.oncokb.org tests) turns it off
+  too: refhub caches production OncoKB.
+- A row refhub reports `bad` is written with the `ANNOTATED=False` values above
+  at once, without the 60 s retry; an `exonic` or `splicing` one still fails
+  the step. A row refhub reports `failed` (OncoKB failed on it but it is not
+  confirmed bad) goes through the row-by-row and retry handling above.
+- The cache never fails a step. refhub unreachable, slow (30 min), answering
+  anything but 200, or reporting OncoKB `unavailable` sends that request to
+  OncoKB directly, with a warning in the log; after 3 refhub failures in a row
+  the rest of the run asks OncoKB directly. The outage cap is unchanged.
+- The step log ends with refhub's counts (hits, asked of OncoKB, known bad,
+  sent directly).
 
 Rows are not filtered by gene: OncoKB maps intronic rows our MAF calls
 `Unknown` to their gene, MET exon 14 skipping variants can be intronic, and
