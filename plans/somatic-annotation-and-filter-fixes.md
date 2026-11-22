@@ -17,6 +17,10 @@ gene database on `gennext-02`) is already fixed. The two below are not.
 
 ### 1a. Raise the clustered-events threshold
 
+**Status (2026-11-22):** applied in `mutect2-sharded.yaml` (branch
+`fix/somatic-small-fixes`). The legacy `mutect2.yaml` is unchanged; no v2
+workflow uses it.
+
 `FilterMutectCalls` is invoked with no `--max-events-in-region`, so GATK's
 default of **2** applies. A confirmed TP53 `p.Glu224Ter` in M-1438-26 — 191/269
 alt reads, 73 % VAF, TLOD 425, ROQ 93, strand-balanced — was rejected because

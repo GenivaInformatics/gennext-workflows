@@ -157,6 +157,7 @@ spec:
               -V "$UNFILTERED" \
               --stats "$UNFILTERED.stats" \
               --orientation-bias-artifact-priors "$PRIORS" \
+              --max-events-in-region 4 \
               -O "$OUT_VCF"
           else
             cp "$UNFILTERED" "$OUT_VCF"
