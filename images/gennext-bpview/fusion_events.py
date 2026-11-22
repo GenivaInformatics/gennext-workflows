@@ -61,7 +61,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bpview  # noqa: E402  (same image, same directory)
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 CONTRACT_VERSION = "1"
 
 ACTIONABLE = {"LEVEL_1", "LEVEL_2", "LEVEL_R1"}
@@ -109,7 +109,41 @@ COLUMNS = [
     ("tier", "INTEGER"), ("tier_basis", "VARCHAR"), ("tier_flags", "VARCHAR[]"), ("tier_reason", "VARCHAR"),
     # links and provenance
     ("bpview_contig", "VARCHAR"), ("builder_version", "VARCHAR"), ("prototype_rules", "VARCHAR[]"),
+    # --- 0.5.0 additions (contract v1, additive): caller and annotator details for the detail panel.
+    # Caller and annotator values, never the event's read count (contract §4 "Support").
+    # Arriba, from the arm's own Arriba row; sides 1/2 are Arriba's gene1/gene2 as written (the
+    # reverse of 5'/3' when an unoriented call was flipped).
+    ("arriba_gene1", "VARCHAR"), ("arriba_gene2", "VARCHAR"),
+    ("arriba_breakpoint1", "VARCHAR"), ("arriba_breakpoint2", "VARCHAR"),
+    ("arriba_strand1", "VARCHAR"), ("arriba_strand2", "VARCHAR"),
+    ("arriba_split_reads1", "INTEGER"), ("arriba_split_reads2", "INTEGER"),
+    ("arriba_coverage1", "INTEGER"), ("arriba_coverage2", "INTEGER"),
+    ("arriba_site1", "VARCHAR"), ("arriba_site2", "VARCHAR"),
+    ("arriba_filters_raw", "VARCHAR"), ("arriba_duplicates", "INTEGER"), ("arriba_tags", "VARCHAR[]"),
+    ("arriba_retained_domains1", "VARCHAR[]"), ("arriba_retained_domains2", "VARCHAR[]"),
+    ("arriba_closest_genomic_breakpoint1", "VARCHAR"), ("arriba_closest_genomic_breakpoint2", "VARCHAR"),
+    ("arriba_gene_id1", "VARCHAR"), ("arriba_gene_id2", "VARCHAR"),
+    ("arriba_transcript_id1", "VARCHAR"), ("arriba_transcript_id2", "VARCHAR"),
+    ("arriba_fusion_transcript", "VARCHAR"), ("arriba_peptide_sequence", "VARCHAR"),
+    # STAR-Fusion, from the event's STAR-Fusion row (left = 5', right = 3')
+    ("starfusion_left_gene", "VARCHAR"), ("starfusion_right_gene", "VARCHAR"),
+    ("starfusion_left_breakpoint", "VARCHAR"), ("starfusion_right_breakpoint", "VARCHAR"),
+    ("starfusion_est_junction", "DOUBLE"), ("starfusion_est_spanning", "DOUBLE"),
+    ("starfusion_splice_type", "VARCHAR"), ("starfusion_large_anchor_support", "VARCHAR"),
+    ("starfusion_left_break_dinuc", "VARCHAR"), ("starfusion_right_break_dinuc", "VARCHAR"),
+    ("starfusion_left_break_entropy", "DOUBLE"), ("starfusion_right_break_entropy", "DOUBLE"),
+    ("starfusion_annots", "VARCHAR[]"),
+    # OncoKB (gene pair, fusions_with_oncokb.json)
+    ("oncokb_highest_sensitive_level", "VARCHAR"), ("oncokb_highest_resistance_level", "VARCHAR"),
+    ("oncokb_highest_px_level", "VARCHAR"), ("oncokb_treatments", "VARCHAR[]"),
+    ("oncokb_mutation_effect_citations", "VARCHAR[]"), ("oncokb_treatment_citations", "VARCHAR[]"),
+    ("oncokb_dx_citations", "VARCHAR[]"), ("oncokb_px_citations", "VARCHAR[]"),
+    ("oncokb_gene_in_oncokb", "BOOLEAN"), ("oncokb_variant_in_oncokb", "BOOLEAN"),
+    # fusion-report
+    ("pair_fii_explained", "VARCHAR"),
 ]
+ONCOKB_LEVELS = ("LEVEL_1", "LEVEL_2", "LEVEL_3A", "LEVEL_3B", "LEVEL_4", "LEVEL_R1", "LEVEL_R2",
+                 "LEVEL_Dx1", "LEVEL_Dx2", "LEVEL_Dx3", "LEVEL_Px1", "LEVEL_Px2", "LEVEL_Px3")
 SUPPORT_FILTERS = {"in_vitro", "relative_support", "min_support"}
 # Pfam "Protein kinase domain" and "Protein tyrosine and serine/threonine kinase". Arriba 2.5.1's file
 # lists only PF00069 (ALK, FGFR3, RET, NTRK1-3, ROS1, BRAF, EGFR, MET all carry it); PF07714 is
@@ -481,10 +515,103 @@ def tier_event(row, opts):
                 pon_recurrent=recurrent)
 
 
+def _has(path):
+    return bool(path) and os.path.isfile(path) and os.path.getsize(path) > 0
+
+
+def load_arriba_raw(path):
+    """bpview's Arriba events, each with its source row (arriba["raw"]) for the detail columns."""
+    out = []
+    for r in bpview._tsv(path):
+        e = bpview.arriba_event(r)
+        if e:
+            e["arriba"]["raw"] = r
+            out.append(e)
+    return out
+
+
+def load_starfusion_raw(path):
+    """bpview's STAR-Fusion events, each with its source row (starfusion["raw"]). load_starfusion
+    skips rows without three-part breakpoints; the same rows are skipped here, so the two line up."""
+    rows = [r for r in bpview._tsv(path)
+            if len(r.get("LeftBreakpoint", "").split(":")) == 3 and len(r.get("RightBreakpoint", "").split(":")) == 3]
+    evs = bpview.load_starfusion(path)
+    assert len(rows) == len(evs), (len(rows), len(evs))
+    for r, e in zip(rows, evs):
+        e["starfusion"]["raw"] = r
+    return evs
+
+
+def _int(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _float(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _str(v):
+    return None if v in (None, "", ".") else v
+
+
+def _split(v, sep):
+    return [x.strip() for x in (v or "").split(sep) if x.strip() and x.strip() != "."]
+
+
+def caller_details(ev, entry):
+    """The 0.5.0 detail columns: raw caller and annotator values (labelled as such, never support)."""
+    a = ((ev.get("arriba") or {}).get("raw")) or {}
+    s = ((ev.get("starfusion") or {}).get("raw")) or {}
+    onc = (entry or {}).get("OncoKB") or {}
+    dom = (a.get("retained_protein_domains") or "").split("|") if _str(a.get("retained_protein_domains")) else []
+    dup = re.search(r"duplicates\((\d+)\)", a.get("filters") or "")
+    tf = {"True": True, "False": False}
+    return dict(
+        arriba_gene1=_str(a.get("gene1")), arriba_gene2=_str(a.get("gene2")),
+        arriba_breakpoint1=_str(a.get("breakpoint1")), arriba_breakpoint2=_str(a.get("breakpoint2")),
+        arriba_strand1=_str(a.get("strand1(gene/fusion)")), arriba_strand2=_str(a.get("strand2(gene/fusion)")),
+        arriba_split_reads1=_int(a.get("split_reads1")), arriba_split_reads2=_int(a.get("split_reads2")),
+        arriba_coverage1=_int(a.get("coverage1")), arriba_coverage2=_int(a.get("coverage2")),
+        arriba_site1=_str(a.get("site1")), arriba_site2=_str(a.get("site2")),
+        arriba_filters_raw=_str(a.get("filters")), arriba_duplicates=int(dup.group(1)) if dup else (0 if a else None),
+        arriba_tags=_split(a.get("tags"), ","),
+        arriba_retained_domains1=_split(dom[0], ",") if len(dom) > 0 else [],
+        arriba_retained_domains2=_split(dom[1], ",") if len(dom) > 1 else [],
+        arriba_closest_genomic_breakpoint1=_str(a.get("closest_genomic_breakpoint1")),
+        arriba_closest_genomic_breakpoint2=_str(a.get("closest_genomic_breakpoint2")),
+        arriba_gene_id1=_str(a.get("gene_id1")), arriba_gene_id2=_str(a.get("gene_id2")),
+        arriba_transcript_id1=_str(a.get("transcript_id1")), arriba_transcript_id2=_str(a.get("transcript_id2")),
+        arriba_fusion_transcript=_str(a.get("fusion_transcript")), arriba_peptide_sequence=_str(a.get("peptide_sequence")),
+        starfusion_left_gene=_str(s.get("LeftGene")), starfusion_right_gene=_str(s.get("RightGene")),
+        starfusion_left_breakpoint=_str(s.get("LeftBreakpoint")), starfusion_right_breakpoint=_str(s.get("RightBreakpoint")),
+        starfusion_est_junction=_float(s.get("est_J")), starfusion_est_spanning=_float(s.get("est_S")),
+        starfusion_splice_type=_str(s.get("SpliceType")), starfusion_large_anchor_support=_str(s.get("LargeAnchorSupport")),
+        starfusion_left_break_dinuc=_str(s.get("LeftBreakDinuc")), starfusion_right_break_dinuc=_str(s.get("RightBreakDinuc")),
+        starfusion_left_break_entropy=_float(s.get("LeftBreakEntropy")),
+        starfusion_right_break_entropy=_float(s.get("RightBreakEntropy")),
+        starfusion_annots=bpview.parse_annots(s.get("annots")) if s else [],
+        oncokb_highest_sensitive_level=_str(onc.get("HIGHEST_SENSITIVE_LEVEL")),
+        oncokb_highest_resistance_level=_str(onc.get("HIGHEST_RESISTANCE_LEVEL")),
+        oncokb_highest_px_level=_str(onc.get("HIGHEST_PX_LEVEL")),
+        oncokb_treatments=[f"{lvl}: {onc[lvl]}" for lvl in ONCOKB_LEVELS if _str(onc.get(lvl))],
+        oncokb_mutation_effect_citations=_split(onc.get("MUTATION_EFFECT_CITATIONS"), ";"),
+        oncokb_treatment_citations=_split(onc.get("TX_CITATIONS"), ";"),
+        oncokb_dx_citations=_split(onc.get("DX_CITATIONS"), ";"),
+        oncokb_px_citations=_split(onc.get("PX_CITATIONS"), ";"),
+        oncokb_gene_in_oncokb=tf.get(onc.get("GENE_IN_ONCOKB")),
+        oncokb_variant_in_oncokb=tf.get(onc.get("VARIANT_IN_ONCOKB")),
+        pair_fii_explained=_str((entry or {}).get("Explained FII")))
+
+
 def build_rows(opts):
-    arriba = bpview.load_arriba(opts.arriba_tsv) if opts.arriba_tsv and os.path.getsize(opts.arriba_tsv) else []
-    starf = (bpview.load_starfusion(opts.starfusion_tsv)
-             if opts.starfusion_tsv and os.path.getsize(opts.starfusion_tsv) else [])
+    arriba = load_arriba_raw(opts.arriba_tsv) if _has(opts.arriba_tsv) else []
+    starf = load_starfusion_raw(opts.starfusion_tsv) if _has(opts.starfusion_tsv) else []
     events = bpview.merge_events(arriba, starf, opts.merge_tolerance)
     pairs, bp, pon = load_pairs(opts.oncokb_json), load_bpview(opts.bpview_events), load_pon(opts.pon)
     transcripts, domains = load_transcripts(opts.gtf), load_kinase_domains(opts.protein_domains)
@@ -538,6 +665,7 @@ def build_rows(opts):
             pair_fii=(entry or {}).get("Fusion Indication Index (FII)"),
             pon_gene_pair_count=npair, pon_junction_count=njunc, pon_size=size,
             bpview_contig=b["contig"] if b else None, builder_version=__version__)
+        row.update(caller_details(ev, entry))
         row["curated_known"] = bool(CURATED_DB & set(row["known_db"]))
         row["pair_reversed"] = reversed_match
         row.update(tier_event(row, opts))

@@ -198,6 +198,60 @@ All null when the sample was built without a PoN (the prototype's default).
 | `tier_flags` | VARCHAR[] | What held it back: `out_of_frame`, `weak_caller_evidence`, `low_unique_molecules`, `low_support`, `rescued`, `orientation_unknown`, `pon_recurrent`, `pon_capped` |
 | `tier_reason` | VARCHAR | The same in words, for the hover and the detail |
 
+### Caller and annotator details (fusion-events 0.5.0, additive)
+Raw values for the detail panel, appended after the columns above; `contract_version` stays 1. They are
+**caller and annotator values**, labelled as such, never the event's read count (see "Support"). Null
+when that caller didn't report the event; lists `[]` when empty.
+
+**Arriba**, from the arm's own Arriba row (the kept or rescued call). Sides 1/2 are Arriba's
+`gene1`/`gene2` as written, which are the reverse of the event's 5′/3′ when an unoriented call was
+flipped, so show them with `arriba_gene1`/`arriba_gene2`.
+
+| Field | Type | Arriba column |
+|---|---|---|
+| `arriba_gene1`, `arriba_gene2` | VARCHAR | `gene1`, `gene2` (between genes: `A(dist),B(dist)`) |
+| `arriba_breakpoint1`, `arriba_breakpoint2` | VARCHAR | `breakpoint1`, `breakpoint2` |
+| `arriba_strand1`, `arriba_strand2` | VARCHAR | `strand1(gene/fusion)`, `strand2(gene/fusion)` |
+| `arriba_split_reads1`, `arriba_split_reads2` | INTEGER | `split_reads1`, `split_reads2` (their sum is `arriba_split_reads`) |
+| `arriba_coverage1`, `arriba_coverage2` | INTEGER | `coverage1`, `coverage2` |
+| `arriba_site1`, `arriba_site2` | VARCHAR | `site1`, `site2` |
+| `arriba_filters_raw` | VARCHAR | `filters` as written, e.g. `duplicates(448)` |
+| `arriba_duplicates` | INTEGER | the n of `duplicates(n)`: Arriba's own PCR-copy count (0 when absent) |
+| `arriba_tags` | VARCHAR[] | `tags` |
+| `arriba_retained_domains1`, `arriba_retained_domains2` | VARCHAR[] | `retained_protein_domains`, split at `\|` and `,` |
+| `arriba_closest_genomic_breakpoint1`, `…2` | VARCHAR | `closest_genomic_breakpoint1`, `…2` |
+| `arriba_gene_id1`, `arriba_gene_id2`, `arriba_transcript_id1`, `arriba_transcript_id2` | VARCHAR | Arriba's genes and chosen transcripts (may differ from `transcript5`/`transcript3`, MANE) |
+| `arriba_fusion_transcript`, `arriba_peptide_sequence` | VARCHAR | `fusion_transcript`, `peptide_sequence` (`\|` marks the junction) |
+
+**STAR-Fusion**, from the event's STAR-Fusion row (left = 5′, right = 3′; for a junction reported
+twice, the row kept). `starfusion_junction_reads`, `starfusion_spanning_frags` and `starfusion_ffpm`
+are above.
+
+| Field | Type | STAR-Fusion column |
+|---|---|---|
+| `starfusion_left_gene`, `starfusion_right_gene` | VARCHAR | `LeftGene`, `RightGene` (e.g. `FGFR3^ENSG…`) |
+| `starfusion_left_breakpoint`, `starfusion_right_breakpoint` | VARCHAR | `LeftBreakpoint`, `RightBreakpoint` |
+| `starfusion_est_junction`, `starfusion_est_spanning` | DOUBLE | `est_J`, `est_S` |
+| `starfusion_splice_type` | VARCHAR | `SpliceType` (raw; `splice_type` above is the event's) |
+| `starfusion_large_anchor_support` | VARCHAR | `LargeAnchorSupport` |
+| `starfusion_left_break_dinuc`, `starfusion_right_break_dinuc` | VARCHAR | `LeftBreakDinuc`, `RightBreakDinuc` |
+| `starfusion_left_break_entropy`, `starfusion_right_break_entropy` | DOUBLE | `LeftBreakEntropy`, `RightBreakEntropy` |
+| `starfusion_annots` | VARCHAR[] | `annots`, parsed as api-edge parses them |
+
+**OncoKB** and **fusion-report**, per gene pair from `fusions_with_oncokb.json`:
+
+| Field | Type | Source |
+|---|---|---|
+| `oncokb_highest_sensitive_level`, `oncokb_highest_resistance_level`, `oncokb_highest_px_level` | VARCHAR | `HIGHEST_SENSITIVE_LEVEL`, `HIGHEST_RESISTANCE_LEVEL`, `HIGHEST_PX_LEVEL` |
+| `oncokb_treatments` | VARCHAR[] | one entry per non-empty `LEVEL_*` (1–4, R1–R2, Dx1–3, Px1–3): `"LEVEL_3B: Erdafitinib"` |
+| `oncokb_mutation_effect_citations`, `oncokb_treatment_citations`, `oncokb_dx_citations`, `oncokb_px_citations` | VARCHAR[] | `MUTATION_EFFECT_CITATIONS`, `TX_CITATIONS`, `DX_CITATIONS`, `PX_CITATIONS`, split at `;` (PMIDs, or abstract text with a URL) |
+| `oncokb_gene_in_oncokb`, `oncokb_variant_in_oncokb` | BOOLEAN | `GENE_IN_ONCOKB`, `VARIANT_IN_ONCOKB` |
+| `pair_fii_explained` | VARCHAR | fusion-report's `Explained FII` |
+
+Not available from these inputs: OncoKB summary text (not in the annotator's output), and per-database
+identifiers or counts (fusion-report gives database names only; they are `known_db`). The OncoKB JSON's
+own `arriba` block comes from the run that made the JSON and isn't used.
+
 ### Links and provenance
 | Field | Type | Meaning |
 |---|---|---|
