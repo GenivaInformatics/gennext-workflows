@@ -428,12 +428,15 @@ spec:
             --out-arriba-tsv "${P}/arriba/${ID}_fusions.rescued.tsv" \
             --out-fusion-list "${P}/fusion-report/${ID}_fusion_list.bpview.tsv"
           T1=$(date +%s)
+          # No --fusion-list: bpview draws every merged event (the same set fusion-events builds the
+          # table from), so every reported count can be checked against the BAM the views load
+          # (contract §4, "Support"). Only the --max-events cap or a contig outside the genome FASTA
+          # leaves an event undrawn; such an event keeps caller counts and has no reads view.
           bpview --sample-id "${ID}" \
             --bam "/mnt/source/bam/{{workflow.parameters.source-sample-id}}_RNA.dedup.bam" \
             --fasta "/mnt/ref/genome/{{=sprig.osBase(inputs.parameters['ref-genome-fa'])}}" \
             --gtf /mnt/ref/annotation.gtf.gz \
             --arriba-tsv "${P}/arriba/${ID}_fusions.rescued.tsv" --starfusion-tsv "${SF}" \
-            --fusion-list "${P}/fusion-report/${ID}_fusion_list.bpview.tsv" \
             --max-events 1500 --max-context 40 \
             --out-prefix "/mnt/dev/results/fusions/bpview/${ID}_bpview"
           T2=$(date +%s)
