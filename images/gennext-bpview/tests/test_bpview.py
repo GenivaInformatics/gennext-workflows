@@ -93,8 +93,42 @@ def test_gene_names():
     assert bpview.gene_names("RP11-1.2") == ["RP11-1.2"]
 
 
+def test_merge():
+    """Nearest-call merge and one event per STAR-Fusion junction."""
+    sys.path.insert(0, os.path.join(HERE, ".."))
+    import bpview
+
+    def a(p1, p2, oriented=True):
+        return dict(gene1="A", gene2="B", names1=["A"], names2=["B"], intergenic1=False, intergenic2=False,
+                    chr1="chr1", pos1=p1, keep1="le", chr2="chr2", pos2=p2, keep2="ge", oriented=oriented,
+                    arriba=dict(confidence="high", split_reads1=1, split_reads2=1, discordant_mates=0))
+
+    def s(p1, p2, g1="A", j=1):
+        return dict(gene1=g1, gene2="B", names1=[g1], names2=["B"], intergenic1=False, intergenic2=False,
+                    chr1="chr1", pos1=p1, keep1="le", chr2="chr2", pos2=p2, keep2="ge", oriented=True,
+                    starfusion=dict(junction_reads=j, spanning_frags=0, ffpm=0.1,
+                                    left_breakpoint=f"chr1:{p1}:+", right_breakpoint=f"chr2:{p2}:+"))
+
+    # Two Arriba calls 8 bp apart; the STAR-Fusion call is 1 bp from the second one. The first
+    # match within 10 bp (the old rule) would have joined it to the first Arriba call.
+    ev = bpview.merge_events([a(1000, 500), a(1008, 500)], [s(1009, 500)])
+    assert len(ev) == 2, ev
+    assert ev[0]["callers"] == ["arriba"] and ev[1]["callers"] == ["arriba", "starfusion"], ev
+    # STAR-Fusion's two rows for one junction (alternative gene annotation) are one event, labelled
+    # by the row with more support, with the other name as an alias; not a second, STAR-Fusion-only event.
+    ev = bpview.merge_events([a(1000, 500)], [s(1000, 500, "A", j=1), s(1000, 500, "A-AS1", j=3)])
+    assert len(ev) == 1 and ev[0]["callers"] == ["arriba", "starfusion"], ev
+    assert ev[0]["starfusion"]["junction_reads"] == 3 and ev[0]["names1"] == ["A-AS1", "A"], ev[0]["names1"]
+    ev = bpview.merge_events([], [s(1000, 500, "A"), s(1000, 500, "A2")])
+    assert len(ev) == 1 and ev[0]["names1"] == ["A", "A2"], ev
+    # One Arriba call, two STAR-Fusion junctions near it: the nearer one joins, the other stays apart.
+    ev = bpview.merge_events([a(1000, 500)], [s(1006, 500), s(1002, 500)])
+    assert len(ev) == 2 and ev[0]["starfusion"]["left_breakpoint"] == "chr1:1002:+", ev
+
+
 def main():
     test_gene_names()
+    test_merge()
     with tempfile.TemporaryDirectory() as d:
         fa, gtf, bam, arriba, sf = write_inputs(d)
         out = os.path.join(d, "out")
@@ -110,6 +144,7 @@ def main():
         assert nd.get("spanning") == 1, nd
         assert nd.get("wt3") == 1, nd
         assert ev["fragments_dup"].get("junction") == 1, ev["fragments_dup"]
+        assert ev["junction_start_sites"] == 1, ev["junction_start_sites"]
         # contig sequence = chrA[..1000] + chrB[501..]
         contig = pysam.FastaFile(out + ".fa").fetch(ev["contig"])
         j = ev["junction_1based"]
