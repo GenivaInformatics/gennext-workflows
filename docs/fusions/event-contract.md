@@ -203,5 +203,5 @@ backend and the filter body.
 - Additions only: no existing DuckDB object, file or route changes. The legacy view keeps working
   for every sample, including the prototype's dev samples (their legacy files are copies).
 - A newer contract adds fields; it never renames or retypes one. A reader ignores unknown fields.
-- `contract_version` changes only for a breaking change, and api-edge then reports `legacy` for a
-  version it doesn't know.
+- `contract_version` changes only for a breaking change. api-edge treats a version it doesn't know
+  as if the sample had no event data (§2): `legacy` when the legacy files exist, otherwise `none`.
