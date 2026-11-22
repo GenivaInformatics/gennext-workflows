@@ -13,6 +13,16 @@ docker run --rm --network none --entrypoint sh \
   -c 'cd /tmp && PYTHONPATH=/work:/app/oncokb python3 -m unittest test_filtered_maf_annotator >/tmp/log 2>&1; rc=$?; grep -E "^(FAIL|ERROR):" /tmp/log; tail -4 /tmp/log; exit $rc'
 """
 
+[tasks."test:gennext-bpview"]
+description = "bpview and fusion-events unit tests (they run in the image build), the load-step column check and an end-to-end run of the load step in DuckDB 0.8.1"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+docker build -q -t gennext-bpview:ci images/gennext-bpview >/dev/null
+python3 images/gennext-bpview/tests/test_columns_match.py
+python3 images/gennext-bpview/tests/test_load_events.py
+"""
+
 [tasks.ci]
 description = "The check gate"
-depends = ["test:oncokb-annotator"]
+depends = ["test:oncokb-annotator", "test:gennext-bpview"]
