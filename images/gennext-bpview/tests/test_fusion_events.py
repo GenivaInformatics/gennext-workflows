@@ -217,12 +217,14 @@ def test_caller_details(d):
     a.update({"site1": "CDS/splice-site", "coverage1": 33, "coverage2": 26,
               "retained_protein_domains": "Ig_domain(100%),Protein_kinase_domain(100%)|TACC_C-terminal(100%)",
               "closest_genomic_breakpoint1": ".", "gene_id1": "ENSG1.1", "transcript_id1": "ENST1.1",
-              "filters": "duplicates(448)", "fusion_transcript": "ACGT|TTGA", "peptide_sequence": "QRP|FKE"})
+              "filters": "duplicates(448)", "fusion_transcript": "ACGT|TTGA", "peptide_sequence": "Q" * 2500})
     sfh = SF_HDR + ["est_J", "est_S", "LeftBreakDinuc", "LeftBreakEntropy", "RightBreakDinuc", "RightBreakEntropy"]
     sf = dict(sf_row("ALK1", "PART1", "chr1:1000", "chr2:500", 29, 0), est_J="29.00", est_S="0.00",
               LeftBreakDinuc="GT", LeftBreakEntropy="1.95", RightBreakDinuc="AG", RightBreakEntropy="1.8")
     pairs = {"ALK1--PART1": dict(oncokb("LEVEL_3B", "Oncogenic", dbs=["Mitelman", "FusionGDB2"]),
-                                 **{"Explained FII": "0.5 * (2 / 2) + 0.5 * (0.5 / 0.5)"})}
+                                 **{"Explained FII": "0.5 * (2 / 2) + 0.5 * (0.5 / 0.5)",
+                                    # the OncoKB JSON's own arriba block is from another run: must not leak
+                                    "arriba": {"split_reads1": "166", "split_reads2": "300", "coverage1": "999"}})}
     pairs["ALK1--PART1"]["OncoKB"].update({"LEVEL_3B": "Erdafitinib", "LEVEL_4": "Fexagratinib", "LEVEL_Dx2": "",
                                            "HIGHEST_SENSITIVE_LEVEL": "LEVEL_3B", "HIGHEST_RESISTANCE_LEVEL": "",
                                            "HIGHEST_PX_LEVEL": "", "TX_CITATIONS": "37870920;31088831",
@@ -243,10 +245,11 @@ def test_caller_details(d):
             "arriba_retained_domains2": "TACC_C-terminal(100%)", "arriba_closest_genomic_breakpoint1": "",
             "arriba_gene_id1": "ENSG1.1", "arriba_transcript_id1": "ENST1.1", "arriba_gene1": "ALK1",
             "arriba_breakpoint1": "chr1:1000", "arriba_strand1": "+/+",
-            "arriba_fusion_transcript": "ACGT|TTGA", "arriba_peptide_sequence": "QRP|FKE",
+            "arriba_fusion_transcript": "ACGT|TTGA",
+            "arriba_peptide_sequence": "Q" * 2000 + "...[truncated, 2500 characters]",
             "starfusion_left_gene": "ALK1^ENSG1", "starfusion_left_breakpoint": "chr1:1000:+",
             "starfusion_est_junction": "29.0", "starfusion_splice_type": "ONLY_REF_SPLICE",
-            "starfusion_large_anchor_support": "YES_LDAS", "starfusion_left_break_dinuc": "GT",
+            "starfusion_large_anchor_support": "true", "starfusion_left_break_dinuc": "GT",
             "starfusion_right_break_entropy": "1.8", "starfusion_annots": "Mitelman",
             "oncokb_highest_sensitive_level": "LEVEL_3B", "oncokb_highest_resistance_level": "",
             "oncokb_treatments": "LEVEL_3B: Erdafitinib|LEVEL_4: Fexagratinib",

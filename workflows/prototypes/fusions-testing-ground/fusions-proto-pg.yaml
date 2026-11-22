@@ -601,7 +601,7 @@ spec:
                   'starfusion_est_junction': 'DOUBLE',
                   'starfusion_est_spanning': 'DOUBLE',
                   'starfusion_splice_type': 'VARCHAR',
-                  'starfusion_large_anchor_support': 'VARCHAR',
+                  'starfusion_large_anchor_support': 'BOOLEAN',
                   'starfusion_left_break_dinuc': 'VARCHAR',
                   'starfusion_right_break_dinuc': 'VARCHAR',
                   'starfusion_left_break_entropy': 'DOUBLE',

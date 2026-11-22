@@ -213,15 +213,15 @@ flipped, so show them with `arriba_gene1`/`arriba_gene2`.
 | `arriba_breakpoint1`, `arriba_breakpoint2` | VARCHAR | `breakpoint1`, `breakpoint2` |
 | `arriba_strand1`, `arriba_strand2` | VARCHAR | `strand1(gene/fusion)`, `strand2(gene/fusion)` |
 | `arriba_split_reads1`, `arriba_split_reads2` | INTEGER | `split_reads1`, `split_reads2` (their sum is `arriba_split_reads`) |
-| `arriba_coverage1`, `arriba_coverage2` | INTEGER | `coverage1`, `coverage2` |
+| `arriba_coverage1`, `arriba_coverage2` | INTEGER | `coverage1`, `coverage2`: Arriba's coverage, a caller number; label it as Arriba's |
 | `arriba_site1`, `arriba_site2` | VARCHAR | `site1`, `site2` |
 | `arriba_filters_raw` | VARCHAR | `filters` as written, e.g. `duplicates(448)` |
-| `arriba_duplicates` | INTEGER | the n of `duplicates(n)`: Arriba's own PCR-copy count (0 when absent) |
+| `arriba_duplicates` | INTEGER | the n of `duplicates(n)`: **Arriba's own** duplicate count (0 when absent). It differs from `pcr_copies` (bpview's count from the BAM); label it "Arriba's duplicate count", never next to "PCR copies" without its source |
 | `arriba_tags` | VARCHAR[] | `tags` |
 | `arriba_retained_domains1`, `arriba_retained_domains2` | VARCHAR[] | `retained_protein_domains`, split at `\|` and `,` |
 | `arriba_closest_genomic_breakpoint1`, `…2` | VARCHAR | `closest_genomic_breakpoint1`, `…2` |
 | `arriba_gene_id1`, `arriba_gene_id2`, `arriba_transcript_id1`, `arriba_transcript_id2` | VARCHAR | Arriba's genes and chosen transcripts (may differ from `transcript5`/`transcript3`, MANE) |
-| `arriba_fusion_transcript`, `arriba_peptide_sequence` | VARCHAR | `fusion_transcript`, `peptide_sequence` (`\|` marks the junction) |
+| `arriba_fusion_transcript`, `arriba_peptide_sequence` | VARCHAR | `fusion_transcript`, `peptide_sequence` (`\|` marks the junction); capped at 2,000 characters, then `...[truncated, N characters]` |
 
 **STAR-Fusion**, from the event's STAR-Fusion row (left = 5′, right = 3′; for a junction reported
 twice, the row kept). `starfusion_junction_reads`, `starfusion_spanning_frags` and `starfusion_ffpm`
@@ -231,9 +231,9 @@ are above.
 |---|---|---|
 | `starfusion_left_gene`, `starfusion_right_gene` | VARCHAR | `LeftGene`, `RightGene` (e.g. `FGFR3^ENSG…`) |
 | `starfusion_left_breakpoint`, `starfusion_right_breakpoint` | VARCHAR | `LeftBreakpoint`, `RightBreakpoint` |
-| `starfusion_est_junction`, `starfusion_est_spanning` | DOUBLE | `est_J`, `est_S` |
+| `starfusion_est_junction`, `starfusion_est_spanning` | DOUBLE | `est_J`, `est_S`: STAR-Fusion's multimapping-weighted estimates, caller numbers; label them as STAR-Fusion's |
 | `starfusion_splice_type` | VARCHAR | `SpliceType` (raw; `splice_type` above is the event's) |
-| `starfusion_large_anchor_support` | VARCHAR | `LargeAnchorSupport` |
+| `starfusion_large_anchor_support` | BOOLEAN | `LargeAnchorSupport`: `YES_LDAS` true, `NO_LDAS` false |
 | `starfusion_left_break_dinuc`, `starfusion_right_break_dinuc` | VARCHAR | `LeftBreakDinuc`, `RightBreakDinuc` |
 | `starfusion_left_break_entropy`, `starfusion_right_break_entropy` | DOUBLE | `LeftBreakEntropy`, `RightBreakEntropy` |
 | `starfusion_annots` | VARCHAR[] | `annots`, parsed as api-edge parses them |

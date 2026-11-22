@@ -129,7 +129,7 @@ COLUMNS = [
     ("starfusion_left_gene", "VARCHAR"), ("starfusion_right_gene", "VARCHAR"),
     ("starfusion_left_breakpoint", "VARCHAR"), ("starfusion_right_breakpoint", "VARCHAR"),
     ("starfusion_est_junction", "DOUBLE"), ("starfusion_est_spanning", "DOUBLE"),
-    ("starfusion_splice_type", "VARCHAR"), ("starfusion_large_anchor_support", "VARCHAR"),
+    ("starfusion_splice_type", "VARCHAR"), ("starfusion_large_anchor_support", "BOOLEAN"),
     ("starfusion_left_break_dinuc", "VARCHAR"), ("starfusion_right_break_dinuc", "VARCHAR"),
     ("starfusion_left_break_entropy", "DOUBLE"), ("starfusion_right_break_entropy", "DOUBLE"),
     ("starfusion_annots", "VARCHAR[]"),
@@ -560,6 +560,16 @@ def _str(v):
     return None if v in (None, "", ".") else v
 
 
+SEQ_CAP = 2000  # characters; one pathological Arriba row must not bloat the events response
+
+
+def _cap(v):
+    v = _str(v)
+    if v is None or len(v) <= SEQ_CAP:
+        return v
+    return v[:SEQ_CAP] + f"...[truncated, {len(v)} characters]"
+
+
 def _split(v, sep):
     return [x.strip() for x in (v or "").split(sep) if x.strip() and x.strip() != "."]
 
@@ -587,11 +597,13 @@ def caller_details(ev, entry):
         arriba_closest_genomic_breakpoint2=_str(a.get("closest_genomic_breakpoint2")),
         arriba_gene_id1=_str(a.get("gene_id1")), arriba_gene_id2=_str(a.get("gene_id2")),
         arriba_transcript_id1=_str(a.get("transcript_id1")), arriba_transcript_id2=_str(a.get("transcript_id2")),
-        arriba_fusion_transcript=_str(a.get("fusion_transcript")), arriba_peptide_sequence=_str(a.get("peptide_sequence")),
+        arriba_fusion_transcript=_cap(a.get("fusion_transcript")), arriba_peptide_sequence=_cap(a.get("peptide_sequence")),
         starfusion_left_gene=_str(s.get("LeftGene")), starfusion_right_gene=_str(s.get("RightGene")),
         starfusion_left_breakpoint=_str(s.get("LeftBreakpoint")), starfusion_right_breakpoint=_str(s.get("RightBreakpoint")),
         starfusion_est_junction=_float(s.get("est_J")), starfusion_est_spanning=_float(s.get("est_S")),
-        starfusion_splice_type=_str(s.get("SpliceType")), starfusion_large_anchor_support=_str(s.get("LargeAnchorSupport")),
+        starfusion_splice_type=_str(s.get("SpliceType")),
+        # YES_LDAS / NO_LDAS -> true / false; anything else unknown
+        starfusion_large_anchor_support={"YES_LDAS": True, "NO_LDAS": False}.get(s.get("LargeAnchorSupport")),
         starfusion_left_break_dinuc=_str(s.get("LeftBreakDinuc")), starfusion_right_break_dinuc=_str(s.get("RightBreakDinuc")),
         starfusion_left_break_entropy=_float(s.get("LeftBreakEntropy")),
         starfusion_right_break_entropy=_float(s.get("RightBreakEntropy")),
