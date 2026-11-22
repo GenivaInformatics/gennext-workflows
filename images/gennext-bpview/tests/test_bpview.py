@@ -163,7 +163,18 @@ def main():
         assert junc[0].query_sequence == contig[j - 50:j + 50]
         wt = [r for r in recs if r.get_tag("XF") == "wt3"]
         assert wt and wt[0].cigarstring == "50S50M" and wt[0].reference_start == j, [r.cigarstring for r in wt]
-        assert all(r.has_tag("YC") and r.has_tag("XK") for r in recs)
+        assert all(r.has_tag("YC") and r.has_tag("XK") and r.has_tag("XG") for r in recs)
+        # XG is one class per fragment, on both mates: junc0's mates are a junction read and an
+        # ordinary mate, so XF/XK differ per mate but XG is "1junction" on both.
+        by_name = {}
+        for r in recs:
+            by_name.setdefault(r.query_name, []).append(r)
+        assert all(len({r.get_tag("XG") for r in rs}) == 1 for rs in by_name.values()), \
+            {q: [r.get_tag("XG") for r in rs] for q, rs in by_name.items()}
+        j0 = by_name["junc0"]
+        assert {r.get_tag("XF") for r in j0} != {"junction"}, [r.get_tag("XF") for r in j0]
+        assert {r.get_tag("XG") for r in j0} == {"1junction"}, [r.get_tag("XG") for r in j0]
+        assert {r.get_tag("XG") for r in by_name["span"]} == {"2spanning"}
         # fields the IGV view used to read from FusionInspector's abridged TSV
         assert ev["fusion_name"] == "G1--G2" and ev["left_gene"] == "G1" and ev["right_gene"] == "G2"
         assert (ev["left_local_breakpoint"], ev["right_local_breakpoint"]) == (j, j + 1)
