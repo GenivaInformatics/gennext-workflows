@@ -111,7 +111,10 @@ COLUMNS = [
     ("bpview_contig", "VARCHAR"), ("builder_version", "VARCHAR"), ("prototype_rules", "VARCHAR[]"),
 ]
 SUPPORT_FILTERS = {"in_vitro", "relative_support", "min_support"}
-KINASE_PFAM = "PF00069"  # Pfam "Protein kinase domain" (Arriba's file folds PF07714 into it)
+# Pfam "Protein kinase domain" and "Protein tyrosine and serine/threonine kinase". Arriba 2.5.1's file
+# lists only PF00069 (ALK, FGFR3, RET, NTRK1-3, ROS1, BRAF, EGFR, MET all carry it); PF07714 is
+# accepted too, should a later file list it separately.
+KINASE_PFAM = ("PF00069", "PF07714")
 PON_COLUMNS = ["sample_id", "gene5", "gene3", "chr5", "pos5", "keep5", "chr3", "pos3", "keep3"]
 
 
@@ -119,7 +122,7 @@ PON_COLUMNS = ["sample_id", "gene5", "gene3", "chr5", "pos5", "keep5", "chr3", "
 
 def load_pairs(path):
     """fusions_with_oncokb.json -> {'G1--G2': entry}. Missing or empty file -> {} with a warning."""
-    if not path or not os.path.exists(path) or not os.path.getsize(path):
+    if not path or not os.path.isfile(path) or not os.path.getsize(path):
         print(f"WARNING: gene-pair annotation {path!r} missing or empty: no OncoKB or database "
               "annotation, every event is tier 3", file=sys.stderr)
         return {}
@@ -134,7 +137,7 @@ def event_key(chr1, pos1, keep1, chr2, pos2, keep2):
 
 def load_bpview(path):
     """bpview events.json -> {junction key: event summary}."""
-    if not path or not os.path.exists(path) or not os.path.getsize(path):
+    if not path or not os.path.isfile(path) or not os.path.getsize(path):
         return {}
     with open(path) as fh:
         doc = json.load(fh)
@@ -147,7 +150,7 @@ def load_bpview(path):
 
 
 def load_pon(path):
-    if not path or not os.path.exists(path) or not os.path.getsize(path):
+    if not path or not os.path.isfile(path) or not os.path.getsize(path):
         return None
     rows = []
     with open(path) as fh:
@@ -168,7 +171,7 @@ def _open(path):
 def load_transcripts(path):
     """GTF -> {gene_name: transcript}, the MANE Select transcript (else Ensembl canonical) of each gene:
     {id, chrom, strand, exons: [(start, end, number)]}. No file -> {}."""
-    if not path or path == "." or not os.path.exists(path):
+    if not path or path == "." or not os.path.isfile(path):
         if path and path != ".":
             print(f"WARNING: GTF {path!r} not found: exon5/exon3 will be empty", file=sys.stderr)
         return {}
@@ -199,17 +202,18 @@ def load_transcripts(path):
 def load_kinase_domains(path):
     """Arriba's protein-domain GFF3 -> {gene_name: (chrom, [(start, end)] merged)} for the Pfam protein
     kinase domain. No file -> {}."""
-    if not path or path == "." or not os.path.exists(path):
+    if not path or path == "." or not os.path.isfile(path):
         if path and path != ".":
             print(f"WARNING: protein domains {path!r} not found: kinase_* will be empty", file=sys.stderr)
         return {}
     segs = {}
     with _open(path) as fh:
         for line in fh:
-            if KINASE_PFAM not in line:
+            if not any(k in line for k in KINASE_PFAM):
                 continue
             f = line.rstrip("\n").split("\t")
-            if len(f) < 9 or "protein_domain_id=" + KINASE_PFAM not in f[8]:
+            m = re.search(r"protein_domain_id=([^;\s]+)", f[8]) if len(f) >= 9 else None
+            if not m or m.group(1) not in KINASE_PFAM:
                 continue
             g = re.search(r"gene_name=([^;]+)", f[8])
             if not g:
@@ -330,11 +334,13 @@ def kinase_info(ev, domains, min_fraction):
     """-> (kinase_gene, kinase_retained, kinase_domain_fraction). The partner with a protein kinase
     domain, the 3' partner when both have one; the fraction of its domain on the kept side."""
     hits = []
-    for side, gene, chrom, pos, keep in (("5", ev["gene1"], ev["chr1"], ev["pos1"], ev["keep1"]),
-                                         ("3", ev["gene2"], ev["chr2"], ev["pos2"], ev["keep2"])):
-        d = domains.get(gene)
-        if not d or d[0] != chrom:
+    for side, names, chrom, pos, keep in (("5", ev["names1"], ev["chr1"], ev["pos1"], ev["keep1"]),
+                                          ("3", ev["names2"], ev["chr2"], ev["pos2"], ev["keep2"])):
+        # the display gene first, then the other names the callers gave this side
+        gene = next((n for n in names if n in domains and domains[n][0] == chrom), None)
+        if gene is None:
             continue
+        d = domains[gene]
         total = sum(b - a + 1 for a, b in d[1])
         kept = sum(max(0, (min(b, pos) if keep == "le" else b) - (a if keep == "le" else max(a, pos)) + 1)
                    for a, b in d[1])
@@ -571,7 +577,7 @@ def rescue(opts):
     """Arriba's kept calls plus the discarded ones the rescue rule brings back (see the docstring).
     -> (kept, rescued) counts."""
     def read(path):
-        if not path or not os.path.exists(path) or not os.path.getsize(path):
+        if not path or not os.path.isfile(path) or not os.path.getsize(path):
             return None, []
         with open(path) as fh:
             hdr = fh.readline().rstrip("\n").split("\t")
@@ -579,22 +585,43 @@ def rescue(opts):
             return hdr, [dict(zip(cols, l.rstrip("\n").split("\t"))) for l in fh if l.strip()]
 
     hdr, kept = read(opts.arriba_tsv)
-    dhdr, disc = read(opts.arriba_discarded_tsv)
+    dhdr = None
+    if opts.arriba_discarded_tsv and os.path.isfile(opts.arriba_discarded_tsv) and os.path.getsize(opts.arriba_discarded_tsv):
+        with open(opts.arriba_discarded_tsv) as fh:
+            dhdr = fh.readline().rstrip("\n").split("\t")
     hdr = hdr or dhdr
     if hdr is None:
         raise SystemExit("rescue: no Arriba header in either input")
     pairs = load_pairs(opts.oncokb_json)
     sf = (bpview.collapse_starfusion(bpview.load_starfusion(opts.starfusion_tsv))
-          if opts.starfusion_tsv and os.path.exists(opts.starfusion_tsv) and os.path.getsize(opts.starfusion_tsv) else [])
+          if opts.starfusion_tsv and os.path.isfile(opts.starfusion_tsv) and os.path.getsize(opts.starfusion_tsv) else [])
     tol = opts.merge_tolerance
 
-    def near(e, others):
-        return any(bpview._same(e, o, tol) or (not e["oriented"] and bpview._same(bpview._flip(e), o, tol))
-                   for o in others)
+    def index(events):
+        by = {}
+        for o in events:
+            by.setdefault((o["chr1"], o["chr2"]), []).append(o)
+        return by
 
-    kept_ev = [e for e in (bpview.arriba_event(r) for r in kept) if e]
+    def near(e, by):
+        f = bpview._flip(e)
+        cands = by.get((e["chr1"], e["chr2"]), []) + (by.get((f["chr1"], f["chr2"]), []) if not e["oriented"] else [])
+        return any(bpview._same(e, o, tol) or (not e["oriented"] and bpview._same(f, o, tol)) for o in cands)
+
+    def discarded_rows():
+        if dhdr is None:
+            return
+        cols = [h.lstrip("#") for h in dhdr]
+        with open(opts.arriba_discarded_tsv) as fh:
+            fh.readline()
+            for l in fh:
+                if l.strip():
+                    yield dict(zip(cols, l.rstrip("\n").split("\t")))
+
+    kept_ev = index([e for e in (bpview.arriba_event(r) for r in kept) if e])
+    sf = index(sf)
     rescued, keys = [], set()
-    for r in disc:
+    for r in discarded_rows():
         e = bpview.arriba_event(r)
         if not e:
             continue
@@ -625,7 +652,7 @@ def rescue(opts):
                 fh.write("\t".join([r.get(c, ".") for c in cols] + [status]) + "\n")
     if opts.out_fusion_list:
         lines = []
-        if opts.fusion_list and os.path.exists(opts.fusion_list):
+        if opts.fusion_list and os.path.isfile(opts.fusion_list):
             lines = [l.rstrip("\n") for l in open(opts.fusion_list) if l.strip()]
         listed = {l.split("\t")[0] for l in lines}
         with open(opts.out_fusion_list, "w") as fh:

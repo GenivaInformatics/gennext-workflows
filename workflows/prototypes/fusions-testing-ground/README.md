@@ -11,10 +11,12 @@ sample, from the outputs that sample already has, without touching them:
 
 1. `check-inputs`: refuses non-UUID run or sample IDs, unusual sample names, and a dev run folder that
    overlaps the source sample's folder.
-2. `copy-legacy`: copies the source's `results/fusions/{arriba,star-fusion,fusion-report,
+2. `copy-legacy` (only after the dev backend accepted both samples as part of the dev run): copies the source's `results/fusions/{arriba,star-fusion,fusion-report,
    fusion-inspector,oncokb}`, `results/db/{s}_fusions.duckdb` and `bam/{s}_RNA.dedup.bam(.bai)` into each
    dev sample's folder, renaming the sample prefix, so the legacy fusion view works for the dev
-   sample. It runs once per dev sample (a marker file), so a retry never overwrites a loaded DuckDB.
+   sample. It runs once per dev sample: a marker file records the source, so a retry never
+   overwrites a loaded DuckDB, and a resubmit with another source is refused. It refuses a target
+   folder that already has content without that marker (a real sample's).
    Arm b's BAM is a hard link to arm a's copy.
 3. Per Arriba arm, one dev sample each:
    - `a`: `max_sensitivity` (today's settings);
@@ -27,7 +29,7 @@ sample, from the outputs that sample already has, without touching them:
    STAR's chimeric junctions are no longer kept, and OncoKB is annotated per gene pair.
 4. `load-events` writes `fusion_events` and `fusion_events_meta` into the dev sample's copied fusions
    DuckDB in one transaction (meta last). Nothing else in that file changes.
-5. Sample state (`running`, `completed`, `error`) and, at the end, run state go to the **dev**
+5. Sample state (`running`; `completed` or `error` per arm) and, after a successful run, run state go to the **dev**
    backend, `gennext-backend.gennext-dev`. The address is fixed in the template; there is no
    parameter for it.
 
@@ -40,8 +42,11 @@ Outputs per dev sample (under its output folder):
 | `results/fusions/proto/` | the arm's Arriba, fusion-report and filter outputs, the rescued Arriba TSV, step timings |
 | `results/db/{s}_fusions.duckdb` | the copy, plus `fusion_events` and `fusion_events_meta` |
 
-Images are pinned by digest. `fusion-report-template` and `filter-artifact-fusions-template` are
-used as they are applied in the cluster.
+This template's own steps pin their images by digest and set memory requests and limits. The two
+reused live templates are the exception, as they are applied in the cluster today:
+`fusion-report-template` (`quay.io/biocontainers/fusion-report:4.0.1--py313hdfd78af_0`, tag only, no
+memory limit) and `filter-artifact-fusions-template` (`python:3.12-slim`, tag only, no memory limit).
+Pinning them is #33's live → repo reconcile, not this prototype's.
 
 ## Running it
 

@@ -57,6 +57,13 @@ def write_inputs(d):
         rec(n, 1, 500, "50H50M", CHR_B[500:550], True, False, mate=(1, 700), dup=dup,
             sa="chrA,951,+,50M50S,60,0;", supp=True)
         rec(n, 1, 700, "100M", CHR_B[700:800], False, True, mate=(0, 950), dup=dup)
+    # a fragment whose two mates both cross the junction (overlapping mates): one molecule, one start site
+    s1 = CHR_A[940:1000] + CHR_B[500:540]
+    rec("jj", 0, 940, "60M40S", s1, True, False, mate=(0, 960), sa="chrB,501,+,60S40M,60,0;")
+    rec("jj", 1, 500, "60H40M", CHR_B[500:540], True, False, mate=(0, 960), sa="chrA,941,+,60M40S,60,0;", supp=True)
+    s2 = CHR_A[960:1000] + CHR_B[500:560]
+    rec("jj", 0, 960, "40M60S", s2, False, True, mate=(0, 940), sa="chrB,501,-,40S60M,60,0;")
+    rec("jj", 1, 500, "40H60M", CHR_B[500:560], False, True, mate=(0, 940), sa="chrA,961,-,40M60S,60,0;", supp=True)
     # spanning pair: chrA 801..900 / chrB 601..700
     rec("span", 0, 800, "100M", CHR_A[800:900], True, False, mate=(1, 600))
     rec("span", 1, 600, "100M", CHR_B[600:700], False, True, mate=(0, 800))
@@ -140,11 +147,12 @@ def main():
         assert ev["callers"] == ["arriba", "starfusion"], ev["callers"]
         assert ev["junction_1based"] == BP1, ev["junction_1based"]
         nd = ev["fragments_nondup"]
-        assert nd.get("junction") == 1, nd
+        assert nd.get("junction") == 2, nd  # junc0 and jj
         assert nd.get("spanning") == 1, nd
         assert nd.get("wt3") == 1, nd
         assert ev["fragments_dup"].get("junction") == 1, ev["fragments_dup"]
-        assert ev["junction_start_sites"] == 1, ev["junction_start_sites"]
+        # junc0 starts at j-50; jj's mates start at j-60 and j-40 but count once (the leftmost)
+        assert ev["junction_start_sites"] == 2, ev["junction_start_sites"]
         # contig sequence = chrA[..1000] + chrB[501..]
         contig = pysam.FastaFile(out + ".fa").fetch(ev["contig"])
         j = ev["junction_1based"]
@@ -160,8 +168,8 @@ def main():
         assert ev["fusion_name"] == "G1--G2" and ev["left_gene"] == "G1" and ev["right_gene"] == "G2"
         assert (ev["left_local_breakpoint"], ev["right_local_breakpoint"]) == (j, j + 1)
         assert ev["left_breakpoint"] == f"chrA:{BP1}:+" and ev["right_breakpoint"] == f"chrB:{BP2}:+", ev
-        assert ev["junction_read_count"] == 1 and ev["spanning_frag_count"] == 1
-        assert ev["junction_read_count_with_dups"] == 2
+        assert ev["junction_read_count"] == 2 and ev["spanning_frag_count"] == 1
+        assert ev["junction_read_count_with_dups"] == 3
         assert ev["splice_type"] == "ONLY_REF_SPLICE"
         # both callers' own coordinates are kept, so rows keyed by either caller can be matched
         assert ev["starfusion"]["left_breakpoint"] == f"chrA:{BP1 + 3}:+" and ev["arriba"]["breakpoint1"] == f"chrA:{BP1}"

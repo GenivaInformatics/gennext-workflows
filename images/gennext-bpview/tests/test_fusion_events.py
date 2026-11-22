@@ -114,6 +114,27 @@ def test_contract_v1(d):
     r = list(rows.values())[0]
     assert r["exon5"] == "" and r["site5"] == "" and r["exon3"] == "" and r["kinase_gene"] == "", r
 
+    # A minus-strand 5' partner (K3 keeps >= 400: its exons 1-2) and a plus-strand 3' partner (K5 from 400).
+    a = arriba_row("K3", "K5", "chr2:400", "chr1:400", 2, 1, "high", "in-frame")
+    a["direction1"] = "upstream"
+    _, rows = run_build(d, "K5M", [a], [], {}, ["--gtf", gtf])
+    r = list(rows.values())[0]
+    assert (r["exon5"], r["site5"], r["exon3"], r["site3"]) == ("2", "exon_boundary", "2", "exon_boundary"), r
+    # PF07714 counts as a kinase domain too.
+    dom2 = os.path.join(d, "domains2.gff3")
+    with open(dom2, "w") as fh:
+        fh.write("1\tpfam\tprotein_domain\t150\t190\t0\t+\t.\tName=Protein tyrosine and serine/threonine kinase;"
+                 "gene_name=K5;protein_domain_id=PF07714\n")
+    a = arriba_row("K5", "NOPE", "chr1:500", "chr3:500", 2, 1, "high", "in-frame")
+    _, rows = run_build(d, "K6", [a], [], {}, ["--protein-domains", dom2])
+    r = list(rows.values())[0]
+    assert (r["kinase_gene"], r["kinase_retained"], r["kinase_domain_fraction"]) == ("K5", "true", "1.0"), r
+    # Two Arriba rows at one junction stay two events; the second ID gets #2.
+    a = arriba_row("D1", "D2", "chr1:50", "chr2:60", 3, 0, "high", "in-frame")
+    out, _ = run_build(d, "DUP", [a, dict(a, split_reads1=1)], [], {})
+    ids = [r["event_id"] for r in csv.DictReader(open(out), delimiter="\t")]
+    assert ids == ["chr1:50:+>chr2:60:+", "chr1:50:+>chr2:60:+#2"], ids
+
     # bpview start sites and molecules.
     bp = os.path.join(d, "K.events.json")
     with open(bp, "w") as fh:
@@ -140,13 +161,15 @@ def test_contract_v1(d):
             drow("NOVEL", "ONE", "chr8:1000", "chr9:500", 1, "relative_support(1)"),     # novel: stays out
             drow("ART", "IFACT", "chr10:1000", "chr11:500", 3, "blacklist(3)", tags="Mitelman"),  # artefact filter
             drow("ZERO", "READS", "chr12:1000", "chr13:500", 0, "min_support(1)", tags="Mitelman"),  # no read
-            drow("KEEP", "ME", "chr20:1001", "chr21:501", 1, "relative_support(1)", tags="Mitelman")]  # copy of kept
+            drow("KEEP", "ME", "chr20:1001", "chr21:501", 1, "relative_support(1)", tags="Mitelman"),  # copy of kept
+            drow("ONC", "HIT", "chr14:1000", "chr15:500", 1, "min_support(1)"),          # OncoKB hit for the pair
+            drow("MIX", "ED", "chr16:1000", "chr17:500", 2, "in_vitro(1),blacklist(1)", tags="Mitelman")]  # mixed
     ka, da, sfp, js = (os.path.join(d, x) for x in ("r.arriba.tsv", "r.disc.tsv", "r.sf.tsv", "r.json"))
     tsv(ka, ARRIBA_HDR + ["filters"], [dict(k, filters="duplicates(2)") for k in kept])
     tsv(da, disc_hdr, disc)
     tsv(sfp, SF_HDR, [sf_row("TRIM", "BRAFF", "chr7:1004", "chr7:9000", 1, 0)])
     with open(js, "w") as fh:
-        json.dump([], fh)
+        json.dump([dict(oncokb("LEVEL_1", "Oncogenic"), Fusion="ONC--HIT")], fh)
     fl, outa, outl = (os.path.join(d, x) for x in ("r.list.tsv", "r.out.tsv", "r.out.list.tsv"))
     with open(fl, "w") as fh:
         fh.write("KEEP--ME\n")
@@ -155,8 +178,8 @@ def test_contract_v1(d):
                     "--out-arriba-tsv", outa, "--out-fusion-list", outl], check=True)
     got = list(csv.DictReader(open(outa), delimiter="\t"))
     assert [(g["#gene1"], g["arriba_status"]) for g in got] == [("KEEP", "kept"), ("EML", "rescued"),
-                                                               ("TRIM", "rescued")], got
-    assert open(outl).read().split() == ["KEEP--ME", "EML--ALKK", "TRIM--BRAFF"]
+                                                               ("TRIM", "rescued"), ("ONC", "rescued")], got
+    assert open(outl).read().split() == ["KEEP--ME", "EML--ALKK", "TRIM--BRAFF", "ONC--HIT"]
     out = os.path.join(d, "r.ev.tsv")
     subprocess.run([sys.executable, FE, "build", "--sample-id", "R", "--arriba-tsv", outa, "--starfusion-tsv", sfp,
                     "--oncokb-json", js, "--protein-domains", ".", "--out-tsv", out], check=True)
@@ -166,8 +189,19 @@ def test_contract_v1(d):
     assert ev["EML"]["tier"] == "2" and ev["EML"]["prototype_rules"] == "rescue|low_support", ev["EML"]
     assert ev["TRIM"]["callers"] == "arriba|starfusion" and ev["TRIM"]["breakpoint_offset"] == "4", ev["TRIM"]
     assert ev["KEEP"]["arriba_status"] == "kept" and ev["KEEP"]["arriba_filters"] == "", ev["KEEP"]
-    # Order: supported tier 3 (KEEP, 10 molecules) before low-support tier 3 (TRIM); EML is tier 2.
-    assert [ev[g]["event_rank"] for g in ("EML", "KEEP", "TRIM")] == ["1", "2", "3"], ev
+    # ONC is a rescued OncoKB LEVEL_1 pair with one molecule: low support keeps it out of tier 1.
+    assert ev["ONC"]["oncokb_highest_level"] == "LEVEL_1" and ev["ONC"]["tier"] != "1", ev["ONC"]
+    # Order within tier 3: supported (KEEP, 10 molecules) before low support (TRIM).
+    assert int(ev["KEEP"]["event_rank"]) < int(ev["TRIM"]["event_rank"]), ev
+    # A missing OncoKB file (a directory, or '.') is a warning, not a crash, in rescue and build.
+    subprocess.run([sys.executable, FE, "rescue", "--arriba-tsv", ka, "--arriba-discarded-tsv", da,
+                    "--starfusion-tsv", sfp, "--oncokb-json", ".", "--out-arriba-tsv", outa], check=True)
+    subprocess.run([sys.executable, FE, "build", "--sample-id", "R", "--arriba-tsv", outa, "--starfusion-tsv", sfp,
+                    "--oncokb-json", d, "--protein-domains", ".", "--out-tsv", out], check=True)
+    rows = list(csv.DictReader(open(out), delimiter="\t"))
+    # no OncoKB annotation at all; Arriba's Mitelman tag still makes EML a curated tier 2
+    assert rows and all(r["oncokb_highest_level"] == "" for r in rows), rows
+    assert {r["gene5"]: r["tier"] for r in rows}["EML"] == "2"
     # An unoriented call's ID has '.' strands.
     a = arriba_row("U1", "U2", "chr1:10", "chr2:20", 2, 2, "high", ".", strands="./.")
     _, rows = run_build(d, "U", [a], [], {})

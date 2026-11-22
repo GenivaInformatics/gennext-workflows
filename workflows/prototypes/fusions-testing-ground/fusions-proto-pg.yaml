@@ -76,8 +76,10 @@ spec:
               parameters:
                 - name: state
                   value: running
+          # Only after the dev backend has accepted both samples as part of the dev run (a mistyped
+          # run or sample ID fails there, with a 404, before anything is written).
           - name: copy-legacy
-            depends: check-inputs
+            depends: state-running
             template: copy-legacy
           - name: arm-a
             depends: copy-legacy
@@ -87,6 +89,13 @@ spec:
                 - {name: dev-sample-id, value: "{{workflow.parameters.dev-sample-id-a}}"}
                 - {name: dev-sample-uuid, value: "{{workflow.parameters.dev-sample-uuid-a}}"}
                 - {name: arriba-settings, value: max_sensitivity}
+          - name: state-error-before-arms
+            depends: "copy-legacy.Failed || copy-legacy.Errored"
+            template: dev-sample-states
+            arguments:
+              parameters:
+                - name: state
+                  value: error
           - name: arm-b
             depends: copy-legacy
             when: "'{{workflow.parameters.dev-sample-id-b}}' != '.'"
@@ -167,6 +176,17 @@ spec:
               parameters:
                 - {name: sample-uuid, value: "{{inputs.parameters.dev-sample-uuid}}"}
                 - {name: state, value: completed}
+          # Only this arm's sample: the other arm may have finished.
+          - name: state-error
+            depends: >-
+              arriba.Failed || arriba.Errored || fusion-report.Failed || fusion-report.Errored ||
+              filter-artifact-fusions.Failed || filter-artifact-fusions.Errored ||
+              events.Failed || events.Errored || load.Failed || load.Errored
+            template: dev-sample-state
+            arguments:
+              parameters:
+                - {name: sample-uuid, value: "{{inputs.parameters.dev-sample-uuid}}"}
+                - {name: state, value: error}
 
     # Refuses anything that could write outside a dev sample's own folder.
     - name: check-inputs
@@ -186,14 +206,17 @@ spec:
           - {name: DEV_SAMPLE_ID_B, value: "{{workflow.parameters.dev-sample-id-b}}"}
           - {name: DEV_SAMPLE_UUID_B, value: "{{workflow.parameters.dev-sample-uuid-b}}"}
           - {name: OUTPUT_BASE, value: "{{workflow.parameters.output-base}}"}
+          - {name: NODE, value: "{{workflow.parameters.node}}"}
         # Parameters arrive as environment variables, so a value can't change the script itself.
         source: |
           import os, re, sys
           p = {k.lower().replace("_", "-"): v for k, v in os.environ.items()
-               if k.startswith(("SOURCE_", "DEV_", "OUTPUT_"))}
+               if k.startswith(("SOURCE_", "DEV_", "OUTPUT_")) or k == "NODE"}
           uuid = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
           name = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
           bad = []
+          if not re.match(r"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$", p["node"]):
+              bad.append(f"node is not a node name: {p['node']!r}")
           for k in ("dev-user-id", "dev-run-id", "dev-sample-uuid-a"):
               if not uuid.match(p[k]):
                   bad.append(f"{k} is not a UUID: {p[k]!r}")
@@ -241,9 +264,18 @@ spec:
           set -euo pipefail
           SRC_ID="{{workflow.parameters.source-sample-id}}"
           copy_one() {  # $1 dev sample name, $2 dev sample uuid, $3 BAM to hard-link from (or "")
-            local id="$1" dir="/mnt/dev/$2" link="$3"
-            if [ -e "${dir}/.proto-legacy-copied" ]; then
+            local id="$1" dir="/mnt/dev/$2" link="$3" marker="/mnt/dev/$2/.proto-legacy-copied"
+            local want="source={{workflow.parameters.source-sample-dir}} id=${SRC_ID} dev=${id}"
+            if [ -e "${marker}" ]; then
+              # a retry or resubmit: only for the same source and dev sample
+              if [ "$(head -n 1 "${marker}")" != "${want}" ]; then
+                echo "ERROR: ${dir} was copied from another source: $(head -n 1 "${marker}")"; exit 1
+              fi
               echo "${id}: legacy copy already done, skipped"; return
+            fi
+            # Never write into a folder that already has content but isn't ours (a real sample's).
+            if [ -d "${dir}" ] && [ -n "$(ls -A "${dir}")" ]; then
+              echo "ERROR: ${dir} exists, is not empty and has no prototype marker; refusing to write there"; exit 1
             fi
             mkdir -p "${dir}/bam" "${dir}/results/db" "${dir}/results/fusions"
             for f in "/mnt/source/bam/${SRC_ID}_RNA.dedup.bam" "/mnt/source/bam/${SRC_ID}_RNA.dedup.bam.bai"; do
@@ -266,9 +298,11 @@ spec:
             db="/mnt/source/results/db/${SRC_ID}_fusions.duckdb"
             [ -s "${db}" ] || { echo "ERROR: missing ${db}"; exit 1; }
             cp -p "${db}" "${dir}/results/db/${id}_fusions.duckdb"
+            # a leftover write-ahead log belongs to the database file
+            [ -f "${db}.wal" ] && cp -p "${db}.wal" "${dir}/results/db/${id}_fusions.duckdb.wal"
             [ -s "${dir}/results/fusions/star-fusion/${id}_starfusion.tsv" ] || { echo "ERROR: no STAR-Fusion output to reuse"; exit 1; }
             [ -s "${dir}/results/fusions/oncokb/fusions_with_oncokb.json" ] || echo "WARNING: no fusions_with_oncokb.json: every event will be tier 3"
-            date -u +%FT%TZ > "${dir}/.proto-legacy-copied"
+            printf '%s\n%s\n' "${want}" "$(date -u +%FT%TZ)" > "${marker}"
             echo "${id}: copied"; du -sh "${dir}"
           }
           LINK_ID="{{workflow.parameters.dev-sample-id-a}}"
@@ -528,11 +562,11 @@ spec:
             SELECT * FROM read_csv('@META@', delim='\t', header=true, nullstr='', quote='',
                                    columns={'key': 'VARCHAR', 'value': 'VARCHAR'});
           COMMIT;
-          SELECT (SELECT count(*) FROM fusion_events) AS events,
-                 (SELECT value FROM fusion_events_meta WHERE key = 'events') AS meta_events,
-                 (SELECT value FROM fusion_events_meta WHERE key = 'contract_version') AS contract;
           SQL
-          echo "loaded into ${DB}"
+          # The table must hold exactly the rows the builder wrote (meta key "events").
+          CHECK=$(duckdb -csv -noheader "${DB}" "SELECT (SELECT count(*) FROM fusion_events) = (SELECT CAST(value AS BIGINT) FROM fusion_events_meta WHERE key = 'events')")
+          [ "${CHECK}" = "true" ] || { echo "ERROR: fusion_events row count differs from the meta count (${CHECK})"; exit 1; }
+          echo "loaded into ${DB}: $(duckdb -csv -noheader "${DB}" "SELECT count(*) FROM fusion_events") events"
 
     # Sample and run state, to the DEV backend only. The address is fixed here on purpose: this
     # template must never report to production. The token is the cluster token the live state
@@ -593,25 +627,16 @@ spec:
                 - {name: sample-uuid, value: "{{workflow.parameters.dev-sample-uuid-b}}"}
                 - {name: state, value: "{{inputs.parameters.state}}"}
 
+    # Sample states are posted where they happen (per arm, or for both when the copy fails). The
+    # run's own state follows from its samples in the backend; only a successful workflow also sets
+    # it explicitly, as the production wrappers do. A workflow stopped from outside (deadline,
+    # terminate) leaves its samples "running": set them by hand when cleaning up.
     - name: exit-handler
       steps:
-        - - name: samples-error
-            when: "'{{workflow.status}}' != 'Succeeded'"
-            template: dev-sample-states
-            arguments:
-              parameters:
-                - {name: state, value: error}
-          - name: run-completed
+        - - name: run-completed
             when: "'{{workflow.status}}' == 'Succeeded' && '{{workflow.parameters.report-run-state}}' == 'true'"
             template: dev-sample-state
             arguments:
               parameters:
                 - {name: sample-uuid, value: "-"}
                 - {name: state, value: completed}
-          - name: run-error
-            when: "'{{workflow.status}}' != 'Succeeded' && '{{workflow.parameters.report-run-state}}' == 'true'"
-            template: dev-sample-state
-            arguments:
-              parameters:
-                - {name: sample-uuid, value: "-"}
-                - {name: state, value: error}

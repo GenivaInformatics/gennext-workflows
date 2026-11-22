@@ -98,7 +98,7 @@ the same junction.
 | `fusion` | VARCHAR | `GENE5--GENE3`, the join key to the gene-pair data |
 | `gene5`, `gene3` | VARCHAR | Display genes |
 | `gene5_aliases`, `gene3_aliases` | VARCHAR[] | Every name the callers gave each side |
-| `breakpoint5`, `breakpoint3` | VARCHAR | `chr:pos:strand` (1-based) |
+| `breakpoint5`, `breakpoint3` | VARCHAR | `chr:pos:strand` (1-based). When `orientation_known` is false, which side is 5′ and the strands are Arriba's guess from its read directions. |
 | `orientation_known` | BOOLEAN | false: an Arriba call without strand information |
 
 ### Structure (new in v1)
@@ -187,6 +187,10 @@ backend and the filter body.
   is `in_vitro`, `relative_support` or `min_support` (`duplicates(n)` is ignored); and the pair is known
   (Arriba's Mitelman tag, or a database or OncoKB hit for the pair) or STAR-Fusion calls the same
   junction within ±10 bp. Novel Arriba-only single-read calls stay out. bpview draws rescued events too.
+  The database and OncoKB hits come from the sample's `fusions_with_oncokb.json`, which annotates only
+  the pairs fusion-report saw (Arriba's kept calls and STAR-Fusion's). For a discarded-only pair that
+  branch therefore rarely applies; Arriba's Mitelman tag (from its known-fusions file) and the
+  STAR-Fusion branch do the work.
 - **Low support (Q1).** `low_support` when `unique_molecules` < 2. Capped at tier 2, ordered after
   supported events of the same tier. The view shows them by default; "Hide low support" is off by default.
 - **Default view (Q4 A).** Event samples have no built-in caller filters. Sort by `event_rank`; tiers 1

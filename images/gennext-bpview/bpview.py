@@ -21,8 +21,9 @@ Other tags: XB:i distance of the nearest block end to the junction, YC:Z RGB col
 (igv.js colorBy tag), XK:Z sort key (evidence classes first). QNAME, duplicate flag, MAPQ, RX,
 MI and NH are copied from the source alignment. Counts in the events JSON are recomputed from the
 projected records, so the number reported equals the number of fragments drawn.
-junction_start_sites counts the distinct contig positions at which the non-duplicate junction
-reads start (leftmost aligned base), a measure of independent molecules.
+junction_start_sites counts the distinct contig start positions of the non-duplicate junction
+fragments (one per fragment: the leftmost aligned base of its junction-crossing mates), a measure
+of independent molecules.
 
 Calls are merged by junction (+-10 bp): each STAR-Fusion call joins the nearest Arriba call, and
 STAR-Fusion rows that report one junction twice are one event. Arriba rows may carry an
@@ -530,8 +531,10 @@ def project_event(bam, ev, segs, tid, opts, header):
         dup = any(v[0]["src"].is_duplicate for v in final.values())
         counts["dup" if dup else "nondup"][cls] += 1
         if cls == "junction" and not dup:
-            # distinct contig start positions of the junction-crossing reads (MSK-style "start sites")
-            counts["start_sites"].update(v[0]["cstart"] for v in final.values() if v[4] == "junction")
+            # distinct start positions of the junction fragments (MSK-style "start sites"): one start
+            # per fragment, the leftmost of its junction-crossing mates, so a fragment whose two mates
+            # both cross the junction counts once
+            counts["start_sites"].add(min(v[0]["cstart"] for v in final.values() if v[4] == "junction"))
         if cls in EVIDENCE:
             if not dup or opts.keep_dups in ("evidence", "all"):
                 keep.add(qn)
