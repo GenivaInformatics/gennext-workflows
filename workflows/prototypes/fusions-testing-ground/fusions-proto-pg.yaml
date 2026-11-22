@@ -617,7 +617,19 @@ spec:
                   'oncokb_px_citations': 'VARCHAR',
                   'oncokb_gene_in_oncokb': 'BOOLEAN',
                   'oncokb_variant_in_oncokb': 'BOOLEAN',
-                  'pair_fii_explained': 'VARCHAR'
+                  'pair_fii_explained': 'VARCHAR',
+                  'arriba_split_reads_5p': 'INTEGER',
+                  'arriba_split_reads_3p': 'INTEGER',
+                  'arriba_bam_split_reads_5p': 'INTEGER',
+                  'arriba_bam_split_reads_3p': 'INTEGER',
+                  'arriba_bam_molecules': 'INTEGER',
+                  'arriba_bam_pcr_copies': 'INTEGER',
+                  'arriba_cited_missing': 'INTEGER',
+                  'starfusion_bam_split_reads_5p': 'INTEGER',
+                  'starfusion_bam_split_reads_3p': 'INTEGER',
+                  'starfusion_bam_molecules': 'INTEGER',
+                  'starfusion_bam_pcr_copies': 'INTEGER',
+                  'starfusion_cited_missing': 'INTEGER'
                 });
           CREATE OR REPLACE TABLE fusion_events_meta AS
             SELECT * FROM read_csv('@META@', delim='\t', header=true, nullstr='', quote='',

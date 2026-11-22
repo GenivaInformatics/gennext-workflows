@@ -141,6 +141,16 @@ COLUMNS = [
     ("oncokb_gene_in_oncokb", "BOOLEAN"), ("oncokb_variant_in_oncokb", "BOOLEAN"),
     # fusion-report
     ("pair_fii_explained", "VARCHAR"),
+    # Both callers side by side, on the event's 5'/3'. arriba_split_reads_5p/_3p: Arriba's own
+    # split_reads1/2 mapped to 5'/3'. *_bam_*: counted in the bpview BAM from the fragments that caller
+    # cites (XC tag): split reads by the partner of their primary alignment, molecules and copies of
+    # XG 1junction + 2spanning. Null when the caller didn't call the event or bpview didn't draw it.
+    ("arriba_split_reads_5p", "INTEGER"), ("arriba_split_reads_3p", "INTEGER"),
+    ("arriba_bam_split_reads_5p", "INTEGER"), ("arriba_bam_split_reads_3p", "INTEGER"),
+    ("arriba_bam_molecules", "INTEGER"), ("arriba_bam_pcr_copies", "INTEGER"), ("arriba_cited_missing", "INTEGER"),
+    ("starfusion_bam_split_reads_5p", "INTEGER"), ("starfusion_bam_split_reads_3p", "INTEGER"),
+    ("starfusion_bam_molecules", "INTEGER"), ("starfusion_bam_pcr_copies", "INTEGER"),
+    ("starfusion_cited_missing", "INTEGER"),
 ]
 ONCOKB_LEVELS = ("LEVEL_1", "LEVEL_2", "LEVEL_3A", "LEVEL_3B", "LEVEL_4", "LEVEL_R1", "LEVEL_R2",
                  "LEVEL_Dx1", "LEVEL_Dx2", "LEVEL_Dx3", "LEVEL_Px1", "LEVEL_Px2", "LEVEL_Px3")
@@ -621,6 +631,33 @@ def caller_details(ev, entry):
         pair_fii_explained=_str((entry or {}).get("Explained FII")))
 
 
+def caller_sides(ev, b):
+    """The per-side and per-caller BAM columns (see COLUMNS)."""
+    out = {}
+    a = (ev.get("arriba") or {}).get("raw") or {}
+    if a:
+        s1, s2 = _int(a.get("split_reads1")), _int(a.get("split_reads2"))
+        try:
+            c1, p1 = a["breakpoint1"].rsplit(":", 1)
+            flipped = not (c1 == ev["chr1"] and int(p1) == ev["pos1"])
+        except (KeyError, ValueError):
+            flipped = False
+        out.update(arriba_split_reads_5p=s2 if flipped else s1, arriba_split_reads_3p=s1 if flipped else s2)
+    cb = (b or {}).get("callers_bam") or {}
+    for c in ("arriba", "starfusion"):
+        v = cb.get(c) if c in ev["callers"] else None
+        # No names to look up (Arriba writes read_identifiers only for kept calls, so a rescued call
+        # cites none): unknown, not zero.
+        if v is None or not v.get("cited"):
+            continue
+        nd, du = v.get("fragments_nondup") or {}, v.get("fragments_dup") or {}
+        out.update({f"{c}_bam_split_reads_5p": v.get("split_5p"), f"{c}_bam_split_reads_3p": v.get("split_3p"),
+                    f"{c}_bam_molecules": nd.get("junction", 0) + nd.get("spanning", 0),
+                    f"{c}_bam_pcr_copies": du.get("junction", 0) + du.get("spanning", 0),
+                    f"{c}_cited_missing": v.get("cited_missing")})
+    return out
+
+
 def build_rows(opts):
     arriba = load_arriba_raw(opts.arriba_tsv) if _has(opts.arriba_tsv) else []
     starf = load_starfusion_raw(opts.starfusion_tsv) if _has(opts.starfusion_tsv) else []
@@ -678,6 +715,8 @@ def build_rows(opts):
             pon_gene_pair_count=npair, pon_junction_count=njunc, pon_size=size,
             bpview_contig=b["contig"] if b else None, builder_version=__version__)
         row.update(caller_details(ev, entry))
+        row.update({c: None for c, _ in COLUMNS if c not in row})
+        row.update(caller_sides(ev, b))
         row["curated_known"] = bool(CURATED_DB & set(row["known_db"]))
         row["pair_reversed"] = reversed_match
         row.update(tier_event(row, opts))

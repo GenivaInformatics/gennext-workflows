@@ -268,6 +268,32 @@ def test_caller_details(d):
     assert r["starfusion_left_break_dinuc"] == "GT", r
 
 
+def test_caller_sides():
+    """arriba_split_reads_5p/_3p follow the event's orientation; *_bam_* come from bpview's callers_bam."""
+    raw = {"breakpoint1": "chr2:500", "breakpoint2": "chr1:1000", "split_reads1": "7", "split_reads2": "2"}
+    ev = dict(chr1="chr1", pos1=1000, chr2="chr2", pos2=500, callers=["arriba", "starfusion"],
+              arriba={"raw": raw})  # Arriba's side 1 is the event's 3' (a flipped call)
+    b = {"callers_bam": {"arriba": {"fragments_nondup": {"junction": 5, "spanning": 1, "junction_weak": 2},
+                                    "fragments_dup": {"junction": 40}, "split_5p": 3, "split_3p": 2,
+                                    "cited": 50, "cited_missing": 0},
+                         "starfusion": {"fragments_nondup": {"junction": 4}, "fragments_dup": {},
+                                        "split_5p": 4, "split_3p": 0, "cited": 4, "cited_missing": 0}}}
+    out = fusion_events.caller_sides(ev, b)
+    assert (out["arriba_split_reads_5p"], out["arriba_split_reads_3p"]) == (2, 7), out
+    assert (out["arriba_bam_molecules"], out["arriba_bam_pcr_copies"]) == (6, 40), out  # junction_weak not counted
+    assert (out["arriba_bam_split_reads_5p"], out["arriba_bam_split_reads_3p"]) == (3, 2), out
+    assert (out["starfusion_bam_molecules"], out["starfusion_bam_split_reads_5p"], out["starfusion_cited_missing"]) == (4, 4, 0)
+    # not flipped; and a caller that didn't call the event gets no BAM columns
+    raw.update(breakpoint1="chr1:1000", breakpoint2="chr2:500")
+    out = fusion_events.caller_sides(dict(ev, callers=["arriba"]), b)
+    assert (out["arriba_split_reads_5p"], out["arriba_split_reads_3p"]) == (7, 2), out
+    assert "starfusion_bam_molecules" not in out, out
+    # a caller that cites no names (a rescued Arriba call: discarded calls carry no read_identifiers)
+    b["callers_bam"]["arriba"]["cited"] = 0
+    out = fusion_events.caller_sides(ev, b)
+    assert "arriba_bam_molecules" not in out and out["arriba_split_reads_5p"] == 7, out
+
+
 def main():
     with tempfile.TemporaryDirectory() as d:
         pairs = {"ALK1--PART1": oncokb("LEVEL_1", "Oncogenic"),         # actionable
@@ -356,6 +382,7 @@ def main():
 
         test_contract_v1(d)
         test_caller_details(d)
+        test_caller_sides()
 
         # Empty caller outputs give an empty table with a header.
         _, rows = run_build(d, "S2", [], [], {})

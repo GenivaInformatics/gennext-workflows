@@ -158,6 +158,33 @@ the bpview BAM that the read view and desktop IGV load. The unit is the fragment
   outside the genome FASTA) keep the callers' counts (`support_source` `arriba` or `starfusion`). They
   are labelled as caller counts and have no reads view, so the rule doesn't apply to them.
 - **Caller numbers** (`arriba_*`, `starfusion_*`) stay caller columns, labelled as such.
+- **Per-caller counts in the BAM** (bpview ≥ 0.4.0, events.json `bpview_version`): `XC:Z` on both mates
+  of every fragment a caller cites (Arriba's `read_identifiers`, STAR-Fusion's `JunctionReads` and
+  `SpanningFrags`) is `arriba`, `starfusion` or `arriba,starfusion`, always in that order; a fragment no
+  caller cites has no `XC`. Cited fragments are always drawn, copies included and past `max_context`.
+  - `{caller}_bam_molecules`: fragments with `XC` containing the caller, `XG` ∈ {`1junction`,
+    `2spanning`}, and no record with 0x400.
+  - `{caller}_bam_pcr_copies`: the same with at least one record flagged 0x400.
+  - `{caller}_bam_split_reads_5p` / `_3p`: the non-duplicate `1junction` fragments among those, by the
+    side of the split read. `XJ:Z` (`5p` or `3p`) on a junction-class record (`XF = junction`) is the
+    partner of its primary, non-supplementary alignment: Arriba's "anchor". A fragment's side is its
+    first junction mate's (read 1's `XJ`, else read 2's). Spanning pairs have no side, so 5p + 3p can be
+    below the molecules.
+  - **Caveat:** a cited fragment that bpview classes differently (e.g. `3junction_weak`, or a context
+    class) carries `XC` but isn't counted. The view shows it as "cited, not counted". Both callers' name
+    lists include duplicates; the molecule fields count non-duplicates only, and the duplicate-inclusive
+    numbers are in events.json.
+  - events.json, per event: `callers_bam` = `{arriba|starfusion: {fragments_nondup: {class: n},
+    fragments_dup: {class: n}, split_5p, split_3p, cited, cited_missing}}`. `cited` is the number of
+    distinct names the caller lists; `cited_missing` counts those not among the event's fragments (outside
+    its segments, or no mate projected). They are never in the BAM.
+  - `arriba_split_reads_5p` / `_3p` are Arriba's **own** `split_reads1`/`2` mapped to 5′/3′: caller numbers,
+    not countable in the BAM.
+  - A caller that cites no read names has null `{caller}_bam_*` fields (unknown, not zero). This is the
+    case for every **rescued** Arriba call: Arriba writes `read_identifiers` only for kept calls.
+  - Arriba's own numbers and its `_bam_` numbers can differ for kept calls too. Arriba cites reads that
+    bpview classes as wild-type, for example a soft-clipped read whose clipped part has no supplementary
+    alignment, and it counts by its own rules. Show both, each with its source.
 - **IGV display:** desktop IGV and igv.js hide duplicates by default and downsample deep regions.
   The view has to switch downsampling off, or raise its depth, for its counts to match. The BAM has
   no QC-fail, secondary or supplementary records. Some junction reads have MAPQ 0, which IGV shows faded.
@@ -247,6 +274,17 @@ are above.
 | `oncokb_mutation_effect_citations`, `oncokb_treatment_citations`, `oncokb_dx_citations`, `oncokb_px_citations` | VARCHAR[] | `MUTATION_EFFECT_CITATIONS`, `TX_CITATIONS`, `DX_CITATIONS`, `PX_CITATIONS`, split at `;` (PMIDs, or abstract text with a URL) |
 | `oncokb_gene_in_oncokb`, `oncokb_variant_in_oncokb` | BOOLEAN | `GENE_IN_ONCOKB`, `VARIANT_IN_ONCOKB` |
 | `pair_fii_explained` | VARCHAR | fusion-report's `Explained FII` |
+
+**Both callers, side by side on the event's 5′/3′** (fusion-events 0.5.0 with bpview 0.4.0; INTEGER; null
+when the caller didn't call the event, or for `*_bam_*`, when bpview didn't draw it). Definitions in
+"Support" above.
+
+| Field | Source |
+|---|---|
+| `arriba_split_reads_5p`, `arriba_split_reads_3p` | Arriba's own `split_reads1`/`2`, swapped when the call was flipped |
+| `arriba_bam_split_reads_5p`, `arriba_bam_split_reads_3p`, `arriba_bam_molecules`, `arriba_bam_pcr_copies` | bpview BAM, fragments with `XC` ∋ `arriba` |
+| `starfusion_bam_split_reads_5p`, `starfusion_bam_split_reads_3p`, `starfusion_bam_molecules`, `starfusion_bam_pcr_copies` | bpview BAM, fragments with `XC` ∋ `starfusion` (STAR-Fusion reports no per-side numbers itself) |
+| `arriba_cited_missing`, `starfusion_cited_missing` | names the caller cites that bpview didn't find (events.json `callers_bam.*.cited_missing`) |
 
 Not available from these inputs: OncoKB summary text (not in the annotator's output), and per-database
 identifiers or counts (fusion-report gives database names only; they are `known_db`). The OncoKB JSON's
