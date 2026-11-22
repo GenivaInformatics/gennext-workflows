@@ -18,7 +18,10 @@ contig coordinates. Nothing is realigned, so what is shown is exactly what the c
   * everything else in the segments                                      -> XF:Z:other
 
 Other tags: XB:i distance of the nearest block end to the junction, YC:Z RGB colour by class
-(igv.js colorBy tag), XK:Z sort key (evidence classes first). QNAME, duplicate flag, MAPQ, RX,
+(igv.js colorBy tag), XK:Z sort key of the read's own class (evidence classes first), XG:Z the same
+key for the whole fragment, identical on both mates: the best class among its mates, the class the
+events JSON counts it under (group by XG; with paired view, a per-mate key would split one junction
+fragment into "junction / other" groups). QNAME, duplicate flag, MAPQ, RX,
 MI and NH are copied from the source alignment. Counts in the events JSON are recomputed from the
 projected records, so the number reported equals the number of fragments drawn.
 junction_start_sites counts the distinct contig start positions of the non-duplicate junction
@@ -55,7 +58,7 @@ import sys
 
 import pysam
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 REF_CONSUME = {0, 2, 3, 7, 8}
 QRY_CONSUME = {0, 1, 4, 7, 8}
@@ -546,6 +549,7 @@ def project_event(bam, ev, segs, tid, opts, header):
     out = []
     for qn in keep:
         final = frags[qn]
+        group = frag_class(final)  # one class for the whole fragment, on both mates (XG)
         recs = {}
         for is_r1, (ch, cig, s_out, q_out, tag) in final.items():
             src = ch["src"]
@@ -568,6 +572,7 @@ def project_event(bam, ev, segs, tid, opts, header):
             r.set_tag("XB", int(ch["dist"]))
             r.set_tag("YC", COLOURS[tag])
             r.set_tag("XK", SORT_ORDER[tag] + tag)
+            r.set_tag("XG", SORT_ORDER[group] + group)
             for t in ("RX", "MI", "NH"):
                 if src.has_tag(t):
                     r.set_tag(t, src.get_tag(t))
