@@ -134,12 +134,40 @@ the same file Arriba uses for `retained_protein_domains`.
 | `breakpoint_offset` | INTEGER | With both callers: the larger distance (bp) between their breakpoints on either side; 0 = they agree exactly. Null with one caller. |
 
 ### Support
+
+**Rule: every support count shown matches the reads view.** Every count the view, the detail panel
+or the report shows as support (`unique_molecules`, `molecules_junction`, `molecules_spanning`,
+`pcr_copies`, `start_sites`) equals what can be counted in the event's contig (`bpview_contig`) in
+the bpview BAM that the read view and desktop IGV load. The unit is the fragment: one QNAME.
+- **Fragment class:** the BAM tag `XG`, the same on both mates. `molecules_junction` = non-duplicate
+  fragments with `XG = 1junction`; `molecules_spanning` = non-duplicate fragments with `XG = 2spanning`;
+  `unique_molecules` = their sum.
+- **PCR copy:** a fragment where any record has the duplicate flag (0x400). `pcr_copies` = duplicate
+  `1junction` + `2spanning` fragments. Duplicates of other classes don't count.
+- **`start_sites`:** distinct `reference_start` values of the non-duplicate `1junction` fragments,
+  taking per fragment the leftmost record whose own class (`XF`) is `junction`.
+- **Shown, not counted:**
+  - The evidence classes `junction_weak` (`XG = 3junction_weak`) and `chimeric_other` (`6chimeric_other`)
+    are drawn in full, copies included, but are not support. Their numbers are in events.json
+    (`fragments_nondup`, `fragments_dup`).
+  - The context classes `wt5`, `wt3` and `other` are drawn up to `max_context` (40) non-duplicate
+    fragments each, without copies. events.json counts all of them, before the cap. So a context count
+    is not a drawn count, and the view should show context reads without a number or label the count
+    "counted, up to 40 shown".
+- **Events bpview didn't draw** (`bpview_contig` null; only past bpview's event cap or for a contig
+  outside the genome FASTA) keep the callers' counts (`support_source` `arriba` or `starfusion`). They
+  are labelled as caller counts and have no reads view, so the rule doesn't apply to them.
+- **Caller numbers** (`arriba_*`, `starfusion_*`) stay caller columns, labelled as such.
+- **IGV display:** desktop IGV and igv.js hide duplicates by default and downsample deep regions.
+  The view has to switch downsampling off, or raise its depth, for its counts to match. The BAM has
+  no QC-fail, secondary or supplementary records. Some junction reads have MAPQ 0, which IGV shows faded.
+
 | Field | Type | Meaning |
 |---|---|---|
 | `unique_molecules` | INTEGER | Fragments supporting the junction, counted as `support_source` says |
 | `molecules_junction`, `molecules_spanning` | INTEGER | The two parts of `unique_molecules` (bpview only) |
 | `start_sites` | INTEGER | Distinct start positions of the non-duplicate junction reads (bpview only); for evidence thresholds such as ≥3 start sites (Q13) |
-| `pcr_copies` | INTEGER | Duplicate fragments at the junction (bpview only) |
+| `pcr_copies` | INTEGER | Duplicate junction and spanning fragments (bpview only) |
 | `support_source` | VARCHAR | `bpview`: bpview's non-duplicate fragments, the same count whichever caller found the event. Otherwise `arriba`: Arriba's split reads + discordant mates after its own dedup. Otherwise `starfusion`: STAR-Fusion's junction + spanning reads, which are **not necessarily deduplicated**; label them "reads", not "molecules". |
 | `low_support` | BOOLEAN | `unique_molecules` below the minimum (default 2). Shown, never dropped; capped at tier 2 (§5) |
 

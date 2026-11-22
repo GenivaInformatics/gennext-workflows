@@ -25,7 +25,8 @@ sample, from the outputs that sample already has, without touching them:
 
    Arriba (own step: the live template can't express arm b) → `fusion-report` and
    `filter-artifact-fusions` (the live templates) → `fusion-events rescue` → `bpview` →
-   `fusion-events build` → `load-events`. STAR-Fusion and OncoKB results are reused from the source:
+   `fusion-events build` → `load-events`. bpview draws every merged event (no candidate list), so
+   every count the event table reports can be counted in the BAM the read view and IGV load. STAR-Fusion and OncoKB results are reused from the source:
    STAR's chimeric junctions are no longer kept, and OncoKB is annotated per gene pair.
 4. `load-events` writes `fusion_events` and `fusion_events_meta` into the dev sample's copied fusions
    DuckDB in one transaction (meta last). Nothing else in that file changes.
