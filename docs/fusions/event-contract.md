@@ -22,7 +22,7 @@ Paths are relative to the sample's output directory
 | bpview reads | `results/fusions/bpview/{s}_bpview.bam`, `.bam.bai` | bpview |
 | bpview exons | `results/fusions/bpview/{s}_bpview.bed.gz`, `.gtf.gz` (+ `.tbi`) | bpview |
 | bpview events | `results/fusions/bpview/{s}_bpview.events.json` | bpview |
-| Legacy (unchanged) | `results/fusions/fusion-inspector/{s}_finspector.*`, table `advanced_combined_fusions` | today's pipeline |
+| Legacy (unchanged) | `results/fusions/fusion-inspector/{s}_finspector.*`, `results/fusions/fusion-report/{s}_fusions.json` (or unprefixed `fusions.json`), table `advanced_combined_fusions` | today's pipeline |
 
 `fusion_events_meta` is a two-column table (`key VARCHAR, value VARCHAR`):
 
@@ -47,7 +47,7 @@ Per sample, from what is on disk. api-edge computes it; nothing stores it.
 | mode | When | Frontend |
 |---|---|---|
 | `events` | **both** tables exist: `fusion_events`, and `fusion_events_meta` with a `contract_version` api-edge knows | new event view |
-| `legacy` | not `events`, and `advanced_combined_fusions` exists or `results/fusions/fusion-inspector/{s}_finspector.fa.fai` exists (only that path, so a stray file elsewhere can't change the mode) | today's table and FusionInspector view |
+| `legacy` | not `events`, and any of: the table `advanced_combined_fusions`; `results/fusions/fusion-inspector/{s}_finspector.fa.fai` (only that path, so a stray file elsewhere can't change the mode); the fusion-report JSON that today's table route (`GET /fusions`) reads, `results/fusions/fusion-report/{s}_fusions.json` or the unprefixed `results/fusions/fusion-report/fusions.json`, resolved the same way | today's table and FusionInspector view |
 | `none` | neither | "no fusion data" state |
 
 `bpview` (boolean) says separately whether the bpview files exist: all four of `{s}_bpview.fa`,
