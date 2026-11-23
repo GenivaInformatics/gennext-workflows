@@ -1,4 +1,5 @@
 import csv
+import json
 import os
 from pathlib import Path
 import sys
@@ -701,7 +702,7 @@ class RefhubCacheTest(unittest.TestCase):
         self.assertIn("could not reach OncoKB (http_503); trying these rows again later", self.log[0])
         self.assertEqual(cache.counts["direct"], 0)
 
-    def test_somatic_queries_ask_refhub_by_protein_change_by_default(self):
+    def test_somatic_queries_ask_refhub_genomic_first_by_default(self):
         cache, refhub = self.cache(refhub_answers())
         with patch.dict(os.environ, {}, clear=True):
             RefhubCache(REFHUB, "tok", refhub).post(ONCOKB_POST, self.queries("5"))
@@ -709,12 +710,48 @@ class RefhubCacheTest(unittest.TestCase):
                 "https://www.oncokb.org/api/v1/annotate/germline/mutations/byGenomicChange", self.queries("5"))
         with patch.dict(os.environ, {"REFHUB_ONCOKB_PATH": "genomic"}):
             RefhubCache(REFHUB, "tok", refhub).post(ONCOKB_POST, self.queries("5"))
+        with patch.dict(os.environ, {"REFHUB_ONCOKB_PATH": "protein"}):
+            RefhubCache(REFHUB, "tok", refhub).post(ONCOKB_POST, self.queries("5"))
         urls = [c["url"] for c in refhub.calls]
         self.assertEqual(urls, [
-            REFHUB + "/oncokb/cache/annotate/mutations/byGenomicChange?path=protein",
+            REFHUB + "/oncokb/cache/annotate/mutations/byGenomicChange?path=genomic_first",
             REFHUB + "/oncokb/cache/annotate/germline/mutations/byGenomicChange",
             REFHUB + "/oncokb/cache/annotate/mutations/byGenomicChange",
+            REFHUB + "/oncokb/cache/annotate/mutations/byGenomicChange?path=protein",
         ])
+
+    def test_protein_route_answers_are_counted_for_the_log_and_passed_on_as_oncokbs(self):
+        def answers(queries):
+            out = []
+            for q in queries:
+                position = q["genomicLocation"].split(",")[1]
+                annotation = {"geneExist": True, "oncogenic": "Likely Oncogenic", "treatments": [],
+                              "query": {"genomicLocation": q["genomicLocation"], "consequence": "missense_variant"}}
+                answer = {"status": "annotation", "annotation": annotation, "source": "miss"}
+                if position == "6":
+                    answer["route"] = "protein"
+                out.append(answer)
+            return 200, out
+        cache, _ = self.cache(answers)
+        reply = cache.post(ONCOKB_POST, self.queries("5", "6")).json()
+        # What upstream gets is OncoKB's annotation only: no route anywhere.
+        self.assertNotIn("route", json.dumps(reply))
+        self.assertEqual([a["oncogenic"] for a in reply], ["Likely Oncogenic"] * 2)
+        self.assertEqual(cache.counts["protein_route"], 1)
+        self.assertIn("1 answered by protein change", cache.summary())
+
+    def test_refhub_without_genomic_first_is_asked_by_genomic_change(self):
+        replies = iter([(400, {"error": "path is genomic or protein"}),
+                        (200, [{"status": "annotation", "annotation": {}, "source": "hit"}])])
+        cache, refhub = self.cache(lambda q: next(replies))
+        cache.path = "genomic_first"
+        self.assertEqual(cache.post(ONCOKB_POST, self.queries("5")).status_code, 200)
+        urls = [c["url"] for c in refhub.calls]
+        self.assertEqual(urls, [
+            REFHUB + "/oncokb/cache/annotate/mutations/byGenomicChange?path=genomic_first",
+            REFHUB + "/oncokb/cache/annotate/mutations/byGenomicChange",
+        ])
+        self.assertEqual(cache.counts["direct"], 0)
 
     def test_rows_refhub_cannot_annotate_come_back_marked_in_one_answer(self):
         cache, _ = self.cache(refhub_answers(bad={"6"}, failed={"7"}, unavailable={"8"}))
@@ -798,7 +835,8 @@ class RefhubCacheTest(unittest.TestCase):
         self.assertEqual(waits, [])
         self.assertIn("known bad in refhub's cache, written unannotated", out)
         self.assertIn("refhub cache: 2 requests; answers: 5 hits, 0 asked of OncoKB, 0 stale, 1 known bad, "
-                      "0 not answered; 0 requests sent to OncoKB directly", out)
+                      "0 not answered; 0 answered by protein change (OncoKB failed them by genomic "
+                      "change); 0 requests sent to OncoKB directly", out)
 
     def test_known_bad_rows_are_no_outage(self):
         # 40 known-bad intronic rows of 45: more than max_unanswered (10).

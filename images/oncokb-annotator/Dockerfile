@@ -38,6 +38,11 @@
 #                          (?path=protein; REFHUB_ONCOKB_PATH=genomic opts
 #                          out); rows refhub can't get answered, or a chunk
 #                          whose direct fallback fails, are retried together
+#   0.3.9-upstream-v4.1.0  as 0.3.8; asks refhub genomic first
+#                          (?path=genomic_first, refhub 0.9): OncoKB's own
+#                          byGenomicChange answer, by protein change only for
+#                          rows OncoKB fails on; those are counted in the step
+#                          log only. Output unchanged
 #                          through refhub, not row by row
 FROM python:3.12.12-alpine3.22@sha256:848ba4413eb897e225159b8fc1b02094576cbae4aa73fc13142608ae2c8c0e32
 

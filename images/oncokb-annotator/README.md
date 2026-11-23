@@ -1,6 +1,6 @@
 # OncoKB annotator image
 
-`bergun/oncokb-annotator:0.3.8-upstream-v4.1.0` is upstream
+`bergun/oncokb-annotator:0.3.9-upstream-v4.1.0` is upstream
 [oncokb-annotator](https://github.com/oncokb/oncokb-annotator) at tag `v4.1.0`
 (commit `77521cd`), unmodified, plus the three wrapper scripts in this
 directory. The previous image, `0.2.0-upstream-v3.4.2`, is upstream `v3.4.2`
@@ -92,6 +92,15 @@ twice on each of them and stops sending OncoKB the same queries again.
   row refhub reports `failed` or `unavailable` (`refhub:not_answered`) is
   tried again after 60 s, with the other such rows, and is then handled as
   above (filled, or the step fails).
+- From `0.3.9`, somatic queries ask refhub genomic first
+  (`?path=genomic_first`, refhub 0.9; Berk, 23 Nov 2026: answers must be
+  OncoKB's own). refhub asks OncoKB by genomic change and passes on its answer
+  as it is; only rows OncoKB fails on that way (known bad, or failed) are
+  answered by protein change. The step log counts those
+  (`N answered by protein change`); nothing in the output says so, and the
+  MAF format is unchanged. `REFHUB_ONCOKB_PATH=protein` or `genomic` picks
+  the older paths. refhub 0.8 refuses genomic first, and the wrapper then
+  asks it by genomic change.
 - From `0.3.8`, somatic queries ask refhub by protein change (`?path=protein`;
   `REFHUB_ONCOKB_PATH=genomic` for byGenomicChange): refhub maps the genomic
   change to a protein change on OncoKB's canonical transcript and asks

@@ -181,12 +181,16 @@ REFHUB_RETRY = "refhub:not_answered"
 # After this many refhub failures in a row, this run stops asking it.
 REFHUB_MAX_FAILURES = 3
 
-# How refhub asks OncoKB for somatic queries: "protein" (refhub maps the
-# genomic change to a protein change itself and asks byProteinChange, so
-# Genome Nexus, where OncoKB's failing queries hang, is out of the path) or
-# "genomic" (byGenomicChange). REFHUB_ONCOKB_PATH overrides. refhub before
-# 0.8 ignores the setting and answers by genomic change.
-DEFAULT_REFHUB_PATH = "protein"
+# How refhub asks OncoKB for somatic queries:
+# - "genomic_first" (the default, refhub 0.9+): by genomic change, OncoKB's
+#   own answer as it is; only the rows OncoKB fails on that way are answered
+#   by protein change (counted in this step's log, nowhere else);
+# - "protein": refhub maps the genomic change to a protein change itself and
+#   asks byProteinChange;
+# - "genomic": byGenomicChange only.
+# REFHUB_ONCOKB_PATH overrides. refhub before 0.8 ignores the setting; refhub
+# 0.8 refuses genomic_first, and the cache then asks by genomic change.
+DEFAULT_REFHUB_PATH = "genomic_first"
 
 # OncoKB endpoints refhub caches, by the path upstream posts to.
 REFHUB_ENDPOINTS = {
@@ -237,7 +241,7 @@ class RefhubCache:
         self.failures = 0
         self.enabled = True
         self.counts = {"requests": 0, "direct": 0, "hit": 0, "miss": 0, "refreshed": 0,
-                       "stale": 0, "bad": 0, "failed": 0}
+                       "stale": 0, "bad": 0, "failed": 0, "protein_route": 0}
 
     def _give_up(self, why):
         self.failures += 1
@@ -268,6 +272,12 @@ class RefhubCache:
                 headers={"Authorization": f"Bearer {self.token}"})
         except requests.exceptions.RequestException as error:
             return self._give_up(f"unreachable ({type(error).__name__})")
+        if (reply.status_code == 400 and self.path == "genomic_first"
+                and "genomic_first" not in reply.text):
+            # refhub 0.8 doesn't know genomic first: ask it by genomic change.
+            self.log("refhub cache does not offer genomic first; asking it by genomic change")
+            self.path = "genomic"
+            return self.post(url, body)
         if reply.status_code != 200:
             if reply.status_code == 401:
                 self.enabled = False
@@ -293,6 +303,10 @@ class RefhubCache:
             status = answer["status"]
             if status == "annotation":
                 self.counts[answer.get("source")] = self.counts.get(answer.get("source"), 0) + 1
+                if answer.get("route") == "protein":
+                    # OncoKB failed the row by genomic change; refhub answered
+                    # it by protein change. Logged here only, never written.
+                    self.counts["protein_route"] += 1
                 reply_answers.append(answer["annotation"])
             elif status == "bad":
                 self.counts["bad"] += 1
@@ -307,7 +321,8 @@ class RefhubCache:
         return (f"refhub cache: {c['requests']} requests; answers: {c['hit']} hits, "
                 f"{c['miss'] + c['refreshed']} asked of OncoKB, {c['stale']} stale, "
                 f"{c['bad']} known bad, {c['failed']} not answered; "
-                f"{c['direct']} requests sent to OncoKB directly")
+                f"{c['protein_route']} answered by protein change (OncoKB failed them "
+                f"by genomic change); {c['direct']} requests sent to OncoKB directly")
 
 
 # The RefhubCache upstream's POSTs go through, or None; set by annotate_maf.
