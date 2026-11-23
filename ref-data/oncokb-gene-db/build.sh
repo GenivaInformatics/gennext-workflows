@@ -30,6 +30,19 @@ pep="dl/Homo_sapiens.GRCh38.pep.all.r${ensembl}.fa.gz"
 [ -s "$gtf" ] || curl -fsSL -o "$gtf" "$ens/gtf/homo_sapiens/Homo_sapiens.GRCh38.${ensembl}.gtf.gz"
 [ -s "$pep" ] || curl -fsSL -o "$pep" "$ens/fasta/homo_sapiens/pep/Homo_sapiens.GRCh38.pep.all.fa.gz"
 
+# The Ensembl files must be the ones this build was checked against. Pinned for
+# release 111; for another release pass GTF_SHA256 and PEP_SHA256.
+case "$ensembl" in
+    111) want_gtf=a52356765a41264e17a2076aff1abab703ec3ba239b78f88560756e85c169831
+         want_pep=0fb1d7536f87e44813e430490581f172dfef84368644778f69fde076a13ac44c ;;
+    *) want_gtf=${GTF_SHA256:?set GTF_SHA256 for Ensembl $ensembl}
+       want_pep=${PEP_SHA256:?set PEP_SHA256 for Ensembl $ensembl} ;;
+esac
+for pair in "$gtf:$want_gtf" "$pep:$want_pep"; do
+    got=$(sha256sum "${pair%%:*}" | cut -d' ' -f1)
+    [ "$got" = "${pair#*:}" ] || { echo "${pair%%:*}: sha256 $got, expected ${pair#*:}" >&2; exit 1; }
+done
+
 b="build"
 python3 "$here/build_genepred.py" "$gtf" "$curated" "$b/hg38_oncokbGene.txt" "$b/build-report.json"
 
@@ -67,5 +80,7 @@ known_exceptions=RYBP: incomplete ORF in Ensembl $ensembl, ANNOVAR gives no prot
 EOF
 (cd "$dist" && sha256sum hg38_oncokbGene* > SHA256SUMS)
 tarball="$work/dist/oncokbGene-$tag.tar.gz"
-tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 -C "$work/dist" -cf - "$tag" | gzip -n -9 > "$tarball"
+# fixed modes, owners and times: the tarball does not depend on the builder's umask
+tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 --mode='u=rwX,go=rX' \
+    -C "$work/dist" -cf - "$tag" | gzip -n -9 > "$tarball"
 sha256sum "$tarball"

@@ -23,7 +23,7 @@ spec:
             type: Directory
       script:
         name: annovar-script
-        image: bergun/maftools-rs:v0.2.1@sha256:afc21a8c684a31e429142440850b393cee0f545c77a64e8facfcf9e4ba8f13f2
+        image: bergun/maftools-rs:v0.2.2@sha256:ae08cb82edcd7700994a1d18f789e3e815b7bfa15e341dd0dd67580f82235155
         workingDir: /mnt/input/
         command: [sh]
         source: |

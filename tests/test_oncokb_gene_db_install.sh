@@ -41,6 +41,17 @@ check "content through the links" "cmp -s $work/db/hg38_oncokbGene.txt $fix/hg38
 check "re-run is a no-op" "inst /w/v1.tar.gz /w/db $(sha v1) && [ \"\$(link hg38_oncokbGene.txt)\" = hg38_oncokbGene.v1.txt ]"
 check "no staging left" "! ls -a $work/db | grep -q oncokbGene-install"
 check "install v2 switches the links, keeps v1" "inst /w/v2.tar.gz /w/db $(sha v2) && [ \"\$(link hg38_oncokbGene.txt)\" = hg38_oncokbGene.v2.txt ] && [ -f $work/db/hg38_oncokbGene.v1.txt ]"
+# an interrupted v1 -> v2 switch: three links on v2, hg38_oncokbGene.txt still on v1,
+# a stale temp link and a staging dir left behind. A re-run completes it.
+inst /w/v1.tar.gz /w/db "$(sha v1)" >/dev/null 2>&1 || true
+for l in hg38_oncokbGeneMrna.fa:hg38_oncokbGeneMrna.v2.fa hg38_oncokbGene.isoforms.tsv:hg38_oncokbGene.v2.isoforms.tsv hg38_oncokbGene.version:hg38_oncokbGene.v2.version; do
+    ln -sfn "${l#*:}" "$work/db/${l%%:*}"
+done
+ln -sfn hg38_oncokbGene.v2.txt "$work/db/.hg38_oncokbGene.txt.new"
+mkdir -p "$work/db/.oncokbGene-install.abc123/v2"
+check "re-run after an interrupted switch completes it" \
+    "inst /w/v2.tar.gz /w/db $(sha v2) && for l in hg38_oncokbGene.txt hg38_oncokbGeneMrna.fa hg38_oncokbGene.isoforms.tsv hg38_oncokbGene.version; do readlink $work/db/\$l | grep -q '\.v2\.' || exit 1; done"
+check "leftovers of the interrupted run are gone" "! ls -A $work/db | grep -q -e '^\.oncokbGene-install' -e '\.new\$'"
 check "remove takes the links only" "inst --remove /w/db && [ ! -e $work/db/hg38_oncokbGene.txt ] && [ -f $work/db/hg38_oncokbGene.v2.txt ]"
 cp "$fix/hg38_oncokbGene.txt" "$work/db/hg38_oncokbGene.txt"
 check "a real hg38_oncokbGene.txt is not replaced" "! inst /w/v1.tar.gz /w/db $(sha v1) && [ ! -L $work/db/hg38_oncokbGene.txt ]"
