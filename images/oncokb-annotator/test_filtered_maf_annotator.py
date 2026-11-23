@@ -769,6 +769,15 @@ class RefhubCacheTest(unittest.TestCase):
         for call in refhub.calls[1:]:
             self.assertNotIn("proteinFallback", call["queries"][0])
 
+    def test_another_400_naming_the_fallback_keeps_it(self):
+        # A 400 that isn't 0.9.0's unknown-field refusal is a refhub failure.
+        cache, refhub = self.cache(lambda q: (400, {"error": "query 0: proteinFallback.transcript: invalid"}))
+        cache.path = "genomic_first"
+        cache.fallbacks = {"1,5,5,A,G": {"transcript": "ENST00000646891.2", "alteration": "V600E"}}
+        self.assertIsNone(cache.post(ONCOKB_POST, self.queries("5")))
+        self.assertEqual(len(refhub.calls), 1)
+        self.assertTrue(cache.fallbacks)
+
     def test_refhub_refusing_the_fallback_is_asked_without_it(self):
         replies = iter([(400, {"error": "query 0: unknown field `proteinFallback`"}),
                         (200, [{"status": "annotation", "annotation": {}, "source": "hit"}])])

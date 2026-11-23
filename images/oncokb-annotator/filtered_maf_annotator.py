@@ -192,12 +192,16 @@ REFHUB_MAX_FAILURES = 3
 # 0.8 refuses genomic_first, and the cache then asks by genomic change.
 DEFAULT_REFHUB_PATH = "genomic_first"
 
+# refhub 0.9.0's answer to a query carrying proteinFallback (HTTP 400, serde's
+# "unknown field `proteinFallback`"). Only that clears the fallbacks.
+REFHUB_090_FALLBACK_REFUSAL = "unknown field"
+
 # refhub 0.8's answer to ?path=genomic_first (HTTP 400). Any other 400 is
 # handled as a refhub failure, and genomic first stays on.
 REFHUB_08_PATH_REFUSAL = "path is genomic or protein"
 
-# The ANNOVAR step's oncokbGene facts (maftools-rs annovar-to-maf, 23 Nov
-# 2026): the protein change on OncoKB's own isoform, for refhub's strict
+# The ANNOVAR step's oncokbGene facts (maftools-rs annovar-to-maf 0.2+):
+# the protein change on OncoKB's own isoform, for refhub's strict
 # fallback when OncoKB fails a row by genomic change. Absent or NA: none.
 ONCOKB_GENE_COLUMNS = ("oncokb_isoform", "oncokb_isoform_aa", "oncokb_isoform_ref_ok",
                        "oncokb_isoform_exon_edge", "oncokb_gene_db")
@@ -334,7 +338,8 @@ class RefhubCache:
                 headers={"Authorization": f"Bearer {self.token}"})
         except requests.exceptions.RequestException as error:
             return self._give_up(f"unreachable ({type(error).__name__})")
-        if reply.status_code == 400 and offered and "proteinFallback" in reply.text:
+        if (reply.status_code == 400 and offered
+                and REFHUB_090_FALLBACK_REFUSAL in reply.text and "proteinFallback" in reply.text):
             # refhub 0.9.0 doesn't take the oncokbGene fallback: ask without it.
             self.log("refhub cache does not take proteinFallback; asking genomic first without it")
             self.fallbacks = {}

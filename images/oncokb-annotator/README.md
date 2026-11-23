@@ -92,7 +92,7 @@ twice on each of them and stops sending OncoKB the same queries again.
   row refhub reports `failed` or `unavailable` (`refhub:not_answered`) is
   tried again after 60 s, with the other such rows, and is then handled as
   above (filled, or the step fails).
-- From `0.3.12`, a MAF row with the ANNOVAR step's oncokbGene facts
+- From `0.3.14`, a MAF row with the ANNOVAR step's oncokbGene facts
   (`oncokb_isoform`, `oncokb_isoform_aa`, `oncokb_isoform_ref_ok`,
   `oncokb_isoform_exon_edge`, `oncokb_gene_db`; maftools-rs annovar-to-maf)
   sends, with its genomic query, `proteinFallback: {transcript, alteration,
