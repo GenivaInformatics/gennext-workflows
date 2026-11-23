@@ -520,10 +520,17 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
                         left = part
                     else:
                         left = one_by_one(part, unknown(still))
+                        if last:
+                            # Sent alone only now, straight after the
+                            # chunk's 500: they get one more pause.
+                            solo_late.update(left)
                 still += left
             return still
 
         failed = []
+        # Rows first sent alone on the last pass (their chunk failed): as
+        # 0.3.7 did for every row, they are tried alone once more after a pause.
+        solo_late = set()
         starts = range(0, len(lines), chunk_rows)
         for number, start in enumerate(starts, 1):
             indices = list(range(start, min(start + chunk_rows, len(lines))))
@@ -549,6 +556,13 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
             print(f"OncoKB: {len(retry)} rows failed; trying them again alone in {wait} s", flush=True)
             sleep(wait)
             failed = [i for i in failed if i in known_bad] + again(retry, number == len(retry_waits))
+        late = [i for i in failed if i in solo_late and i not in known_bad]
+        if late and retry_waits:
+            wait = retry_waits[-1]
+            print(f"OncoKB: {len(late)} rows failed alone right after their chunk; "
+                  f"trying them alone again in {wait} s", flush=True)
+            sleep(wait)
+            failed = [i for i in failed if i not in late] + one_by_one(late)
 
         if unknown(failed) > limit:
             raise OncoKBServerError(

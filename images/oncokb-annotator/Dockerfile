@@ -47,6 +47,9 @@
 #                          the last pass; refhub reporting OncoKB unavailable
 #                          for every row sends them to OncoKB directly again;
 #                          only refhub 0.8's refusal turns genomic first off
+#   0.3.13-upstream-v4.1.0 as 0.3.11; rows first sent alone on the last pass
+#                          (their chunk failed) are tried alone once more after
+#                          a pause, as 0.3.7 retried every row
 FROM python:3.12.12-alpine3.22@sha256:848ba4413eb897e225159b8fc1b02094576cbae4aa73fc13142608ae2c8c0e32
 
 ARG ONCOKB_ANNOTATOR_VERSION=v4.1.0

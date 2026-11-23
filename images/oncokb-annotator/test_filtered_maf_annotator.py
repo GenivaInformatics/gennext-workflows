@@ -869,6 +869,8 @@ class RefhubCacheTest(unittest.TestCase):
         return post
 
     def run_with_direct(self, rows, reply, direct):
+        # Route first, so the patched _direct_post below is the one used.
+        route_through_refhub()
         session = FakeRefhub(reply)
         waits = []
         with tempfile.TemporaryDirectory() as temp:
@@ -898,6 +900,30 @@ class RefhubCacheTest(unittest.TestCase):
         self.assertEqual([len(c["queries"]) for c in calls], [3, 2])
         self.assertEqual((direct, waits), (1, []))
         self.assertIn("asking OncoKB directly", out)
+
+    def test_a_row_failing_alone_right_after_its_chunk_gets_one_more_pause(self):
+        # refhub fails the first chunk's rows (502) for the whole run; OncoKB
+        # directly fails any request with row 3 and another row (homopolymer
+        # 500), and row 3 alone once more just after (a transient), then
+        # answers it. 0.3.7 passed this: one by one, then alone after 60 s.
+        def reply(queries):
+            if {q["genomicLocation"].split(",")[1] for q in queries} & {"1", "2", "3"}:
+                return 502, "Bad Gateway"
+            return refhub_answers()(queries)
+        solo = {"n": 0}
+
+        def fail(locations):
+            if "1,3,3,A,G" not in locations:
+                return False
+            if len(locations) > 1:
+                return True
+            solo["n"] += 1
+            return solo["n"] == 1
+        by_position, calls, direct_calls, waits, out = self.run_with_direct(
+            ROWS, reply, self.direct_oncokb(fail))
+        self.assertTrue(all(r["ANNOTATED"] == "True" for r in by_position.values()), by_position)
+        self.assertEqual(waits, [60, 60])
+        self.assertIn("trying them alone again in 60 s", out)
 
     def test_held_rows_go_one_by_one_on_the_last_pass(self):
         # The review's probe: 5 rows, chunks of 3; refhub answers 502 for the

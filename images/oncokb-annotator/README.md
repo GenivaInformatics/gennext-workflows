@@ -1,6 +1,6 @@
 # OncoKB annotator image
 
-`bergun/oncokb-annotator:0.3.11-upstream-v4.1.0` is upstream
+`bergun/oncokb-annotator:0.3.13-upstream-v4.1.0` is upstream
 [oncokb-annotator](https://github.com/oncokb/oncokb-annotator) at tag `v4.1.0`
 (commit `77521cd`), unmodified, plus the three wrapper scripts in this
 directory. The previous image, `0.2.0-upstream-v3.4.2`, is upstream `v3.4.2`
@@ -93,8 +93,8 @@ twice on each of them and stops sending OncoKB the same queries again.
   tried again after 60 s, with the other such rows, and is then handled as
   above (filled, or the step fails).
 - From `0.3.9`, somatic queries ask refhub genomic first
-  (`?path=genomic_first`, refhub 0.9; Berk, 23 Nov 2026: answers must be
-  OncoKB's own). refhub asks OncoKB by genomic change and passes on its answer
+  (`?path=genomic_first`, refhub 0.9; answers must be OncoKB's own).
+  refhub asks OncoKB by genomic change and passes on its answer
   as it is; only rows OncoKB fails on that way (known bad, or failed) are
   answered by protein change. The step log counts those
   (`N answered by protein change`); nothing in the output says so, and the
@@ -105,12 +105,13 @@ twice on each of them and stops sending OncoKB the same queries again.
   `REFHUB_ONCOKB_PATH=genomic` for byGenomicChange): refhub maps the genomic
   change to a protein change on OncoKB's canonical transcript and asks
   OncoKB's byProteinChange, so Genome Nexus, where the queries OncoKB fails on
-  hang, is out of the path. refhub before 0.8 ignores it. If refhub reports
-  OncoKB unavailable for every row of a chunk, or refhub fails and the direct
-  fallback fails too, the rows are tried again together through refhub after
-  60 s instead of one by one (a 500-row chunk takes about 15 min one by one).
-  On the last pass they go one by one, so one failing row doesn't take its
-  chunk with it (0.3.11).
+  hang, is out of the path. refhub before 0.8 ignores it. If refhub fails and
+  the direct fallback fails too, the rows are tried again together through
+  refhub after 60 s instead of one by one (a 500-row chunk takes about 15 min
+  one by one). On the last pass they go one by one, so one failing row
+  doesn't take its chunk with it, and rows that still fail there are tried
+  alone once more after another 60 s (0.3.13). Rows refhub reports
+  `unavailable` for a whole request go to OncoKB directly (0.3.11).
 - The cache never fails a step. refhub unreachable, slow (30 min), answering
   anything but 200, or reporting OncoKB `unavailable` for every query sends
   that request to OncoKB directly, 100 queries a request, with a warning;
