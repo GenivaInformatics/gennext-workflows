@@ -18,9 +18,29 @@ contig coordinates. Nothing is realigned, so what is shown is exactly what the c
   * everything else in the segments                                      -> XF:Z:other
 
 Other tags: XB:i distance of the nearest block end to the junction, YC:Z RGB colour by class
-(igv.js colorBy tag), XK:Z sort key (evidence classes first). QNAME, duplicate flag, MAPQ, RX,
+(igv.js colorBy tag), XK:Z sort key of the read's own class (evidence classes first), XG:Z the same
+key for the whole fragment, identical on both mates: the best class among its mates, the class the
+events JSON counts it under (group by XG; with paired view, a per-mate key would split one junction
+fragment into "junction / other" groups). QNAME, duplicate flag, MAPQ, RX,
 MI and NH are copied from the source alignment. Counts in the events JSON are recomputed from the
 projected records, so the number reported equals the number of fragments drawn.
+junction_start_sites counts the distinct contig start positions of the non-duplicate junction
+fragments (one per fragment: the leftmost aligned base of its junction-crossing mates), a measure
+of independent molecules.
+
+XC:Z names the callers that cite the fragment (Arriba's read_identifiers, STAR-Fusion's JunctionReads and
+SpanningFrags): "arriba", "starfusion" or "arriba,starfusion"; no tag when none does. Cited fragments are
+always drawn (copies too, past --max-context). events.json's callers_bam gives, per caller, the cited
+fragments drawn by class (non-duplicate and duplicate), split_5p/split_3p (non-duplicate junction
+fragments by the partner of the split read's primary alignment, Arriba's "anchor"), and cited /
+cited_missing (names the caller cites that aren't among the event's fragments).
+XJ:Z ("5p" or "3p") on a junction-class record is the partner of its primary alignment; a fragment's
+side is that of its first junction mate (read 1, else read 2).
+
+Calls are merged by junction (+-10 bp): each STAR-Fusion call joins the nearest Arriba call, and
+STAR-Fusion rows that report one junction twice are one event. Arriba rows may carry an
+`arriba_status` column (`fusion-events rescue` writes `rescued` for calls it brought back from
+Arriba's discarded list); it is kept in the event's `arriba` record.
 
 Outputs (one set per sample, one contig per event):
   <prefix>.fa/.fa.fai    contigs
@@ -47,7 +67,7 @@ import sys
 
 import pysam
 
-__version__ = "0.2.0"
+__version__ = "0.4.0"
 
 REF_CONSUME = {0, 2, 3, 7, 8}
 QRY_CONSUME = {0, 1, 4, 7, 8}
@@ -140,36 +160,60 @@ def _cp(s):
     return p[0], int(p[1])
 
 
+UMI_SUFFIX = re.compile(r":UMI_[ACGTN]+(_[ACGTN]+)?$")
+CALLERS = ("arriba", "starfusion")
+
+
+def starfusion_qname(name):
+    """STAR-Fusion's JunctionReads/SpanningFrags entry -> BAM QNAME. Entries look like
+    '&<read>/1@<qname>:UMI_<r1>_<r2>' (the part after '@' is the read; fastp's UMI suffix is not in
+    the BAM) or, without UMIs, a plain name, possibly with '&' and '/1' or '/2'."""
+    n = name.strip()
+    if "@" in n:
+        n = n.split("@", 1)[1]
+    n = UMI_SUFFIX.sub("", n.lstrip("&"))
+    return re.sub(r"/[12]$", "", n)
+
+
+def cited_names(value, parse=None):
+    return {parse(x) if parse else x.strip() for x in (value or "").split(",") if x.strip() and x.strip() != "."}
+
+
+def arriba_event(r):
+    """One Arriba row -> event dict, or None when it has no usable breakpoints or directions.
+    keep = 'le' when the partner's retained sequence lies at coordinates <= breakpoint.
+    Arriba direction 'downstream' means the other partner is joined above the breakpoint.
+    `status` is 'kept', or the row's `arriba_status` column (fusion-events rescue writes 'rescued')."""
+    try:
+        (c1, p1), (c2, p2) = _cp(r["breakpoint1"]), _cp(r["breakpoint2"])
+    except (KeyError, ValueError, IndexError):
+        return None
+    d1, d2 = r.get("direction1", ""), r.get("direction2", "")
+    if d1 not in ("upstream", "downstream") or d2 not in ("upstream", "downstream"):
+        return None
+    s1 = r.get("strand1(gene/fusion)", "./.").split("/")[-1]
+    s2 = r.get("strand2(gene/fusion)", "./.").split("/")[-1]
+    n1, n2 = gene_names(r["gene1"]), gene_names(r["gene2"])
+    return dict(gene1=n1[0], gene2=n2[0], names1=n1, names2=n2,
+                cited_arriba=cited_names(r.get("read_identifiers")),
+                intergenic1="(" in r["gene1"], intergenic2="(" in r["gene2"],
+                chr1=c1, pos1=p1, keep1="le" if d1 == "downstream" else "ge",
+                chr2=c2, pos2=p2, keep2="le" if d2 == "downstream" else "ge",
+                oriented=s1 in "+-" and s2 in "+-" and s1 != "." and s2 != ".",
+                arriba=dict(confidence=r.get("confidence"), type=r.get("type"),
+                            split_reads1=int(r.get("split_reads1") or 0),
+                            split_reads2=int(r.get("split_reads2") or 0),
+                            discordant_mates=int(r.get("discordant_mates") or 0),
+                            reading_frame=r.get("reading_frame"),
+                            site1=r.get("site1"), site2=r.get("site2"),
+                            tags=r.get("tags"),
+                            status=r.get("arriba_status") or "kept", filters=r.get("filters"),
+                            gene1=r["gene1"], gene2=r["gene2"],
+                            breakpoint1=r["breakpoint1"], breakpoint2=r["breakpoint2"]))
+
+
 def load_arriba(path):
-    """keep = 'le' when the partner's retained sequence lies at coordinates <= breakpoint.
-    Arriba direction 'downstream' means the other partner is joined above the breakpoint."""
-    out = []
-    for r in _tsv(path):
-        try:
-            (c1, p1), (c2, p2) = _cp(r["breakpoint1"]), _cp(r["breakpoint2"])
-        except (KeyError, ValueError, IndexError):
-            continue
-        d1, d2 = r.get("direction1", ""), r.get("direction2", "")
-        if d1 not in ("upstream", "downstream") or d2 not in ("upstream", "downstream"):
-            continue
-        s1 = r.get("strand1(gene/fusion)", "./.").split("/")[-1]
-        s2 = r.get("strand2(gene/fusion)", "./.").split("/")[-1]
-        n1, n2 = gene_names(r["gene1"]), gene_names(r["gene2"])
-        out.append(dict(gene1=n1[0], gene2=n2[0], names1=n1, names2=n2,
-                        intergenic1="(" in r["gene1"], intergenic2="(" in r["gene2"],
-                        chr1=c1, pos1=p1, keep1="le" if d1 == "downstream" else "ge",
-                        chr2=c2, pos2=p2, keep2="le" if d2 == "downstream" else "ge",
-                        oriented=s1 in "+-" and s2 in "+-" and s1 != "." and s2 != ".",
-                        arriba=dict(confidence=r.get("confidence"), type=r.get("type"),
-                                    split_reads1=int(r.get("split_reads1") or 0),
-                                    split_reads2=int(r.get("split_reads2") or 0),
-                                    discordant_mates=int(r.get("discordant_mates") or 0),
-                                    reading_frame=r.get("reading_frame"),
-                                    site1=r.get("site1"), site2=r.get("site2"),
-                                    tags=r.get("tags"),
-                                    gene1=r["gene1"], gene2=r["gene2"],
-                                    breakpoint1=r["breakpoint1"], breakpoint2=r["breakpoint2"])))
-    return out
+    return [e for e in (arriba_event(r) for r in _tsv(path)) if e]
 
 
 def load_starfusion(path):
@@ -183,6 +227,8 @@ def load_starfusion(path):
             continue
         g1, g2 = clean_gene(r["LeftGene"]), clean_gene(r["RightGene"])
         out.append(dict(gene1=g1, gene2=g2, names1=[g1], names2=[g2],
+                        cited_starfusion=(cited_names(r.get("JunctionReads"), starfusion_qname)
+                                          | cited_names(r.get("SpanningFrags"), starfusion_qname)),
                         intergenic1=False, intergenic2=False,
                         chr1=c1, pos1=int(p1), keep1="le" if s1 == "+" else "ge",
                         chr2=c2, pos2=int(p2), keep2="ge" if s2 == "+" else "le",
@@ -214,32 +260,72 @@ def _flip(e):
     return f
 
 
+def _sf_support(s):
+    return s["starfusion"]["junction_reads"] + s["starfusion"]["spanning_frags"]
+
+
+def collapse_starfusion(rows):
+    """STAR-Fusion can report one junction in several rows (overlapping or alternative gene
+    annotations). They share their reads, so they are one event: the row with the most support is
+    kept, and the other rows' gene names become aliases. Row order is kept."""
+    out, order = {}, []
+    for s in rows:
+        k = (s["chr1"], s["pos1"], s["keep1"], s["chr2"], s["pos2"], s["keep2"])
+        if k not in out:
+            out[k] = s
+            order.append(k)
+            continue
+        o = out[k]
+        keep, other = (s, o) if _sf_support(s) > _sf_support(o) else (o, s)
+        keep = dict(keep)
+        for i in ("1", "2"):
+            keep["names" + i] = keep["names" + i] + [n for n in other["names" + i] if n not in keep["names" + i]]
+        keep["cited_starfusion"] = (keep.get("cited_starfusion") or set()) | (other.get("cited_starfusion") or set())
+        out[k] = keep
+    return [out[k] for k in order]
+
+
+def _dist(a, b):
+    return abs(a["pos1"] - b["pos1"]) + abs(a["pos2"] - b["pos2"])
+
+
 def merge_events(arriba, starfusion, tol=10):
+    """Arriba and STAR-Fusion calls of one junction (+-tol on both sides) become one event.
+    Each STAR-Fusion call joins the *nearest* Arriba call: candidate pairs are taken closest first,
+    and each call is used at most once. An unoriented Arriba call also matches in the flipped
+    orientation, and then adopts STAR-Fusion's."""
     events = [dict(e, callers=["arriba"]) for e in arriba]
-    for s in starfusion:
-        hit = None
-        for e in events:
-            if "starfusion" in e:
-                continue
+    sfs = collapse_starfusion(starfusion)
+    cands = []
+    for si, s in enumerate(sfs):
+        for ei, e in enumerate(events):
             if _same(e, s, tol):
-                hit = e
-                break
-            if not e["oriented"] and _same(_flip(e), s, tol):
-                # STAR-Fusion knows the orientation: adopt it
-                e.update({k: v for k, v in _flip(e).items() if k not in ("arriba", "callers")})
-                e["oriented"] = True
-                hit = e
-                break
-        if hit:
-            hit["starfusion"] = s["starfusion"]
-            hit["callers"].append("starfusion")
-            for i in ("1", "2"):
-                sg = s["gene" + i]
-                hit["names" + i] = [sg] + [n for n in hit["names" + i] if n != sg]
-                if hit["intergenic" + i]:
-                    # Arriba only knows the neighbouring genes; STAR-Fusion's annotated gene is the better label
-                    hit["gene" + i] = sg
-        else:
+                cands.append((_dist(e, s), si, ei, False))
+            elif not e["oriented"] and _same(_flip(e), s, tol):
+                cands.append((_dist(_flip(e), s), si, ei, True))
+    cands.sort(key=lambda c: (c[0], c[1], c[2]))
+    used_s, used_e = set(), set()
+    for _d, si, ei, flipped in cands:
+        if si in used_s or ei in used_e:
+            continue
+        used_s.add(si)
+        used_e.add(ei)
+        e, s = events[ei], sfs[si]
+        if flipped:
+            # STAR-Fusion knows the orientation: adopt it
+            e.update({k: v for k, v in _flip(e).items() if k not in ("arriba", "callers")})
+            e["oriented"] = True
+        e["starfusion"] = s["starfusion"]
+        e["cited_starfusion"] = s.get("cited_starfusion") or set()
+        e["callers"].append("starfusion")
+        for i in ("1", "2"):
+            for sg in reversed(s["names" + i]):
+                e["names" + i] = [sg] + [n for n in e["names" + i] if n != sg]
+            if e["intergenic" + i]:
+                # Arriba only knows the neighbouring genes; STAR-Fusion's annotated gene is the better label
+                e["gene" + i] = s["gene" + i]
+    for si, s in enumerate(sfs):
+        if si not in used_s:
             events.append(dict(s, callers=["starfusion"]))
     return events
 
@@ -402,7 +488,9 @@ def classify_mate(rl, segs, junction, min_anchor):
                     anchor_a = junction - A["cstart"]
                     anchor_b = bstart + sum(l for o, l in coreB if o in REF_CONSUME) - junction
                     tag = "junction" if (anchor_a >= min_anchor and anchor_b >= min_anchor and gap <= 5) else "junction_weak"
-                    chosen = dict(cstart=A["cstart"], cig=cig, rev=A["rev"], src=A["rec"], dist=gap,
+                    # anchor: the partner (0 = 5', 1 = 3') of the primary, non-supplementary record
+                    anchor = 0 if not A["rec"].is_supplementary else (1 if not B["rec"].is_supplementary else None)
+                    chosen = dict(cstart=A["cstart"], cig=cig, rev=A["rev"], src=A["rec"], dist=gap, anchor=anchor,
                                   mapq=min(A["rec"].mapping_quality, B["rec"].mapping_quality))
     if chosen is None:
         prim = [p for p in proj if not p["rec"].is_supplementary] or proj
@@ -472,14 +560,46 @@ def project_event(bam, ev, segs, tid, opts, header):
     def frag_class(final):
         return min((v[4] for v in final.values()), key=lambda t: SORT_ORDER[t])
 
-    counts = dict(nondup=collections.Counter(), dup=collections.Counter())
+    def anchor_side(final):
+        """Side of the fragment's split read: its first junction mate's primary alignment."""
+        for is_r1 in (True, False):
+            v = final.get(is_r1)
+            if v and v[4] == "junction":
+                return v[0].get("anchor")
+        return None
+
+    cited = {c: ev.get("cited_" + c) or set() for c in CALLERS}
+    counts = dict(nondup=collections.Counter(), dup=collections.Counter(), start_sites=set(),
+                  callers={c: dict(nondup=collections.Counter(), dup=collections.Counter(), split_5p=0, split_3p=0,
+                                   found=set()) for c in CALLERS})
     keep = set()
     shown = collections.Counter()
+    callers_of = {}
     for qn in sorted(frags, key=lambda q: hashlib.md5(q.encode()).hexdigest()):
         final = frags[qn]
         cls = frag_class(final)
         dup = any(v[0]["src"].is_duplicate for v in final.values())
         counts["dup" if dup else "nondup"][cls] += 1
+        by = [c for c in CALLERS if qn in cited[c]]
+        if by:
+            # A fragment a caller cites is always drawn (copies too, past max_context), so every
+            # per-caller count is countable in the BAM by XC, XG and the duplicate flag.
+            callers_of[qn] = by
+            keep.add(qn)
+            side = anchor_side(final) if cls == "junction" and not dup else None
+            for c in by:
+                cc = counts["callers"][c]
+                cc["dup" if dup else "nondup"][cls] += 1
+                cc["found"].add(qn)
+                if side == 0:
+                    cc["split_5p"] += 1
+                elif side == 1:
+                    cc["split_3p"] += 1
+        if cls == "junction" and not dup:
+            # distinct start positions of the junction fragments (MSK-style "start sites"): one start
+            # per fragment, the leftmost of its junction-crossing mates, so a fragment whose two mates
+            # both cross the junction counts once
+            counts["start_sites"].add(min(v[0]["cstart"] for v in final.values() if v[4] == "junction"))
         if cls in EVIDENCE:
             if not dup or opts.keep_dups in ("evidence", "all"):
                 keep.add(qn)
@@ -491,6 +611,7 @@ def project_event(bam, ev, segs, tid, opts, header):
     out = []
     for qn in keep:
         final = frags[qn]
+        group = frag_class(final)  # one class for the whole fragment, on both mates (XG)
         recs = {}
         for is_r1, (ch, cig, s_out, q_out, tag) in final.items():
             src = ch["src"]
@@ -513,6 +634,11 @@ def project_event(bam, ev, segs, tid, opts, header):
             r.set_tag("XB", int(ch["dist"]))
             r.set_tag("YC", COLOURS[tag])
             r.set_tag("XK", SORT_ORDER[tag] + tag)
+            r.set_tag("XG", SORT_ORDER[group] + group)
+            if qn in callers_of:
+                r.set_tag("XC", ",".join(callers_of[qn]))
+            if tag == "junction" and ch.get("anchor") is not None:
+                r.set_tag("XJ", "5p" if ch["anchor"] == 0 else "3p")
             for t in ("RX", "MI", "NH"):
                 if src.has_tag(t):
                     r.set_tag(t, src.get_tag(t))
@@ -532,6 +658,9 @@ def project_event(bam, ev, segs, tid, opts, header):
                 lo, hi = min(r.reference_start, m.reference_start), max(r.reference_end, m.reference_end)
                 r.template_length = (hi - lo) * (1 if r.reference_start <= m.reference_start else -1)
         out.extend(recs.values())
+    for c in CALLERS:
+        cc = counts["callers"][c]
+        cc["cited"], cc["cited_missing"] = len(cited[c]), len(cited[c] - cc.pop("found"))
     return out, counts, skipped
 
 
@@ -744,6 +873,11 @@ def main(argv=None):
                 callers=ev["callers"], arriba=ev.get("arriba"), starfusion=ev.get("starfusion"),
                 segments=[s.as_dict() for s in c["segs"]],
                 fragments_nondup=dict(nd), fragments_dup=dict(counts["dup"]),
+                callers_bam={c: dict(fragments_nondup=dict(v["nondup"]), fragments_dup=dict(v["dup"]),
+                                     split_5p=v["split_5p"], split_3p=v["split_3p"], cited=v["cited"],
+                                     cited_missing=v["cited_missing"])
+                             for c, v in counts["callers"].items()},
+                junction_start_sites=len(counts["start_sites"]),
                 fusion_fraction_5p=round(j / (j + nd["wt5"]), 3) if j + nd["wt5"] else None,
                 fusion_fraction_3p=round(j / (j + nd["wt3"]), 3) if j + nd["wt3"] else None,
                 records_drawn=len(recs), skipped_length_mismatch=skipped,

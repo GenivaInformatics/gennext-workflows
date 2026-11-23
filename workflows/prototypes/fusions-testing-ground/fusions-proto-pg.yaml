@@ -1,0 +1,715 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: fusions-proto-pg
+  namespace: argo
+  labels:
+    gennext.bio/purpose: fusion-testing-ground
+spec:
+  # PROTOTYPE (fusion testing ground, #29/#30). Nothing calls this template, and it has no
+  # orchestrator label: it is submitted by hand, on an idle node, for a test run in the DEV database.
+  # See README.md next to this file and docs/fusions/event-contract.md.
+  #
+  # From one past RNA sample's kept outputs (read-only), it builds the new fusion event data for one
+  # or two DEV samples of a DEV run, one per Arriba arm (Q5):
+  #   a  max_sensitivity   today's Arriba settings
+  #   b  filters_restored  today's settings with Arriba's blacklist, low_entropy and multimappers back on
+  # Per dev sample it first copies the source's fusion outputs, fusions DuckDB and RNA BAM (renamed to
+  # the dev sample name), so the legacy FusionInspector view works there, then runs
+  # Arriba -> fusion-report -> filter-artifact-fusions -> fusion-events rescue -> bpview ->
+  # fusion-events build -> load fusion_events + fusion_events_meta into the copied DuckDB.
+  # STAR-Fusion and OncoKB are reused from the source (STAR's chimeric junctions are gone).
+  # Sample and run state go to the DEV backend only (gennext-backend.gennext-dev), never production.
+  entrypoint: main
+  onExit: exit-handler
+  serviceAccountName: gennext-workflows
+  nodeSelector:
+    kubernetes.io/hostname: "{{workflow.parameters.node}}"
+  parallelism: 4
+  activeDeadlineSeconds: 21600
+  podGC:
+    strategy: OnPodSuccess
+  workflowMetadata:
+    labels:
+      gennext.bio/purpose: fusion-testing-ground
+      gennext.bio/node: "{{workflow.parameters.node}}"
+  arguments:
+    parameters:
+      - name: node
+      # The source sample's output directory (ends in /), and its sample name (file prefix).
+      - name: source-sample-dir
+      - name: source-sample-id
+      # The DEV run and samples, as created in the dev backend (POST /api/v0/runs, never start).
+      - name: dev-user-id
+      - name: dev-run-id
+      - name: dev-sample-id-a
+      - name: dev-sample-uuid-a
+      # "." skips arm b.
+      - name: dev-sample-id-b
+        value: "."
+      - name: dev-sample-uuid-b
+        value: "."
+      - name: output-base
+        value: /runspace/gennext/data/output/
+      - name: ref-genome-fa
+        value: /runspace/gennext/data/ref/hg38/genome/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set/GCA_000001405.15_GRCh38_full_minus_alt_plus_hs38d1_plus_HLA_analysis_set.fa
+      - name: gene-annotation-gtf
+        value: /runspace/gennext/data/ref/hg38/gene_annots/gencode.v49.basic.annotation.MANE_Select.gtf.gz
+      - name: fusion-report-db-dir
+        value: /runspace/gennext/data/ref/hg38/other/fusion_report_db/
+      - name: thread-count
+        value: "8"
+      # true: also set the DEV run's state (completed / error) at the end.
+      - name: report-run-state
+        value: "true"
+
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: check-inputs
+            template: check-inputs
+          - name: state-running
+            depends: check-inputs
+            template: dev-sample-states
+            arguments:
+              parameters:
+                - name: state
+                  value: running
+          # Only after the dev backend has accepted both samples as part of the dev run (a mistyped
+          # run or sample ID fails there, with a 404, before anything is written).
+          - name: copy-legacy
+            depends: state-running
+            template: copy-legacy
+          - name: arm-a
+            depends: copy-legacy
+            template: arm
+            arguments:
+              parameters:
+                - {name: dev-sample-id, value: "{{workflow.parameters.dev-sample-id-a}}"}
+                - {name: dev-sample-uuid, value: "{{workflow.parameters.dev-sample-uuid-a}}"}
+                - {name: arriba-settings, value: max_sensitivity}
+          - name: state-error-before-arms
+            depends: "copy-legacy.Failed || copy-legacy.Errored"
+            template: dev-sample-states
+            arguments:
+              parameters:
+                - name: state
+                  value: error
+          - name: arm-b
+            depends: copy-legacy
+            when: "'{{workflow.parameters.dev-sample-id-b}}' != '.'"
+            template: arm
+            arguments:
+              parameters:
+                - {name: dev-sample-id, value: "{{workflow.parameters.dev-sample-id-b}}"}
+                - {name: dev-sample-uuid, value: "{{workflow.parameters.dev-sample-uuid-b}}"}
+                - {name: arriba-settings, value: filters_restored}
+
+    # One Arriba arm for one dev sample.
+    - name: arm
+      inputs:
+        parameters:
+          - name: dev-sample-id
+          - name: dev-sample-uuid
+          - name: arriba-settings
+      dag:
+        tasks:
+          - name: arriba
+            template: arriba-proto
+            arguments:
+              parameters:
+                - {name: dev-sample-id, value: "{{inputs.parameters.dev-sample-id}}"}
+                - {name: dev-sample-uuid, value: "{{inputs.parameters.dev-sample-uuid}}"}
+                - {name: arriba-settings, value: "{{inputs.parameters.arriba-settings}}"}
+          - name: fusion-report
+            depends: arriba
+            templateRef:
+              name: fusion-report-template
+              template: fusion-report
+            arguments:
+              parameters:
+                - {name: sample-id, value: "{{inputs.parameters.dev-sample-id}}"}
+                - {name: arriba-fusions-tsv, value: "{{tasks.arriba.outputs.parameters.fusions-tsv}}"}
+                - name: starfusion-predictions-tsv
+                  value: "{{workflow.parameters.output-base}}{{workflow.parameters.dev-user-id}}/{{workflow.parameters.dev-run-id}}/{{inputs.parameters.dev-sample-uuid}}/results/fusions/star-fusion/{{inputs.parameters.dev-sample-id}}_starfusion.tsv"
+                - {name: fusion-report-db-dir, value: "{{workflow.parameters.fusion-report-db-dir}}"}
+                - name: output-dir
+                  value: "{{workflow.parameters.output-base}}{{workflow.parameters.dev-user-id}}/{{workflow.parameters.dev-run-id}}/{{inputs.parameters.dev-sample-uuid}}/results/fusions/proto/fusion-report/"
+                - name: metrics-dir
+                  value: "{{workflow.parameters.output-base}}{{workflow.parameters.dev-user-id}}/{{workflow.parameters.dev-run-id}}/{{inputs.parameters.dev-sample-uuid}}/results/fusions/proto/metrics/"
+          - name: filter-artifact-fusions
+            depends: fusion-report
+            templateRef:
+              name: filter-artifact-fusions-template
+              template: filter-artifact-fusions
+            arguments:
+              parameters:
+                - {name: sample-id, value: "{{inputs.parameters.dev-sample-id}}"}
+                - {name: input-fusions-json, value: "{{tasks.fusion-report.outputs.parameters.output-fusions-json}}"}
+                - {name: input-fusion-list-tsv, value: "{{tasks.fusion-report.outputs.parameters.output-fusion-list-tsv}}"}
+                - name: output-fusions-json
+                  value: "{{workflow.parameters.output-base}}{{workflow.parameters.dev-user-id}}/{{workflow.parameters.dev-run-id}}/{{inputs.parameters.dev-sample-uuid}}/results/fusions/proto/fusion-report/{{inputs.parameters.dev-sample-id}}_fusions.filtered.json"
+                - name: output-fusion-list-tsv
+                  value: "{{workflow.parameters.output-base}}{{workflow.parameters.dev-user-id}}/{{workflow.parameters.dev-run-id}}/{{inputs.parameters.dev-sample-uuid}}/results/fusions/proto/fusion-report/{{inputs.parameters.dev-sample-id}}_fusion_list.filtered.tsv"
+                - name: output-fi-fusion-list-tsv
+                  value: "{{workflow.parameters.output-base}}{{workflow.parameters.dev-user-id}}/{{workflow.parameters.dev-run-id}}/{{inputs.parameters.dev-sample-uuid}}/results/fusions/proto/fusion-report/{{inputs.parameters.dev-sample-id}}_fusion_list.fi.tsv"
+          - name: events
+            depends: filter-artifact-fusions
+            template: events-proto
+            arguments:
+              parameters:
+                - {name: dev-sample-id, value: "{{inputs.parameters.dev-sample-id}}"}
+                - {name: dev-sample-uuid, value: "{{inputs.parameters.dev-sample-uuid}}"}
+                - {name: arriba-settings, value: "{{inputs.parameters.arriba-settings}}"}
+          - name: load
+            depends: events
+            template: load-events
+            arguments:
+              parameters:
+                - {name: dev-sample-id, value: "{{inputs.parameters.dev-sample-id}}"}
+                - {name: dev-sample-uuid, value: "{{inputs.parameters.dev-sample-uuid}}"}
+          - name: state-completed
+            depends: load
+            template: dev-sample-state
+            arguments:
+              parameters:
+                - {name: sample-uuid, value: "{{inputs.parameters.dev-sample-uuid}}"}
+                - {name: state, value: completed}
+          # Only this arm's sample: the other arm may have finished.
+          - name: state-error
+            depends: >-
+              arriba.Failed || arriba.Errored || fusion-report.Failed || fusion-report.Errored ||
+              filter-artifact-fusions.Failed || filter-artifact-fusions.Errored ||
+              events.Failed || events.Errored || load.Failed || load.Errored
+            template: dev-sample-state
+            arguments:
+              parameters:
+                - {name: sample-uuid, value: "{{inputs.parameters.dev-sample-uuid}}"}
+                - {name: state, value: error}
+
+    # Refuses anything that could write outside a dev sample's own folder.
+    - name: check-inputs
+      script:
+        image: python@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89
+        command: [python]
+        resources:
+          requests: {cpu: 100m, memory: 64Mi}
+          limits: {memory: 256Mi}
+        env:
+          - {name: SOURCE_SAMPLE_DIR, value: "{{workflow.parameters.source-sample-dir}}"}
+          - {name: SOURCE_SAMPLE_ID, value: "{{workflow.parameters.source-sample-id}}"}
+          - {name: DEV_USER_ID, value: "{{workflow.parameters.dev-user-id}}"}
+          - {name: DEV_RUN_ID, value: "{{workflow.parameters.dev-run-id}}"}
+          - {name: DEV_SAMPLE_ID_A, value: "{{workflow.parameters.dev-sample-id-a}}"}
+          - {name: DEV_SAMPLE_UUID_A, value: "{{workflow.parameters.dev-sample-uuid-a}}"}
+          - {name: DEV_SAMPLE_ID_B, value: "{{workflow.parameters.dev-sample-id-b}}"}
+          - {name: DEV_SAMPLE_UUID_B, value: "{{workflow.parameters.dev-sample-uuid-b}}"}
+          - {name: OUTPUT_BASE, value: "{{workflow.parameters.output-base}}"}
+          - {name: NODE, value: "{{workflow.parameters.node}}"}
+        # Parameters arrive as environment variables, so a value can't change the script itself.
+        source: |
+          import os, re, sys
+          p = {k.lower().replace("_", "-"): v for k, v in os.environ.items()
+               if k.startswith(("SOURCE_", "DEV_", "OUTPUT_")) or k == "NODE"}
+          uuid = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+          name = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+          bad = []
+          if not re.match(r"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$", p["node"]):
+              bad.append(f"node is not a node name: {p['node']!r}")
+          for k in ("dev-user-id", "dev-run-id", "dev-sample-uuid-a"):
+              if not uuid.match(p[k]):
+                  bad.append(f"{k} is not a UUID: {p[k]!r}")
+          for k in ("source-sample-id", "dev-sample-id-a"):
+              if not name.match(p[k]):
+                  bad.append(f"{k} is not a plain sample name: {p[k]!r}")
+          if p["dev-sample-id-b"] != "." or p["dev-sample-uuid-b"] != ".":
+              if not name.match(p["dev-sample-id-b"]) or not uuid.match(p["dev-sample-uuid-b"]):
+                  bad.append("dev sample b needs both a plain name and a UUID (or '.' for both)")
+              if p["dev-sample-uuid-b"] == p["dev-sample-uuid-a"] or p["dev-sample-id-b"] == p["dev-sample-id-a"]:
+                  bad.append("dev samples a and b must differ")
+          src = p["source-sample-dir"]
+          if not (src.startswith(p["output-base"]) and src.endswith("/")) or ".." in src:
+              bad.append(f"source-sample-dir must be a folder under {p['output-base']} ending in /")
+          run_dir = f"{p['output-base']}{p['dev-user-id']}/{p['dev-run-id']}/"
+          if src.startswith(run_dir) or run_dir.startswith(src):
+              bad.append("the dev run folder and the source sample folder overlap")
+          if bad:
+              print("\n".join(bad))
+              sys.exit(1)
+          print("inputs ok; dev run folder:", run_dir)
+
+    # Legacy view for each dev sample: the source's fusion outputs, fusions DuckDB and RNA BAM, with
+    # the source sample name replaced by the dev sample name in file names. Source is read-only.
+    # Runs once: a marker file makes a retried or resubmitted copy a no-op, so a loaded DuckDB is
+    # never overwritten by a fresh copy.
+    - name: copy-legacy
+      volumes:
+        - name: source
+          hostPath: {path: "{{workflow.parameters.source-sample-dir}}", type: Directory}
+        - name: dev-run
+          hostPath:
+            path: "{{workflow.parameters.output-base}}{{workflow.parameters.dev-user-id}}/{{workflow.parameters.dev-run-id}}/"
+            type: DirectoryOrCreate
+      script:
+        image: bergun/gennext-bpview:0.5.0@sha256:338ce5ca83ffd0ac2e9d32fd00b6d494f36337b99c87eff00121f8d36aa29da1
+        command: [bash]
+        resources:
+          requests: {cpu: "1", memory: 256Mi}
+          limits: {memory: 1Gi}
+        volumeMounts:
+          - {name: source, mountPath: /mnt/source, readOnly: true}
+          - {name: dev-run, mountPath: /mnt/dev}
+        source: |
+          set -euo pipefail
+          SRC_ID="{{workflow.parameters.source-sample-id}}"
+          copy_one() {  # $1 dev sample name, $2 dev sample uuid, $3 BAM to hard-link from (or "")
+            local id="$1" dir="/mnt/dev/$2" link="$3" marker="/mnt/dev/$2/.proto-legacy-copied"
+            local want="source={{workflow.parameters.source-sample-dir}} id=${SRC_ID} dev=${id}"
+            if [ -e "${marker}" ]; then
+              # a retry or resubmit: only for the same source and dev sample
+              if [ "$(head -n 1 "${marker}")" != "${want}" ]; then
+                echo "ERROR: ${dir} was copied from another source: $(head -n 1 "${marker}")"; exit 1
+              fi
+              echo "${id}: legacy copy already done, skipped"; return
+            fi
+            # Never write into a folder that already has content but isn't ours (a real sample's).
+            if [ -d "${dir}" ] && [ -n "$(ls -A "${dir}")" ]; then
+              echo "ERROR: ${dir} exists, is not empty and has no prototype marker; refusing to write there"; exit 1
+            fi
+            mkdir -p "${dir}/bam" "${dir}/results/db" "${dir}/results/fusions"
+            for f in "/mnt/source/bam/${SRC_ID}_RNA.dedup.bam" "/mnt/source/bam/${SRC_ID}_RNA.dedup.bam.bai"; do
+              [ -s "$f" ] || { echo "ERROR: missing $f"; exit 1; }
+              dst="${dir}/bam/$(basename "$f" | sed "s/^${SRC_ID}_/${id}_/")"
+              if [ -n "${link}" ]; then
+                ln -f "${link}/$(basename "${dst}" | sed "s/^${id}_/${LINK_ID}_/")" "${dst}" 2>/dev/null || cp -p "$f" "${dst}"
+              else
+                cp -p "$f" "${dst}"
+              fi
+            done
+            for sub in arriba star-fusion fusion-report fusion-inspector oncokb; do
+              [ -d "/mnt/source/results/fusions/${sub}" ] || { echo "WARNING: no results/fusions/${sub} in the source"; continue; }
+              mkdir -p "${dir}/results/fusions/${sub}"
+              for f in "/mnt/source/results/fusions/${sub}"/*; do
+                [ -f "$f" ] || continue
+                cp -p "$f" "${dir}/results/fusions/${sub}/$(basename "$f" | sed "s/^${SRC_ID}_/${id}_/")"
+              done
+            done
+            db="/mnt/source/results/db/${SRC_ID}_fusions.duckdb"
+            [ -s "${db}" ] || { echo "ERROR: missing ${db}"; exit 1; }
+            cp -p "${db}" "${dir}/results/db/${id}_fusions.duckdb"
+            # a leftover write-ahead log belongs to the database file
+            [ -f "${db}.wal" ] && cp -p "${db}.wal" "${dir}/results/db/${id}_fusions.duckdb.wal"
+            [ -s "${dir}/results/fusions/star-fusion/${id}_starfusion.tsv" ] || { echo "ERROR: no STAR-Fusion output to reuse"; exit 1; }
+            [ -s "${dir}/results/fusions/oncokb/fusions_with_oncokb.json" ] || echo "WARNING: no fusions_with_oncokb.json: every event will be tier 3"
+            printf '%s\n%s\n' "${want}" "$(date -u +%FT%TZ)" > "${marker}"
+            echo "${id}: copied"; du -sh "${dir}"
+          }
+          LINK_ID="{{workflow.parameters.dev-sample-id-a}}"
+          copy_one "{{workflow.parameters.dev-sample-id-a}}" "{{workflow.parameters.dev-sample-uuid-a}}" ""
+          if [ "{{workflow.parameters.dev-sample-id-b}}" != "." ]; then
+            # arm b's BAM is a hard link to arm a's copy (same file system; read-only use)
+            copy_one "{{workflow.parameters.dev-sample-id-b}}" "{{workflow.parameters.dev-sample-uuid-b}}" \
+              "/mnt/dev/{{workflow.parameters.dev-sample-uuid-a}}/bam"
+          fi
+
+    # Arriba on the source's kept, fgbio-marked BAM. The live arriba template can't express the
+    # filters_restored arm, so the prototype carries its own step; arguments otherwise follow it.
+    - name: arriba-proto
+      inputs:
+        parameters:
+          - name: dev-sample-id
+          - name: dev-sample-uuid
+          - name: arriba-settings
+          - name: ref-genome-fa
+            value: "{{workflow.parameters.ref-genome-fa}}"
+      outputs:
+        parameters:
+          - name: fusions-tsv
+            value: "{{workflow.parameters.output-base}}{{workflow.parameters.dev-user-id}}/{{workflow.parameters.dev-run-id}}/{{inputs.parameters.dev-sample-uuid}}/results/fusions/proto/arriba/{{inputs.parameters.dev-sample-id}}_fusions.tsv"
+      volumes:
+        - name: source
+          hostPath: {path: "{{workflow.parameters.source-sample-dir}}", type: Directory}
+        - name: ref-genome
+          hostPath: {path: "{{=sprig.osDir(inputs.parameters['ref-genome-fa'])}}", type: Directory}
+        - name: gtf
+          hostPath: {path: "{{workflow.parameters.gene-annotation-gtf}}", type: File}
+        - name: out
+          hostPath:
+            path: "{{workflow.parameters.output-base}}{{workflow.parameters.dev-user-id}}/{{workflow.parameters.dev-run-id}}/{{inputs.parameters.dev-sample-uuid}}/results/fusions/proto/arriba/"
+            type: DirectoryOrCreate
+      script:
+        image: quay.io/biocontainers/arriba:2.5.1--h87b9561_0@sha256:702a3e8db8a9f6e227c0154c460f54fc2dc4c46f16d9e3f53b82edf43f05e881
+        command: [sh]
+        resources:
+          requests: {cpu: "4", memory: 8Gi}
+          limits: {memory: 16Gi}
+        volumeMounts:
+          - {name: source, mountPath: /mnt/source, readOnly: true}
+          - {name: ref-genome, mountPath: /mnt/ref/genome, readOnly: true}
+          - {name: gtf, mountPath: /mnt/ref/annotation.gtf.gz, readOnly: true}
+          - {name: out, mountPath: /mnt/output}
+        source: |
+          set -euo pipefail
+          D=/usr/local/var/lib/arriba
+          BLACKLIST=$D/blacklist_hg38_GRCh38_v2.5.1.tsv.gz
+          KNOWN=$D/known_fusions_hg38_GRCh38_v2.5.1.tsv.gz
+          DOMAINS=$D/protein_domains_hg38_GRCh38_v2.5.1.gff3
+          ID="{{inputs.parameters.dev-sample-id}}"
+          BAM="/mnt/source/bam/{{workflow.parameters.source-sample-id}}_RNA.dedup.bam"
+          GENOME="/mnt/ref/genome/{{=sprig.osBase(inputs.parameters['ref-genome-fa'])}}"
+          # The kept BAM is fgbio-marked (somatic-rna v2 DAGs), so Arriba uses its duplicate flags.
+          # Check that it has some, as the live template's auto mode does.
+          NDUP=$(samtools view -F 0x900 -f 0x400 "${BAM}" 2>/dev/null | head -n 1000 | wc -l || true)
+          [ "${NDUP}" -gt 0 ] || { echo "ERROR: no duplicate flags in ${BAM}; this prototype expects an fgbio-marked BAM"; exit 1; }
+          # Today's max_sensitivity: -f blacklist,low_entropy,multimappers plus these thresholds.
+          # filters_restored: the same thresholds with those three filters on (Q5).
+          THRESH="-S 1 -E 1.0 -V 0.05 -A 15 -K 0.8 -R 5000"
+          case "{{inputs.parameters.arriba-settings}}" in
+            max_sensitivity)  DISABLE="-f blacklist,low_entropy,multimappers" ;;
+            filters_restored) DISABLE="" ;;
+            *) echo "ERROR: unknown arriba-settings {{inputs.parameters.arriba-settings}}"; exit 1 ;;
+          esac
+          set -x
+          arriba -x "${BAM}" -u \
+            -o "/mnt/output/${ID}_fusions.tsv" -O "/mnt/output/${ID}_fusions.discarded.tsv" \
+            -a "${GENOME}" -g /mnt/ref/annotation.gtf.gz \
+            -b "${BLACKLIST}" -k "${KNOWN}" -t "${KNOWN}" -p "${DOMAINS}" \
+            ${DISABLE} ${THRESH} -@ "{{workflow.parameters.thread-count}}"
+          set +x
+          echo "{{inputs.parameters.arriba-settings}}: $(($(wc -l < "/mnt/output/${ID}_fusions.tsv") - 1)) calls kept"
+
+    # fusion-events rescue -> bpview -> fusion-events build, in one pod (same image).
+    - name: events-proto
+      inputs:
+        parameters:
+          - name: dev-sample-id
+          - name: dev-sample-uuid
+          - name: arriba-settings
+          - name: ref-genome-fa
+            value: "{{workflow.parameters.ref-genome-fa}}"
+      volumes:
+        - name: source
+          hostPath: {path: "{{workflow.parameters.source-sample-dir}}", type: Directory}
+        - name: ref-genome
+          hostPath: {path: "{{=sprig.osDir(inputs.parameters['ref-genome-fa'])}}", type: Directory}
+        - name: gtf
+          hostPath: {path: "{{workflow.parameters.gene-annotation-gtf}}", type: File}
+        - name: dev
+          hostPath:
+            path: "{{workflow.parameters.output-base}}{{workflow.parameters.dev-user-id}}/{{workflow.parameters.dev-run-id}}/{{inputs.parameters.dev-sample-uuid}}/"
+            type: Directory
+      script:
+        image: bergun/gennext-bpview:0.5.0@sha256:338ce5ca83ffd0ac2e9d32fd00b6d494f36337b99c87eff00121f8d36aa29da1
+        command: [bash]
+        resources:
+          requests: {cpu: "1", memory: 4Gi}
+          limits: {memory: 12Gi}
+        volumeMounts:
+          - {name: source, mountPath: /mnt/source, readOnly: true}
+          - {name: ref-genome, mountPath: /mnt/ref/genome, readOnly: true}
+          - {name: gtf, mountPath: /mnt/ref/annotation.gtf.gz, readOnly: true}
+          - {name: dev, mountPath: /mnt/dev}
+        source: |
+          set -euo pipefail
+          ID="{{inputs.parameters.dev-sample-id}}"
+          P=/mnt/dev/results/fusions/proto
+          SF="/mnt/dev/results/fusions/star-fusion/${ID}_starfusion.tsv"
+          ONCOKB=/mnt/dev/results/fusions/oncokb/fusions_with_oncokb.json
+          [ -s "${ONCOKB}" ] || ONCOKB=.
+          mkdir -p /mnt/dev/results/fusions/bpview /mnt/dev/results/fusions/fusion-events
+          fusion-events --version
+          T0=$(date +%s)
+          fusion-events rescue \
+            --arriba-tsv "${P}/arriba/${ID}_fusions.tsv" \
+            --arriba-discarded-tsv "${P}/arriba/${ID}_fusions.discarded.tsv" \
+            --starfusion-tsv "${SF}" --oncokb-json "${ONCOKB}" \
+            --fusion-list "${P}/fusion-report/${ID}_fusion_list.fi.tsv" \
+            --out-arriba-tsv "${P}/arriba/${ID}_fusions.rescued.tsv" \
+            --out-fusion-list "${P}/fusion-report/${ID}_fusion_list.bpview.tsv"
+          T1=$(date +%s)
+          # No --fusion-list: bpview draws every merged event (the same set fusion-events builds the
+          # table from), so every reported count can be checked against the BAM the views load
+          # (contract §4, "Support"). Only the --max-events cap or a contig outside the genome FASTA
+          # leaves an event undrawn; such an event keeps caller counts and has no reads view.
+          bpview --sample-id "${ID}" \
+            --bam "/mnt/source/bam/{{workflow.parameters.source-sample-id}}_RNA.dedup.bam" \
+            --fasta "/mnt/ref/genome/{{=sprig.osBase(inputs.parameters['ref-genome-fa'])}}" \
+            --gtf /mnt/ref/annotation.gtf.gz \
+            --arriba-tsv "${P}/arriba/${ID}_fusions.rescued.tsv" --starfusion-tsv "${SF}" \
+            --max-events 1500 --max-context 40 \
+            --out-prefix "/mnt/dev/results/fusions/bpview/${ID}_bpview"
+          T2=$(date +%s)
+          fusion-events build --sample-id "${ID}" \
+            --arriba-tsv "${P}/arriba/${ID}_fusions.rescued.tsv" --starfusion-tsv "${SF}" \
+            --oncokb-json "${ONCOKB}" \
+            --bpview-events "/mnt/dev/results/fusions/bpview/${ID}_bpview.events.json" \
+            --gtf /mnt/ref/annotation.gtf.gz \
+            --prototype --arriba-settings "{{inputs.parameters.arriba-settings}}" \
+            --out-tsv "/mnt/dev/results/fusions/fusion-events/${ID}_fusion_events.tsv" \
+            --out-meta-tsv "/mnt/dev/results/fusions/fusion-events/${ID}_fusion_events_meta.tsv"
+          T3=$(date +%s)
+          printf 'step\tseconds\nrescue\t%s\nbpview\t%s\nbuild\t%s\n' $((T1-T0)) $((T2-T1)) $((T3-T2)) \
+            | tee "${P}/${ID}_events_timing.tsv"
+
+    # fusion_events and fusion_events_meta into the dev sample's (copied) fusions DuckDB, in one
+    # transaction, meta last: api-edge reports "events" only when both exist (contract §2).
+    # SQL on stdin with .bail on, so any failed statement fails the step.
+    - name: load-events
+      inputs:
+        parameters:
+          - name: dev-sample-id
+          - name: dev-sample-uuid
+      synchronization:
+        mutex:
+          name: "{{workflow.name}}-{{inputs.parameters.dev-sample-uuid}}-duckdb"
+      volumes:
+        - name: dev
+          hostPath:
+            path: "{{workflow.parameters.output-base}}{{workflow.parameters.dev-user-id}}/{{workflow.parameters.dev-run-id}}/{{inputs.parameters.dev-sample-uuid}}/results/"
+            type: Directory
+      script:
+        image: qldrsc/duckdb@sha256:fe7b9397f8f65b96c1920c4e5ca66dc71bc30a6872893572a643442d2379fa3d
+        command: [sh]
+        resources:
+          requests: {cpu: "1", memory: 1Gi}
+          limits: {memory: 4Gi}
+        volumeMounts:
+          - {name: dev, mountPath: /mnt/results}
+        source: |
+          set -eu
+          ID="{{inputs.parameters.dev-sample-id}}"
+          DB="/mnt/results/db/${ID}_fusions.duckdb"
+          EV="/mnt/results/fusions/fusion-events/${ID}_fusion_events.tsv"
+          META="/mnt/results/fusions/fusion-events/${ID}_fusion_events_meta.tsv"
+          [ -s "${DB}" ] && [ -s "${EV}" ] && [ -s "${META}" ] || { echo "ERROR: missing ${DB}, ${EV} or ${META}"; exit 1; }
+          sed -e "s|@EV@|${EV}|" -e "s|@META@|${META}|" <<'SQL' | duckdb "${DB}"
+          .bail on
+          BEGIN TRANSACTION;
+          CREATE OR REPLACE TABLE fusion_events AS
+            SELECT * REPLACE (
+                  coalesce(string_split(gene5_aliases, '|'), []::VARCHAR[]) AS gene5_aliases,
+                  coalesce(string_split(gene3_aliases, '|'), []::VARCHAR[]) AS gene3_aliases,
+                  coalesce(string_split(callers, '|'), []::VARCHAR[]) AS callers,
+                  coalesce(string_split(arriba_filters, '|'), []::VARCHAR[]) AS arriba_filters,
+                  coalesce(string_split(known_db, '|'), []::VARCHAR[]) AS known_db,
+                  coalesce(string_split(tier_flags, '|'), []::VARCHAR[]) AS tier_flags,
+                  coalesce(string_split(prototype_rules, '|'), []::VARCHAR[]) AS prototype_rules,
+                  coalesce(string_split(arriba_tags, '|'), []::VARCHAR[]) AS arriba_tags,
+                  coalesce(string_split(arriba_retained_domains1, '|'), []::VARCHAR[]) AS arriba_retained_domains1,
+                  coalesce(string_split(arriba_retained_domains2, '|'), []::VARCHAR[]) AS arriba_retained_domains2,
+                  coalesce(string_split(starfusion_annots, '|'), []::VARCHAR[]) AS starfusion_annots,
+                  coalesce(string_split(oncokb_treatments, '|'), []::VARCHAR[]) AS oncokb_treatments,
+                  coalesce(string_split(oncokb_mutation_effect_citations, '|'), []::VARCHAR[]) AS oncokb_mutation_effect_citations,
+                  coalesce(string_split(oncokb_treatment_citations, '|'), []::VARCHAR[]) AS oncokb_treatment_citations,
+                  coalesce(string_split(oncokb_dx_citations, '|'), []::VARCHAR[]) AS oncokb_dx_citations,
+                  coalesce(string_split(oncokb_px_citations, '|'), []::VARCHAR[]) AS oncokb_px_citations
+            )
+            FROM read_csv('@EV@', delim='\t', header=true, nullstr='', quote='',
+                columns={
+                  'sample_id': 'VARCHAR',
+                  'event_id': 'VARCHAR',
+                  'event_rank': 'INTEGER',
+                  'fusion': 'VARCHAR',
+                  'gene5': 'VARCHAR',
+                  'gene3': 'VARCHAR',
+                  'gene5_aliases': 'VARCHAR',
+                  'gene3_aliases': 'VARCHAR',
+                  'breakpoint5': 'VARCHAR',
+                  'breakpoint3': 'VARCHAR',
+                  'orientation_known': 'BOOLEAN',
+                  'transcript5': 'VARCHAR',
+                  'transcript3': 'VARCHAR',
+                  'exon5': 'INTEGER',
+                  'exon3': 'INTEGER',
+                  'site5': 'VARCHAR',
+                  'site3': 'VARCHAR',
+                  'reading_frame': 'VARCHAR',
+                  'splice_type': 'VARCHAR',
+                  'kinase_gene': 'VARCHAR',
+                  'kinase_retained': 'BOOLEAN',
+                  'kinase_domain_fraction': 'DOUBLE',
+                  'callers': 'VARCHAR',
+                  'n_callers': 'INTEGER',
+                  'caller_arriba': 'BOOLEAN',
+                  'caller_starfusion': 'BOOLEAN',
+                  'arriba_status': 'VARCHAR',
+                  'arriba_filters': 'VARCHAR',
+                  'arriba_confidence': 'VARCHAR',
+                  'arriba_type': 'VARCHAR',
+                  'arriba_split_reads': 'INTEGER',
+                  'arriba_discordant_mates': 'INTEGER',
+                  'starfusion_junction_reads': 'INTEGER',
+                  'starfusion_spanning_frags': 'INTEGER',
+                  'starfusion_ffpm': 'DOUBLE',
+                  'breakpoint_offset': 'INTEGER',
+                  'unique_molecules': 'INTEGER',
+                  'molecules_junction': 'INTEGER',
+                  'molecules_spanning': 'INTEGER',
+                  'start_sites': 'INTEGER',
+                  'pcr_copies': 'INTEGER',
+                  'support_source': 'VARCHAR',
+                  'low_support': 'BOOLEAN',
+                  'known_db': 'VARCHAR',
+                  'curated_known': 'BOOLEAN',
+                  'oncokb_oncogenic': 'VARCHAR',
+                  'oncokb_mutation_effect': 'VARCHAR',
+                  'oncokb_highest_level': 'VARCHAR',
+                  'oncokb_highest_dx_level': 'VARCHAR',
+                  'pair_clinical_tier': 'VARCHAR',
+                  'pair_fii': 'DOUBLE',
+                  'pon_gene_pair_count': 'INTEGER',
+                  'pon_junction_count': 'INTEGER',
+                  'pon_size': 'INTEGER',
+                  'pon_recurrent': 'BOOLEAN',
+                  'tier': 'INTEGER',
+                  'tier_basis': 'VARCHAR',
+                  'tier_flags': 'VARCHAR',
+                  'tier_reason': 'VARCHAR',
+                  'bpview_contig': 'VARCHAR',
+                  'builder_version': 'VARCHAR',
+                  'prototype_rules': 'VARCHAR',
+                  'arriba_gene1': 'VARCHAR',
+                  'arriba_gene2': 'VARCHAR',
+                  'arriba_breakpoint1': 'VARCHAR',
+                  'arriba_breakpoint2': 'VARCHAR',
+                  'arriba_strand1': 'VARCHAR',
+                  'arriba_strand2': 'VARCHAR',
+                  'arriba_split_reads1': 'INTEGER',
+                  'arriba_split_reads2': 'INTEGER',
+                  'arriba_coverage1': 'INTEGER',
+                  'arriba_coverage2': 'INTEGER',
+                  'arriba_site1': 'VARCHAR',
+                  'arriba_site2': 'VARCHAR',
+                  'arriba_filters_raw': 'VARCHAR',
+                  'arriba_duplicates': 'INTEGER',
+                  'arriba_tags': 'VARCHAR',
+                  'arriba_retained_domains1': 'VARCHAR',
+                  'arriba_retained_domains2': 'VARCHAR',
+                  'arriba_closest_genomic_breakpoint1': 'VARCHAR',
+                  'arriba_closest_genomic_breakpoint2': 'VARCHAR',
+                  'arriba_gene_id1': 'VARCHAR',
+                  'arriba_gene_id2': 'VARCHAR',
+                  'arriba_transcript_id1': 'VARCHAR',
+                  'arriba_transcript_id2': 'VARCHAR',
+                  'arriba_fusion_transcript': 'VARCHAR',
+                  'arriba_peptide_sequence': 'VARCHAR',
+                  'starfusion_left_gene': 'VARCHAR',
+                  'starfusion_right_gene': 'VARCHAR',
+                  'starfusion_left_breakpoint': 'VARCHAR',
+                  'starfusion_right_breakpoint': 'VARCHAR',
+                  'starfusion_est_junction': 'DOUBLE',
+                  'starfusion_est_spanning': 'DOUBLE',
+                  'starfusion_splice_type': 'VARCHAR',
+                  'starfusion_large_anchor_support': 'BOOLEAN',
+                  'starfusion_left_break_dinuc': 'VARCHAR',
+                  'starfusion_right_break_dinuc': 'VARCHAR',
+                  'starfusion_left_break_entropy': 'DOUBLE',
+                  'starfusion_right_break_entropy': 'DOUBLE',
+                  'starfusion_annots': 'VARCHAR',
+                  'oncokb_highest_sensitive_level': 'VARCHAR',
+                  'oncokb_highest_resistance_level': 'VARCHAR',
+                  'oncokb_highest_px_level': 'VARCHAR',
+                  'oncokb_treatments': 'VARCHAR',
+                  'oncokb_mutation_effect_citations': 'VARCHAR',
+                  'oncokb_treatment_citations': 'VARCHAR',
+                  'oncokb_dx_citations': 'VARCHAR',
+                  'oncokb_px_citations': 'VARCHAR',
+                  'oncokb_gene_in_oncokb': 'BOOLEAN',
+                  'oncokb_variant_in_oncokb': 'BOOLEAN',
+                  'pair_fii_explained': 'VARCHAR',
+                  'arriba_split_reads_5p': 'INTEGER',
+                  'arriba_split_reads_3p': 'INTEGER',
+                  'arriba_bam_split_reads_5p': 'INTEGER',
+                  'arriba_bam_split_reads_3p': 'INTEGER',
+                  'arriba_bam_molecules': 'INTEGER',
+                  'arriba_bam_pcr_copies': 'INTEGER',
+                  'arriba_cited_missing': 'INTEGER',
+                  'starfusion_bam_split_reads_5p': 'INTEGER',
+                  'starfusion_bam_split_reads_3p': 'INTEGER',
+                  'starfusion_bam_molecules': 'INTEGER',
+                  'starfusion_bam_pcr_copies': 'INTEGER',
+                  'starfusion_cited_missing': 'INTEGER'
+                });
+          CREATE OR REPLACE TABLE fusion_events_meta AS
+            SELECT * FROM read_csv('@META@', delim='\t', header=true, nullstr='', quote='',
+                                   columns={'key': 'VARCHAR', 'value': 'VARCHAR'});
+          COMMIT;
+          SQL
+          # The table must hold exactly the rows the builder wrote (meta key "events").
+          CHECK=$(duckdb -csv -noheader "${DB}" "SELECT (SELECT count(*) FROM fusion_events) = (SELECT CAST(value AS BIGINT) FROM fusion_events_meta WHERE key = 'events')")
+          [ "${CHECK}" = "true" ] || { echo "ERROR: fusion_events row count differs from the meta count (${CHECK})"; exit 1; }
+          echo "loaded into ${DB}: $(duckdb -csv -noheader "${DB}" "SELECT count(*) FROM fusion_events") events"
+
+    # Sample and run state, to the DEV backend only. The address is fixed here on purpose: this
+    # template must never report to production. The token is the cluster token the live state
+    # templates read (the dev backend accepts the same one).
+    - name: dev-sample-state
+      inputs:
+        parameters:
+          - name: sample-uuid
+          - name: state
+      script:
+        image: python@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89
+        command: [python]
+        resources:
+          requests: {cpu: 100m, memory: 64Mi}
+          limits: {memory: 256Mi}
+        env:
+          - name: GENNEXT_CLUSTER_TOKEN
+            valueFrom:
+              secretKeyRef: {name: gennext-cluster-secrets, key: gennext_cluster_token}
+          - {name: RUN_ID, value: "{{workflow.parameters.dev-run-id}}"}
+          - {name: SAMPLE_UUID, value: "{{inputs.parameters.sample-uuid}}"}
+          - {name: STATE, value: "{{inputs.parameters.state}}"}
+        source: |
+          import json, os, re, sys, urllib.request
+          DEV = "http://gennext-backend.gennext-dev.svc.cluster.local:3030"
+          run, sample, state = os.environ["RUN_ID"], os.environ["SAMPLE_UUID"], os.environ["STATE"]
+          uuid = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+          if not uuid.match(run) or not (sample == "-" or uuid.match(sample)) or state not in ("running", "completed", "error"):
+              sys.exit(f"refusing to report: run {run!r}, sample {sample!r}, state {state!r}")
+          # sample "-" means the run's own state
+          path = f"/api/v0/runs/{run}/state" if sample == "-" else f"/api/v0/runs/{run}/samples/{sample}/state"
+          body = json.dumps({"state": state, "token": os.environ["GENNEXT_CLUSTER_TOKEN"]}).encode()
+          req = urllib.request.Request(DEV + path, data=body, method="POST",
+                                       headers={"Content-Type": "application/json"})
+          try:
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  print(f"dev backend: {path} -> {state}: HTTP {r.status}")
+          except urllib.error.HTTPError as e:
+              print(f"dev backend: {path} -> {state}: HTTP {e.code} {e.read()[:300]!r}")
+              sys.exit(1)
+
+    - name: dev-sample-states
+      inputs:
+        parameters:
+          - name: state
+      steps:
+        - - name: a
+            template: dev-sample-state
+            arguments:
+              parameters:
+                - {name: sample-uuid, value: "{{workflow.parameters.dev-sample-uuid-a}}"}
+                - {name: state, value: "{{inputs.parameters.state}}"}
+          - name: b
+            when: "'{{workflow.parameters.dev-sample-uuid-b}}' != '.'"
+            template: dev-sample-state
+            arguments:
+              parameters:
+                - {name: sample-uuid, value: "{{workflow.parameters.dev-sample-uuid-b}}"}
+                - {name: state, value: "{{inputs.parameters.state}}"}
+
+    # Sample states are posted where they happen (per arm, or for both when the copy fails). The
+    # run's own state follows from its samples in the backend; only a successful workflow also sets
+    # it explicitly, as the production wrappers do. A workflow stopped from outside (deadline,
+    # terminate) leaves its samples "running": set them by hand when cleaning up.
+    - name: exit-handler
+      steps:
+        - - name: run-completed
+            when: "'{{workflow.status}}' == 'Succeeded' && '{{workflow.parameters.report-run-state}}' == 'true'"
+            template: dev-sample-state
+            arguments:
+              parameters:
+                - {name: sample-uuid, value: "-"}
+                - {name: state, value: completed}
