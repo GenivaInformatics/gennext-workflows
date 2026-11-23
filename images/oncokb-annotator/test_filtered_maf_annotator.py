@@ -801,6 +801,16 @@ class RefhubCacheTest(unittest.TestCase):
         self.assertEqual(protein_fallbacks(header, lines), {
             "7,140753336,140753336,A,T": {"transcript": "ENST00000646891.2", "alteration": "V600E",
                                           "hugoSymbol": "BRAF"}})
+        # maftools-rs 0.2.0's oncokb_isoform_gene names OncoKB's gene where
+        # Hugo_Symbol is another one.
+        header2 = header + ["oncokb_isoform_gene"]
+        rows2 = [["REL_OTHER", "chr2", "60881520", "60881520", "C", "C", "T", "ENST00000295025.12",
+                  "R50W", "TRUE", "FALSE", db, "REL"],
+                 ["CDKN2A", "chr9", "21971120", "21971120", "G", "G", "A", "ENST00000579755.2",
+                  "R80*", "TRUE", "FALSE", db, "CDKN2A (p14)"]]
+        got = protein_fallbacks(header2, ["\t".join(r) + "\n" for r in rows2])
+        self.assertEqual(got["2,60881520,60881520,C,T"]["hugoSymbol"], "REL")
+        self.assertEqual(got["9,21971120,21971120,G,A"]["hugoSymbol"], "CDKN2A (p14)")
         # Old MAFs without the columns: none.
         self.assertEqual(protein_fallbacks(header[:7], ["\t".join(r[:7]) + "\n" for r in rows]), {})
 

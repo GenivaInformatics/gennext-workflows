@@ -96,7 +96,8 @@ twice on each of them and stops sending OncoKB the same queries again.
   (`oncokb_isoform`, `oncokb_isoform_aa`, `oncokb_isoform_ref_ok`,
   `oncokb_isoform_exon_edge`, `oncokb_gene_db`; maftools-rs annovar-to-maf)
   sends, with its genomic query, `proteinFallback: {transcript, alteration,
-  hugoSymbol}` when isoform and protein change are set, the residue check is
+  hugoSymbol}` (hugoSymbol: `oncokb_isoform_gene`, maftools-rs 0.2.0, else
+  `Hugo_Symbol`) when isoform and protein change are set, the residue check is
   TRUE, the row is not at an exon edge and the DB is named. refhub 0.9.1 uses
   it only when OncoKB fails the row by genomic change, after its own checks
   (curated isoform, not SRC/FGFR1, residues, exon edge). MAFs without the

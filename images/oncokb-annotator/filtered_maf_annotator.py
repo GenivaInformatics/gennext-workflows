@@ -233,7 +233,9 @@ def protein_fallbacks(header_fields, lines):
         fallback = None
         if eligible:
             fallback = {"transcript": isoform, "alteration": alteration}
-            gene = cell("Hugo_Symbol")
+            # OncoKB's hugoSymbol of the isoform (maftools-rs 0.2.0; it can
+            # differ from Hugo_Symbol when refGene names another gene first).
+            gene = cell("oncokb_isoform_gene") if "oncokb_isoform_gene" in col else cell("Hugo_Symbol")
             if gene not in _NA:
                 fallback["hugoSymbol"] = gene
         if location in out and out[location] != fallback:
