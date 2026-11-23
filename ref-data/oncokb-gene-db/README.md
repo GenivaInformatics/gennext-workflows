@@ -47,7 +47,7 @@ The tarball also has `SHA256SUMS`.
   columns before `Otherinfo`. It also copies the isoform table and the version next to
   the multianno, as `<sample>.oncokbGene.isoforms.tsv` and `<sample>.oncokbGene.version`.
   A node without the database runs exactly as before.
-- **annovar-to-maf:** maftools-rs 0.2.1 or later. When the isoform table is there, rows
+- **annovar-to-maf:** maftools-rs 0.2.2 or later. When the isoform table is there, rows
   of curated genes show the protein change on OncoKB's isoform where it differs from
   MANE, and the MAF gets `*_mane` and `oncokb_*` columns (see maftools-rs's README).
   refhub's OncoKB fallback reads the `oncokb_isoform*` columns.
@@ -112,6 +112,10 @@ in `/annovardb`.
   symlinks, each replaced by a rename.
 
 **A sample annotating during the install** sees either no database or a complete one.
+
+**Two installs at once** on the same directory can't race: `install.sh` (and
+`--remove`) takes a lock on `.oncokbGene.lock` there, and a second one exits with a
+message. The lock goes away when the process ends, even if it is killed.
 
 **An interrupted install** (a killed pod, Ctrl-C) can leave the links pointing at two
 versions. annovar-template then skips the protocol on that node, and running the same

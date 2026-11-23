@@ -23,8 +23,17 @@ set -eu
 
 links="hg38_oncokbGene.txt hg38_oncokbGeneMrna.fa hg38_oncokbGene.isoforms.tsv hg38_oncokbGene.version"
 
+# One install (or --remove) at a time per directory: a second one exits instead of
+# racing the first. The kernel drops the lock when this process ends, however it ends.
+lock() {
+    exec 9>"$1/.oncokbGene.lock"
+    flock -n 9 || { echo "another oncokbGene install is running in $1; try again when it ends" >&2; exit 1; }
+}
+
 if [ "${1:-}" = "--remove" ]; then
     db=${2:?annovardb dir}
+    [ -d "$db" ] || { echo "not a directory: $db" >&2; exit 1; }
+    lock "$db"
     for l in $links; do
         if [ -L "$db/$l" ]; then rm -f "$db/$l"; echo "removed $db/$l"; fi
     done
@@ -35,6 +44,7 @@ tarball=${1:?tarball}
 db=${2:?annovardb dir}
 want=${3:?tarball sha256}
 [ -d "$db" ] || { echo "not a directory: $db" >&2; exit 1; }
+lock "$db"
 for l in $links; do
     if [ -e "$db/$l" ] && [ ! -L "$db/$l" ]; then
         echo "$db/$l exists and is not a symlink; not touching it" >&2
