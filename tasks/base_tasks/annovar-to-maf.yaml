@@ -23,14 +23,20 @@ spec:
             type: Directory
       script:
         name: annovar-script
-        image: bergun/maftools-rs:v0.1.0
+        image: bergun/maftools-rs:v0.2.2@sha256:ae08cb82edcd7700994a1d18f789e3e815b7bfa15e341dd0dd67580f82235155
         workingDir: /mnt/input/
         command: [sh]
         source: |
           set -e
+          input="/mnt/input/{{=sprig.osBase(inputs.parameters['annovar-out-f'])}}"
+          # annovar-template leaves OncoKB's isoform table next to the multianno
+          # when it ran the oncokbGene protocol; without it the MAF is as before.
+          isoforms="${input%.hg38_multianno.txt}.oncokbGene.isoforms.tsv"
+          set --
+          if [ -s "$isoforms" ]; then set -- --oncokb-isoforms "$isoforms"; fi
           maftools-rs annovar-to-maf \
-            --input "/mnt/input/{{=sprig.osBase(inputs.parameters['annovar-out-f'])}}" \
-            --output "/mnt/input/{{inputs.parameters.sample-id}}.maf"
+            --input "$input" \
+            --output "/mnt/input/{{inputs.parameters.sample-id}}.maf" "$@"
         resources:
           requests:
             cpu: "1"

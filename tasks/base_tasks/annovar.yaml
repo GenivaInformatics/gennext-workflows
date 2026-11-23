@@ -18,6 +18,12 @@ spec:
           - name: annotator-opts
             value: "'-hgvs','-hgvs',,,,,,,,,,,"
           - name: annovardb-dir
+          # oncokbGene (OncoKB's isoforms, ref-data/oncokb-gene-db): "auto" adds the
+          # protocol where annovardb-dir has a complete install (four links to one
+          # version) and skips it where it doesn't; "off" never adds it. Anything
+          # else fails the step.
+          - name: oncokb-gene-db
+            value: "auto"
       outputs:
         parameters:
           - name: annovar-out-f
@@ -42,6 +48,51 @@ spec:
         source: |
           annotators="{{inputs.parameters.annotators}}"
 
+          # oncokbGene: an extra gene protocol, last, so it only adds
+          # Func/Gene/GeneDetail/ExonicFunc/AAChange.oncokbGene columns before
+          # Otherinfo. A node without the database runs without it. Its
+          # isoform table and version go next to the multianno for annovar-to-maf.
+          # install.sh (ref-data/oncokb-gene-db) links the four names to one
+          # version's files; a node whose links disagree runs without it.
+          okb_db=/mnt/annovardb
+          okb_out="/mnt/output/{{inputs.parameters.sample-id}}.oncokbGene"
+          okb_links() { # the version all four links point at, or nothing
+              t=$(readlink "$okb_db/hg38_oncokbGene.txt") || return 0
+              m=$(readlink "$okb_db/hg38_oncokbGeneMrna.fa") || return 0
+              i=$(readlink "$okb_db/hg38_oncokbGene.isoforms.tsv") || return 0
+              v=$(readlink "$okb_db/hg38_oncokbGene.version") || return 0
+              t=${t#hg38_oncokbGene.}; t=${t%.txt}
+              m=${m#hg38_oncokbGeneMrna.}; m=${m%.fa}
+              i=${i#hg38_oncokbGene.}; i=${i%.isoforms.tsv}
+              v=${v#hg38_oncokbGene.}; v=${v%.version}
+              if [ -n "$t" ] && [ "$t" = "$m" ] && [ "$t" = "$i" ] && [ "$t" = "$v" ]; then echo "$t"; fi
+          }
+          extra_opt=""
+          okb_version=""
+          case "{{inputs.parameters.oncokb-gene-db}}" in
+              auto|off) ;;
+              *) echo "oncokb-gene-db must be auto or off, not '{{inputs.parameters.oncokb-gene-db}}'" >&2; exit 2 ;;
+          esac
+          rm -f "$okb_out.isoforms.tsv" "$okb_out.version"
+          case ",$annotators," in *,oncokbGene,*) ;; *)
+              if [ "{{inputs.parameters.oncokb-gene-db}}" = "auto" ] && [ -e "$okb_db/hg38_oncokbGene.txt" ]; then
+                  okb_version=$(okb_links)
+                  if [ -n "$okb_version" ] && [ -s "$okb_db/hg38_oncokbGene.txt" ] && [ -s "$okb_db/hg38_oncokbGeneMrna.fa" ] \
+                      && [ -s "$okb_db/hg38_oncokbGene.isoforms.tsv" ] && [ -s "$okb_db/hg38_oncokbGene.version" ]; then
+                      cp -L "$okb_db/hg38_oncokbGene.isoforms.tsv" "$okb_out.isoforms.tsv" || exit 1
+                      cp -L "$okb_db/hg38_oncokbGene.version" "$okb_out.version" || exit 1
+                      annotators="$annotators,oncokbGene"
+                      extra_opt=",-hgvs"
+                      echo "oncokbGene: $okb_version"
+                  else
+                      okb_version=""
+                      echo "oncokbGene: not used: the four hg38_oncokbGene* links in annovardb-dir are not one complete version" >&2
+                  fi
+              else
+                  echo "oncokbGene: not used (oncokb-gene-db={{inputs.parameters.oncokb-gene-db}}, or no database in annovardb-dir)"
+              fi ;;
+          esac
+
           # Split the string by commas and set them as 'g' or 'f'
           operations=$(echo $annotators | tr ',' '\n' | while read -r part; do
               if echo "$part" | grep -q "Gene$"; then
@@ -60,8 +111,17 @@ spec:
           --out "/mnt/output/{{inputs.parameters.sample-id}}" \
           --protocol $annotators  --operation  $operations \
           --nastring . --vcfinput --remove \
-          --arg {{inputs.parameters.annotator-opts}} \
+          --arg {{inputs.parameters.annotator-opts}}$extra_opt \
           --intronhgvs 20 --polish
+          rc=$?
+          [ "$rc" -eq 0 ] || exit "$rc"
+
+          # The database was replaced while this ran: the isoform table copied
+          # above may not match the annotation. Fail; `argo retry` reruns the step.
+          if [ -n "$okb_version" ] && [ "$(okb_links)" != "$okb_version" ]; then
+              echo "oncokbGene changed during the run (was $okb_version); failing: rerun with argo retry" >&2
+              exit 1
+          fi
         volumeMounts:
           - name: input-vcf-f
             mountPath: "/mnt/input/"
