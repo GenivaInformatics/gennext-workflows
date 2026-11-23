@@ -340,7 +340,6 @@ class RefhubCache:
             self.fallbacks = {}
             self.counts["requests"] -= 1
             return self.post(url, body)
-        self.counts["fallback_offered"] += offered
         if (reply.status_code == 400 and self.path == "genomic_first"
                 and REFHUB_08_PATH_REFUSAL in reply.text):
             # refhub 0.8 doesn't know genomic first: ask it by genomic change.
@@ -360,6 +359,8 @@ class RefhubCache:
         if len(answers) != len(queries):
             return self._give_up(f"sent {len(answers)} answers for {len(queries)} queries")
         self.failures = 0
+        # Counted once refhub has taken the request (not for refused tries).
+        self.counts["fallback_offered"] += offered
 
         if all(status == "unavailable" for status in statuses):
             # refhub could not reach OncoKB for any of these rows: ask OncoKB

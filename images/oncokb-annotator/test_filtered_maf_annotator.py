@@ -780,6 +780,7 @@ class RefhubCacheTest(unittest.TestCase):
         self.assertNotIn("proteinFallback", refhub.calls[1]["queries"][0])
         self.assertTrue(refhub.calls[1]["url"].endswith("?path=genomic_first"))
         self.assertEqual((cache.counts["requests"], cache.counts["direct"], cache.fallbacks), (1, 0, {}))
+        self.assertEqual(cache.counts["fallback_offered"], 0)
 
     def test_protein_fallbacks_come_from_eligible_oncokbgene_rows_only(self):
         from filtered_maf_annotator import protein_fallbacks
