@@ -192,9 +192,62 @@ REFHUB_MAX_FAILURES = 3
 # 0.8 refuses genomic_first, and the cache then asks by genomic change.
 DEFAULT_REFHUB_PATH = "genomic_first"
 
+# refhub 0.9.0's answer to a query carrying proteinFallback (HTTP 400, serde's
+# "unknown field `proteinFallback`"). Only that clears the fallbacks.
+REFHUB_090_FALLBACK_REFUSAL = "unknown field"
+
 # refhub 0.8's answer to ?path=genomic_first (HTTP 400). Any other 400 is
 # handled as a refhub failure, and genomic first stays on.
 REFHUB_08_PATH_REFUSAL = "path is genomic or protein"
+
+# The ANNOVAR step's oncokbGene facts (maftools-rs annovar-to-maf 0.2+):
+# the protein change on OncoKB's own isoform, for refhub's strict
+# fallback when OncoKB fails a row by genomic change. Absent or NA: none.
+ONCOKB_GENE_COLUMNS = ("oncokb_isoform", "oncokb_isoform_aa", "oncokb_isoform_ref_ok",
+                       "oncokb_isoform_exon_edge", "oncokb_gene_db")
+_NA = {"", "NA", ".", "None", "nan"}
+
+
+def protein_fallbacks(header_fields, lines):
+    """genomicLocation (as upstream builds it) -> refhub's proteinFallback,
+    for rows whose oncokbGene facts make them eligible: isoform and protein
+    change set, residue check TRUE, not at an exon edge, the DB named.
+    refhub checks again and applies the gene policy (curated isoform, not
+    SRC/FGFR1). A location whose rows disagree gets none."""
+    if not all(c in header_fields for c in ONCOKB_GENE_COLUMNS):
+        return {}
+    col = {name: i for i, name in enumerate(header_fields)}
+    needed = ("Chromosome", "Start_Position", "End_Position", "Reference_Allele", "Tumor_Seq_Allele2")
+    if not all(c in col for c in needed):
+        return {}
+    out = {}
+    for row in csv.reader(lines, delimiter="\t"):
+        def cell(name):
+            i = col.get(name)
+            return row[i].strip() if i is not None and i < len(row) else ""
+        isoform, alteration = cell("oncokb_isoform"), cell("oncokb_isoform_aa")
+        eligible = (isoform not in _NA and alteration not in _NA
+                    and cell("oncokb_isoform_ref_ok").upper() == "TRUE"
+                    and cell("oncokb_isoform_exon_edge").upper() == "FALSE"
+                    and cell("oncokb_gene_db") not in _NA)
+        ref = cell("Reference_Allele")
+        var = AnnotatorCore.get_var_allele(ref, cell("Tumor_Seq_Allele1"), cell("Tumor_Seq_Allele2"))
+        location = AnnotatorCore.GenomicChangeQuery(
+            cell("Chromosome"), cell("Start_Position"), cell("End_Position"), ref, var, "").genomicLocation
+        fallback = None
+        if eligible:
+            fallback = {"transcript": isoform, "alteration": alteration}
+            # OncoKB's hugoSymbol of the isoform (maftools-rs 0.2.0; it can
+            # differ from Hugo_Symbol when refGene names another gene first).
+            gene = cell("oncokb_isoform_gene") if "oncokb_isoform_gene" in col else cell("Hugo_Symbol")
+            if gene not in _NA:
+                fallback["hugoSymbol"] = gene
+        if location in out and out[location] != fallback:
+            out[location] = None
+        else:
+            out.setdefault(location, fallback)
+    return {loc: fb for loc, fb in out.items() if fb is not None}
+
 
 # OncoKB endpoints refhub caches, by the path upstream posts to.
 REFHUB_ENDPOINTS = {
@@ -245,7 +298,9 @@ class RefhubCache:
         self.failures = 0
         self.enabled = True
         self.counts = {"requests": 0, "direct": 0, "hit": 0, "miss": 0, "refreshed": 0,
-                       "stale": 0, "bad": 0, "failed": 0, "protein_route": 0}
+                       "stale": 0, "bad": 0, "failed": 0, "protein_route": 0, "fallback_offered": 0}
+        # genomicLocation -> proteinFallback, for the MAF being annotated.
+        self.fallbacks = {}
 
     def _give_up(self, why):
         self.failures += 1
@@ -270,12 +325,26 @@ class RefhubCache:
         target = self.base_url + endpoint
         if self.path != "genomic" and "/germline/" not in endpoint:
             target += f"?path={self.path}"
+        offered = 0
+        if self.path == "genomic_first" and "/germline/" not in endpoint and self.fallbacks:
+            for query in queries:
+                fallback = self.fallbacks.get(query.get("genomicLocation"))
+                if fallback:
+                    query["proteinFallback"] = fallback
+                    offered += 1
         try:
             reply = self.session.post(
                 target, json=queries, timeout=REFHUB_TIMEOUT,
                 headers={"Authorization": f"Bearer {self.token}"})
         except requests.exceptions.RequestException as error:
             return self._give_up(f"unreachable ({type(error).__name__})")
+        if (reply.status_code == 400 and offered
+                and REFHUB_090_FALLBACK_REFUSAL in reply.text and "proteinFallback" in reply.text):
+            # refhub 0.9.0 doesn't take the oncokbGene fallback: ask without it.
+            self.log("refhub cache does not take proteinFallback; asking genomic first without it")
+            self.fallbacks = {}
+            self.counts["requests"] -= 1
+            return self.post(url, body)
         if (reply.status_code == 400 and self.path == "genomic_first"
                 and REFHUB_08_PATH_REFUSAL in reply.text):
             # refhub 0.8 doesn't know genomic first: ask it by genomic change.
@@ -295,6 +364,8 @@ class RefhubCache:
         if len(answers) != len(queries):
             return self._give_up(f"sent {len(answers)} answers for {len(queries)} queries")
         self.failures = 0
+        # Counted once refhub has taken the request (not for refused tries).
+        self.counts["fallback_offered"] += offered
 
         if all(status == "unavailable" for status in statuses):
             # refhub could not reach OncoKB for any of these rows: ask OncoKB
@@ -329,7 +400,8 @@ class RefhubCache:
                 f"{c['miss'] + c['refreshed']} asked of OncoKB, {c['stale']} stale, "
                 f"{c['bad']} known bad, {c['failed']} not answered; "
                 f"{c['protein_route']} answered by protein change (OncoKB failed them "
-                f"by genomic change); {c['direct']} requests sent to OncoKB directly")
+                f"by genomic change; {c['fallback_offered']} rows sent with an oncokbGene "
+                f"protein change); {c['direct']} requests sent to OncoKB directly")
 
 
 # The RefhubCache upstream's POSTs go through, or None; set by annotate_maf.
@@ -437,6 +509,11 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
         raise ValueError(f"MAF has {records} records but {len(lines)} data lines")
     header_fields = next(csv.reader([header.rstrip("\r\n")], delimiter="\t"))
     func_column = header_fields.index("Func.refGene") if "Func.refGene" in header_fields else None
+    if _refhub:
+        _refhub.fallbacks = protein_fallbacks(header_fields, lines)
+        if _refhub.fallbacks:
+            print(f"OncoKB: {len(_refhub.fallbacks)} locations carry an oncokbGene protein change "
+                  "(refhub's fallback if OncoKB fails them by genomic change)", flush=True)
 
     results = [None] * len(lines)
     state = {"header": None, "requests": 0}
