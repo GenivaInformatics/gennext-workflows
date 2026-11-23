@@ -52,6 +52,14 @@ mkdir -p "$work/db/.oncokbGene-install.abc123/v2"
 check "re-run after an interrupted switch completes it" \
     "inst /w/v2.tar.gz /w/db $(sha v2) && for l in hg38_oncokbGene.txt hg38_oncokbGeneMrna.fa hg38_oncokbGene.isoforms.tsv hg38_oncokbGene.version; do readlink $work/db/\$l | grep -q '\.v2\.' || exit 1; done"
 check "leftovers of the interrupted run are gone" "! ls -A $work/db | grep -q -e '^\.oncokbGene-install' -e '\.new\$'"
+# a second install while one holds the lock exits instead of racing it
+holder=$(docker run -d --rm --network none -u "$(id -u):$(id -g)" -v "$work:/w" "$image" \
+    sh -c 'exec 9>/w/db/.oncokbGene.lock; flock 9; touch /w/locked; sleep 60')
+for _ in $(seq 50); do [ -e "$work/locked" ] && break; sleep 0.2; done
+check "a concurrent install is refused" "! inst /w/v1.tar.gz /w/db $(sha v1) && grep -q 'another oncokbGene install is running' $work/log && [ \"\$(readlink $work/db/hg38_oncokbGene.txt)\" = hg38_oncokbGene.v2.txt ]"
+check "a concurrent --remove is refused" "! inst --remove /w/db && [ -L $work/db/hg38_oncokbGene.txt ]"
+docker rm -f "$holder" >/dev/null
+check "the lock is free once its holder is gone" "inst /w/v2.tar.gz /w/db $(sha v2)"
 check "remove takes the links only" "inst --remove /w/db && [ ! -e $work/db/hg38_oncokbGene.txt ] && [ -f $work/db/hg38_oncokbGene.v2.txt ]"
 cp "$fix/hg38_oncokbGene.txt" "$work/db/hg38_oncokbGene.txt"
 check "a real hg38_oncokbGene.txt is not replaced" "! inst /w/v1.tar.gz /w/db $(sha v1) && [ ! -L $work/db/hg38_oncokbGene.txt ]"
