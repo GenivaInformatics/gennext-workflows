@@ -749,6 +749,61 @@ class RefhubCacheTest(unittest.TestCase):
         self.assertEqual(cache.counts["protein_route"], 1)
         self.assertIn("1 answered by protein change", cache.summary())
 
+    def test_genomic_first_queries_carry_the_oncokbgene_fallback(self):
+        cache, refhub = self.cache(refhub_answers())
+        cache.path = "genomic_first"
+        cache.fallbacks = {"1,5,5,A,G": {"transcript": "ENST00000646891.2", "alteration": "V600E",
+                                          "hugoSymbol": "BRAF"}}
+        cache.post(ONCOKB_POST, self.queries("5", "6"))
+        sent = refhub.calls[0]["queries"]
+        self.assertEqual(sent[0]["proteinFallback"]["alteration"], "V600E")
+        self.assertNotIn("proteinFallback", sent[1])
+        self.assertEqual(cache.counts["fallback_offered"], 1)
+        # Not on germline, nor on the protein or genomic paths.
+        cache.post("https://www.oncokb.org/api/v1/annotate/germline/mutations/byGenomicChange",
+                   self.queries("5"))
+        cache.path = "protein"
+        cache.post(ONCOKB_POST, self.queries("5"))
+        cache.path = "genomic"
+        cache.post(ONCOKB_POST, self.queries("5"))
+        for call in refhub.calls[1:]:
+            self.assertNotIn("proteinFallback", call["queries"][0])
+
+    def test_refhub_refusing_the_fallback_is_asked_without_it(self):
+        replies = iter([(400, {"error": "query 0: unknown field `proteinFallback`"}),
+                        (200, [{"status": "annotation", "annotation": {}, "source": "hit"}])])
+        cache, refhub = self.cache(lambda q: next(replies))
+        cache.path = "genomic_first"
+        cache.fallbacks = {"1,5,5,A,G": {"transcript": "ENST00000646891.2", "alteration": "V600E"}}
+        self.assertEqual(cache.post(ONCOKB_POST, self.queries("5")).status_code, 200)
+        self.assertIn("proteinFallback", refhub.calls[0]["queries"][0])
+        self.assertNotIn("proteinFallback", refhub.calls[1]["queries"][0])
+        self.assertTrue(refhub.calls[1]["url"].endswith("?path=genomic_first"))
+        self.assertEqual((cache.counts["requests"], cache.counts["direct"], cache.fallbacks), (1, 0, {}))
+
+    def test_protein_fallbacks_come_from_eligible_oncokbgene_rows_only(self):
+        from filtered_maf_annotator import protein_fallbacks
+        header = ["Hugo_Symbol", "Chromosome", "Start_Position", "End_Position", "Reference_Allele",
+                  "Tumor_Seq_Allele1", "Tumor_Seq_Allele2", "oncokb_isoform", "oncokb_isoform_aa",
+                  "oncokb_isoform_ref_ok", "oncokb_isoform_exon_edge", "oncokb_gene_db"]
+        db = "oncokb-v7.7_ensembl-111"
+        rows = [
+            ["BRAF", "chr7", "140753336", "140753336", "A", "A", "T", "ENST00000646891.2", "V600E", "TRUE", "FALSE", db],
+            ["KRAS", "chr12", "25245350", "25245350", "C", "C", "A", "ENST00000256078.10", "G12V", "FALSE", "FALSE", db],
+            ["TP53", "chr17", "7675088", "7675088", "C", "C", "T", "ENST00000269305.9", "R175H", "TRUE", "TRUE", db],
+            ["EGFR", "chr7", "55191822", "55191822", "T", "T", "G", "ENST00000275493.7", "L858R", "TRUE", "FALSE", "NA"],
+            ["MANE1", "chr1", "1000", "1000", "A", "A", "G", "NA", "NA", "NA", "NA", db],
+            # The same location twice, disagreeing: none.
+            ["PIK3CA", "chr3", "179234297", "179234297", "A", "A", "G", "ENST00000263967.4", "H1047R", "TRUE", "FALSE", db],
+            ["PIK3CA", "chr3", "179234297", "179234297", "A", "A", "G", "ENST00000263967.4", "H1047L", "TRUE", "FALSE", db],
+        ]
+        lines = ["\t".join(r) + "\n" for r in rows]
+        self.assertEqual(protein_fallbacks(header, lines), {
+            "7,140753336,140753336,A,T": {"transcript": "ENST00000646891.2", "alteration": "V600E",
+                                          "hugoSymbol": "BRAF"}})
+        # Old MAFs without the columns: none.
+        self.assertEqual(protein_fallbacks(header[:7], ["\t".join(r[:7]) + "\n" for r in rows]), {})
+
     def test_refhub_without_genomic_first_is_asked_by_genomic_change(self):
         replies = iter([(400, {"error": "path is genomic or protein"}),
                         (200, [{"status": "annotation", "annotation": {}, "source": "hit"}])])
@@ -845,7 +900,8 @@ class RefhubCacheTest(unittest.TestCase):
         self.assertIn("known bad in refhub's cache, written unannotated", out)
         self.assertIn("refhub cache: 2 requests; answers: 5 hits, 0 asked of OncoKB, 0 stale, 1 known bad, "
                       "0 not answered; 0 answered by protein change (OncoKB failed them by genomic "
-                      "change); 0 requests sent to OncoKB directly", out)
+                      "change; 0 rows sent with an oncokbGene protein change); "
+                      "0 requests sent to OncoKB directly", out)
 
     def test_known_bad_rows_are_no_outage(self):
         # 40 known-bad intronic rows of 45: more than max_unanswered (10).

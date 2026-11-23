@@ -1,6 +1,6 @@
 # OncoKB annotator image
 
-`bergun/oncokb-annotator:0.3.13-upstream-v4.1.0` is upstream
+`bergun/oncokb-annotator:0.3.14-upstream-v4.1.0` is upstream
 [oncokb-annotator](https://github.com/oncokb/oncokb-annotator) at tag `v4.1.0`
 (commit `77521cd`), unmodified, plus the three wrapper scripts in this
 directory. The previous image, `0.2.0-upstream-v3.4.2`, is upstream `v3.4.2`
@@ -92,6 +92,16 @@ twice on each of them and stops sending OncoKB the same queries again.
   row refhub reports `failed` or `unavailable` (`refhub:not_answered`) is
   tried again after 60 s, with the other such rows, and is then handled as
   above (filled, or the step fails).
+- From `0.3.10`, a MAF row with the ANNOVAR step's oncokbGene facts
+  (`oncokb_isoform`, `oncokb_isoform_aa`, `oncokb_isoform_ref_ok`,
+  `oncokb_isoform_exon_edge`, `oncokb_gene_db`; maftools-rs annovar-to-maf)
+  sends, with its genomic query, `proteinFallback: {transcript, alteration,
+  hugoSymbol}` when isoform and protein change are set, the residue check is
+  TRUE, the row is not at an exon edge and the DB is named. refhub 0.9.1 uses
+  it only when OncoKB fails the row by genomic change, after its own checks
+  (curated isoform, not SRC/FGFR1, residues, exon edge). MAFs without the
+  columns send none. refhub 0.9.0 refusing the field is asked without it.
+  The step log counts rows sent with one; the output is unchanged.
 - From `0.3.9`, somatic queries ask refhub genomic first
   (`?path=genomic_first`, refhub 0.9; answers must be OncoKB's own).
   refhub asks OncoKB by genomic change and passes on its answer

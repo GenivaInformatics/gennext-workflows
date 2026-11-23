@@ -50,6 +50,10 @@
 #   0.3.13-upstream-v4.1.0 as 0.3.11; rows first sent alone on the last pass
 #                          (their chunk failed) are tried alone once more after
 #                          a pause, as 0.3.7 retried every row
+#   0.3.14-upstream-v4.1.0 as 0.3.13; rows with the ANNOVAR step's oncokbGene
+#                          facts (oncokb_isoform*, oncokb_gene_db) send
+#                          their protein change to refhub as proteinFallback
+#                          (refhub's strict fallback). Output unchanged
 FROM python:3.12.12-alpine3.22@sha256:848ba4413eb897e225159b8fc1b02094576cbae4aa73fc13142608ae2c8c0e32
 
 ARG ONCOKB_ANNOTATOR_VERSION=v4.1.0
