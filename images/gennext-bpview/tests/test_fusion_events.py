@@ -208,6 +208,92 @@ def test_contract_v1(d):
     assert list(rows.values())[0]["event_id"] == "chr1:10:.>chr2:20:.", rows
 
 
+def test_caller_details(d):
+    """0.5.0 detail columns come from each caller's own row and the OncoKB entry, unchanged."""
+    hdr = ARRIBA_HDR + ["retained_protein_domains", "closest_genomic_breakpoint1", "closest_genomic_breakpoint2",
+                        "gene_id1", "gene_id2", "transcript_id1", "transcript_id2", "filters",
+                        "fusion_transcript", "peptide_sequence"]
+    a = arriba_row("ALK1", "PART1", "chr1:1000", "chr2:500", 3, 26, "high", "in-frame", tags="Mitelman,CCLE")
+    a.update({"site1": "CDS/splice-site", "coverage1": 33, "coverage2": 26,
+              "retained_protein_domains": "Ig_domain(100%),Protein_kinase_domain(100%)|TACC_C-terminal(100%)",
+              "closest_genomic_breakpoint1": ".", "gene_id1": "ENSG1.1", "transcript_id1": "ENST1.1",
+              "filters": "duplicates(448)", "fusion_transcript": "ACGT|TTGA", "peptide_sequence": "Q" * 2500})
+    sfh = SF_HDR + ["est_J", "est_S", "LeftBreakDinuc", "LeftBreakEntropy", "RightBreakDinuc", "RightBreakEntropy"]
+    sf = dict(sf_row("ALK1", "PART1", "chr1:1000", "chr2:500", 29, 0), est_J="29.00", est_S="0.00",
+              LeftBreakDinuc="GT", LeftBreakEntropy="1.95", RightBreakDinuc="AG", RightBreakEntropy="1.8")
+    pairs = {"ALK1--PART1": dict(oncokb("LEVEL_3B", "Oncogenic", dbs=["Mitelman", "FusionGDB2"]),
+                                 **{"Explained FII": "0.5 * (2 / 2) + 0.5 * (0.5 / 0.5)",
+                                    # the OncoKB JSON's own arriba block is from another run: must not leak
+                                    "arriba": {"split_reads1": "166", "split_reads2": "300", "coverage1": "999"}})}
+    pairs["ALK1--PART1"]["OncoKB"].update({"LEVEL_3B": "Erdafitinib", "LEVEL_4": "Fexagratinib", "LEVEL_Dx2": "",
+                                           "HIGHEST_SENSITIVE_LEVEL": "LEVEL_3B", "HIGHEST_RESISTANCE_LEVEL": "",
+                                           "HIGHEST_PX_LEVEL": "", "TX_CITATIONS": "37870920;31088831",
+                                           "MUTATION_EFFECT_CITATIONS": "22837387", "GENE_IN_ONCOKB": "True",
+                                           "VARIANT_IN_ONCOKB": "False"})
+    ap, sp, jp, out = (os.path.join(d, x) for x in ("cd.arriba.tsv", "cd.sf.tsv", "cd.json", "cd.ev.tsv"))
+    tsv(ap, hdr, [a])
+    tsv(sp, sfh, [sf])
+    with open(jp, "w") as fh:
+        json.dump([dict(v, Fusion=k) for k, v in pairs.items()], fh)
+    subprocess.run([sys.executable, FE, "build", "--sample-id", "CD", "--arriba-tsv", ap, "--starfusion-tsv", sp,
+                    "--oncokb-json", jp, "--protein-domains", ".", "--out-tsv", out], check=True)
+    r = list(csv.DictReader(open(out), delimiter="\t"))[0]
+    want = {"arriba_split_reads1": "3", "arriba_split_reads2": "26", "arriba_split_reads": "29",
+            "arriba_coverage1": "33", "arriba_coverage2": "26", "arriba_site1": "CDS/splice-site",
+            "arriba_filters_raw": "duplicates(448)", "arriba_duplicates": "448", "arriba_tags": "Mitelman|CCLE",
+            "arriba_retained_domains1": "Ig_domain(100%)|Protein_kinase_domain(100%)",
+            "arriba_retained_domains2": "TACC_C-terminal(100%)", "arriba_closest_genomic_breakpoint1": "",
+            "arriba_gene_id1": "ENSG1.1", "arriba_transcript_id1": "ENST1.1", "arriba_gene1": "ALK1",
+            "arriba_breakpoint1": "chr1:1000", "arriba_strand1": "+/+",
+            "arriba_fusion_transcript": "ACGT|TTGA",
+            "arriba_peptide_sequence": "Q" * 2000 + "...[truncated, 2500 characters]",
+            "starfusion_left_gene": "ALK1^ENSG1", "starfusion_left_breakpoint": "chr1:1000:+",
+            "starfusion_est_junction": "29.0", "starfusion_splice_type": "ONLY_REF_SPLICE",
+            "starfusion_large_anchor_support": "true", "starfusion_left_break_dinuc": "GT",
+            "starfusion_right_break_entropy": "1.8", "starfusion_annots": "Mitelman",
+            "oncokb_highest_sensitive_level": "LEVEL_3B", "oncokb_highest_resistance_level": "",
+            "oncokb_treatments": "LEVEL_3B: Erdafitinib|LEVEL_4: Fexagratinib",
+            "oncokb_treatment_citations": "37870920|31088831", "oncokb_mutation_effect_citations": "22837387",
+            "oncokb_dx_citations": "", "oncokb_gene_in_oncokb": "true", "oncokb_variant_in_oncokb": "false",
+            "pair_fii_explained": "0.5 * (2 / 2) + 0.5 * (0.5 / 0.5)",
+            "unique_molecules": "29", "support_source": "arriba"}
+    bad = {k: (r[k], v) for k, v in want.items() if r[k] != v}
+    assert not bad, bad
+    # A STAR-Fusion-only event has no Arriba details (null, lists empty).
+    tsv(ap, hdr, [])
+    subprocess.run([sys.executable, FE, "build", "--sample-id", "CD", "--arriba-tsv", ap, "--starfusion-tsv", sp,
+                    "--oncokb-json", jp, "--protein-domains", ".", "--out-tsv", out], check=True)
+    r = list(csv.DictReader(open(out), delimiter="\t"))[0]
+    assert r["arriba_split_reads1"] == "" and r["arriba_duplicates"] == "" and r["arriba_tags"] == "", r
+    assert r["starfusion_left_break_dinuc"] == "GT", r
+
+
+def test_caller_sides():
+    """arriba_split_reads_5p/_3p follow the event's orientation; *_bam_* come from bpview's callers_bam."""
+    raw = {"breakpoint1": "chr2:500", "breakpoint2": "chr1:1000", "split_reads1": "7", "split_reads2": "2"}
+    ev = dict(chr1="chr1", pos1=1000, chr2="chr2", pos2=500, callers=["arriba", "starfusion"],
+              arriba={"raw": raw})  # Arriba's side 1 is the event's 3' (a flipped call)
+    b = {"callers_bam": {"arriba": {"fragments_nondup": {"junction": 5, "spanning": 1, "junction_weak": 2},
+                                    "fragments_dup": {"junction": 40}, "split_5p": 3, "split_3p": 2,
+                                    "cited": 50, "cited_missing": 0},
+                         "starfusion": {"fragments_nondup": {"junction": 4}, "fragments_dup": {},
+                                        "split_5p": 4, "split_3p": 0, "cited": 4, "cited_missing": 0}}}
+    out = fusion_events.caller_sides(ev, b)
+    assert (out["arriba_split_reads_5p"], out["arriba_split_reads_3p"]) == (2, 7), out
+    assert (out["arriba_bam_molecules"], out["arriba_bam_pcr_copies"]) == (6, 40), out  # junction_weak not counted
+    assert (out["arriba_bam_split_reads_5p"], out["arriba_bam_split_reads_3p"]) == (3, 2), out
+    assert (out["starfusion_bam_molecules"], out["starfusion_bam_split_reads_5p"], out["starfusion_cited_missing"]) == (4, 4, 0)
+    # not flipped; and a caller that didn't call the event gets no BAM columns
+    raw.update(breakpoint1="chr1:1000", breakpoint2="chr2:500")
+    out = fusion_events.caller_sides(dict(ev, callers=["arriba"]), b)
+    assert (out["arriba_split_reads_5p"], out["arriba_split_reads_3p"]) == (7, 2), out
+    assert "starfusion_bam_molecules" not in out, out
+    # a caller that cites no names (a rescued Arriba call: discarded calls carry no read_identifiers)
+    b["callers_bam"]["arriba"]["cited"] = 0
+    out = fusion_events.caller_sides(ev, b)
+    assert "arriba_bam_molecules" not in out and out["arriba_split_reads_5p"] == 7, out
+
+
 def main():
     with tempfile.TemporaryDirectory() as d:
         pairs = {"ALK1--PART1": oncokb("LEVEL_1", "Oncogenic"),         # actionable
@@ -295,6 +381,8 @@ def main():
         assert cur["tier"] == "3" and "orientation_unknown" in cur["tier_flags"], cur
 
         test_contract_v1(d)
+        test_caller_details(d)
+        test_caller_sides()
 
         # Empty caller outputs give an empty table with a header.
         _, rows = run_build(d, "S2", [], [], {})

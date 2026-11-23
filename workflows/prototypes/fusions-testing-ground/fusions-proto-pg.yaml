@@ -252,7 +252,7 @@ spec:
             path: "{{workflow.parameters.output-base}}{{workflow.parameters.dev-user-id}}/{{workflow.parameters.dev-run-id}}/"
             type: DirectoryOrCreate
       script:
-        image: bergun/gennext-bpview:0.4.1@sha256:390648928ec18f8af9263a9747c51609ddd044bfd7113618d3d430c5f8ad2f1f
+        image: bergun/gennext-bpview:0.5.0@sha256:338ce5ca83ffd0ac2e9d32fd00b6d494f36337b99c87eff00121f8d36aa29da1
         command: [bash]
         resources:
           requests: {cpu: "1", memory: 256Mi}
@@ -400,7 +400,7 @@ spec:
             path: "{{workflow.parameters.output-base}}{{workflow.parameters.dev-user-id}}/{{workflow.parameters.dev-run-id}}/{{inputs.parameters.dev-sample-uuid}}/"
             type: Directory
       script:
-        image: bergun/gennext-bpview:0.4.1@sha256:390648928ec18f8af9263a9747c51609ddd044bfd7113618d3d430c5f8ad2f1f
+        image: bergun/gennext-bpview:0.5.0@sha256:338ce5ca83ffd0ac2e9d32fd00b6d494f36337b99c87eff00121f8d36aa29da1
         command: [bash]
         resources:
           requests: {cpu: "1", memory: 4Gi}
@@ -494,7 +494,16 @@ spec:
                   coalesce(string_split(arriba_filters, '|'), []::VARCHAR[]) AS arriba_filters,
                   coalesce(string_split(known_db, '|'), []::VARCHAR[]) AS known_db,
                   coalesce(string_split(tier_flags, '|'), []::VARCHAR[]) AS tier_flags,
-                  coalesce(string_split(prototype_rules, '|'), []::VARCHAR[]) AS prototype_rules
+                  coalesce(string_split(prototype_rules, '|'), []::VARCHAR[]) AS prototype_rules,
+                  coalesce(string_split(arriba_tags, '|'), []::VARCHAR[]) AS arriba_tags,
+                  coalesce(string_split(arriba_retained_domains1, '|'), []::VARCHAR[]) AS arriba_retained_domains1,
+                  coalesce(string_split(arriba_retained_domains2, '|'), []::VARCHAR[]) AS arriba_retained_domains2,
+                  coalesce(string_split(starfusion_annots, '|'), []::VARCHAR[]) AS starfusion_annots,
+                  coalesce(string_split(oncokb_treatments, '|'), []::VARCHAR[]) AS oncokb_treatments,
+                  coalesce(string_split(oncokb_mutation_effect_citations, '|'), []::VARCHAR[]) AS oncokb_mutation_effect_citations,
+                  coalesce(string_split(oncokb_treatment_citations, '|'), []::VARCHAR[]) AS oncokb_treatment_citations,
+                  coalesce(string_split(oncokb_dx_citations, '|'), []::VARCHAR[]) AS oncokb_dx_citations,
+                  coalesce(string_split(oncokb_px_citations, '|'), []::VARCHAR[]) AS oncokb_px_citations
             )
             FROM read_csv('@EV@', delim='\t', header=true, nullstr='', quote='',
                 columns={
@@ -559,7 +568,68 @@ spec:
                   'tier_reason': 'VARCHAR',
                   'bpview_contig': 'VARCHAR',
                   'builder_version': 'VARCHAR',
-                  'prototype_rules': 'VARCHAR'
+                  'prototype_rules': 'VARCHAR',
+                  'arriba_gene1': 'VARCHAR',
+                  'arriba_gene2': 'VARCHAR',
+                  'arriba_breakpoint1': 'VARCHAR',
+                  'arriba_breakpoint2': 'VARCHAR',
+                  'arriba_strand1': 'VARCHAR',
+                  'arriba_strand2': 'VARCHAR',
+                  'arriba_split_reads1': 'INTEGER',
+                  'arriba_split_reads2': 'INTEGER',
+                  'arriba_coverage1': 'INTEGER',
+                  'arriba_coverage2': 'INTEGER',
+                  'arriba_site1': 'VARCHAR',
+                  'arriba_site2': 'VARCHAR',
+                  'arriba_filters_raw': 'VARCHAR',
+                  'arriba_duplicates': 'INTEGER',
+                  'arriba_tags': 'VARCHAR',
+                  'arriba_retained_domains1': 'VARCHAR',
+                  'arriba_retained_domains2': 'VARCHAR',
+                  'arriba_closest_genomic_breakpoint1': 'VARCHAR',
+                  'arriba_closest_genomic_breakpoint2': 'VARCHAR',
+                  'arriba_gene_id1': 'VARCHAR',
+                  'arriba_gene_id2': 'VARCHAR',
+                  'arriba_transcript_id1': 'VARCHAR',
+                  'arriba_transcript_id2': 'VARCHAR',
+                  'arriba_fusion_transcript': 'VARCHAR',
+                  'arriba_peptide_sequence': 'VARCHAR',
+                  'starfusion_left_gene': 'VARCHAR',
+                  'starfusion_right_gene': 'VARCHAR',
+                  'starfusion_left_breakpoint': 'VARCHAR',
+                  'starfusion_right_breakpoint': 'VARCHAR',
+                  'starfusion_est_junction': 'DOUBLE',
+                  'starfusion_est_spanning': 'DOUBLE',
+                  'starfusion_splice_type': 'VARCHAR',
+                  'starfusion_large_anchor_support': 'BOOLEAN',
+                  'starfusion_left_break_dinuc': 'VARCHAR',
+                  'starfusion_right_break_dinuc': 'VARCHAR',
+                  'starfusion_left_break_entropy': 'DOUBLE',
+                  'starfusion_right_break_entropy': 'DOUBLE',
+                  'starfusion_annots': 'VARCHAR',
+                  'oncokb_highest_sensitive_level': 'VARCHAR',
+                  'oncokb_highest_resistance_level': 'VARCHAR',
+                  'oncokb_highest_px_level': 'VARCHAR',
+                  'oncokb_treatments': 'VARCHAR',
+                  'oncokb_mutation_effect_citations': 'VARCHAR',
+                  'oncokb_treatment_citations': 'VARCHAR',
+                  'oncokb_dx_citations': 'VARCHAR',
+                  'oncokb_px_citations': 'VARCHAR',
+                  'oncokb_gene_in_oncokb': 'BOOLEAN',
+                  'oncokb_variant_in_oncokb': 'BOOLEAN',
+                  'pair_fii_explained': 'VARCHAR',
+                  'arriba_split_reads_5p': 'INTEGER',
+                  'arriba_split_reads_3p': 'INTEGER',
+                  'arriba_bam_split_reads_5p': 'INTEGER',
+                  'arriba_bam_split_reads_3p': 'INTEGER',
+                  'arriba_bam_molecules': 'INTEGER',
+                  'arriba_bam_pcr_copies': 'INTEGER',
+                  'arriba_cited_missing': 'INTEGER',
+                  'starfusion_bam_split_reads_5p': 'INTEGER',
+                  'starfusion_bam_split_reads_3p': 'INTEGER',
+                  'starfusion_bam_molecules': 'INTEGER',
+                  'starfusion_bam_pcr_copies': 'INTEGER',
+                  'starfusion_cited_missing': 'INTEGER'
                 });
           CREATE OR REPLACE TABLE fusion_events_meta AS
             SELECT * FROM read_csv('@META@', delim='\t', header=true, nullstr='', quote='',

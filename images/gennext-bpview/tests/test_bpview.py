@@ -79,14 +79,19 @@ def write_inputs(d):
     arriba = os.path.join(d, "arriba.tsv")
     with open(arriba, "w") as fh:
         fh.write("#gene1\tgene2\tstrand1(gene/fusion)\tstrand2(gene/fusion)\tbreakpoint1\tbreakpoint2\t"
-                 "split_reads1\tsplit_reads2\tdiscordant_mates\tconfidence\tdirection1\tdirection2\ttags\n")
-        fh.write(f"G1\tG2\t+/+\t+/+\tchrA:{BP1}\tchrB:{BP2}\t1\t0\t1\thigh\tdownstream\tupstream\tMitelman\n")
+                 "split_reads1\tsplit_reads2\tdiscordant_mates\tconfidence\tdirection1\tdirection2\ttags\t"
+                 "read_identifiers\n")
+        # Arriba cites junc0, its copy junc1, the spanning pair, the wild-type read and a name not in the BAM
+        fh.write(f"G1\tG2\t+/+\t+/+\tchrA:{BP1}\tchrB:{BP2}\t1\t0\t1\thigh\tdownstream\tupstream\tMitelman\t"
+                 "junc0,junc1,span,wt,ghost\n")
     sf = os.path.join(d, "sf.tsv")
     with open(sf, "w") as fh:
         fh.write("#FusionName\tJunctionReadCount\tSpanningFragCount\tSpliceType\tLeftGene\tLeftBreakpoint\t"
-                 "RightGene\tRightBreakpoint\tFFPM\tLargeAnchorSupport\tannots\n")
+                 "RightGene\tRightBreakpoint\tFFPM\tLargeAnchorSupport\tannots\tJunctionReads\tSpanningFrags\n")
+        # STAR-Fusion cites junc0 and jj, in its own name format (UMI suffix, '&...@' prefix)
         fh.write(f"G1--G2\t1\t1\tONLY_REF_SPLICE\tG1^X\tchrA:{BP1 + 3}:+\tG2^Y\tchrB:{BP2 - 2}:+\t1.0\tYES\t"
-                 '["G1:Oncogene"];["Cosmic","Mitelman"];INTERCHROMOSOMAL[chrA--chrB]\n')
+                 '["G1:Oncogene"];["Cosmic","Mitelman"];INTERCHROMOSOMAL[chrA--chrB]\t'
+                 "&x/1@junc0:UMI_ACGTA_TTGAC,jj/1\t.\n")
     return fa, gtf, bam, arriba, sf
 
 
@@ -153,6 +158,13 @@ def main():
         assert ev["fragments_dup"].get("junction") == 1, ev["fragments_dup"]
         # junc0 starts at j-50; jj's mates start at j-60 and j-40 but count once (the leftmost)
         assert ev["junction_start_sites"] == 2, ev["junction_start_sites"]
+        # per-caller counts from the cited reads (callers_bam), checkable in the BAM by XC
+        ca, cs = ev["callers_bam"]["arriba"], ev["callers_bam"]["starfusion"]
+        assert ca["fragments_nondup"] == {"junction": 1, "spanning": 1, "wt3": 1}, ca
+        assert ca["fragments_dup"] == {"junction": 1} and ca["cited"] == 5 and ca["cited_missing"] == 1, ca
+        assert (ca["split_5p"], ca["split_3p"]) == (1, 0), ca  # junc0's primary record is on G1 (5')
+        assert cs["fragments_nondup"] == {"junction": 2} and cs["cited_missing"] == 0, cs
+        assert (cs["split_5p"], cs["split_3p"]) == (2, 0), cs
         # contig sequence = chrA[..1000] + chrB[501..]
         contig = pysam.FastaFile(out + ".fa").fetch(ev["contig"])
         j = ev["junction_1based"]
@@ -175,6 +187,15 @@ def main():
         assert {r.get_tag("XF") for r in j0} != {"junction"}, [r.get_tag("XF") for r in j0]
         assert {r.get_tag("XG") for r in j0} == {"1junction"}, [r.get_tag("XG") for r in j0]
         assert {r.get_tag("XG") for r in by_name["span"]} == {"2spanning"}
+        xc = {q: {r.get_tag("XC") if r.has_tag("XC") else None for r in rs} for q, rs in by_name.items()}
+        assert xc["junc0"] == {"arriba,starfusion"} and xc["junc1"] == {"arriba"} and xc["jj"] == {"starfusion"}, xc
+        assert xc["span"] == {"arriba"} and xc["wt"] == {"arriba"}, xc
+        # XJ: the split read's anchor side, on junction-class records only
+        assert {r.get_tag("XJ") for r in by_name["junc0"] if r.get_tag("XF") == "junction"} == {"5p"}
+        assert not any(r.has_tag("XJ") for r in recs if r.get_tag("XF") != "junction")
+        sys.path.insert(0, os.path.join(HERE, ".."))
+        import bpview
+        assert bpview.starfusion_qname("&V1/1@V2:UMI_ACGTA_TTGAC") == "V2" and bpview.starfusion_qname("V3/2") == "V3"
         # fields the IGV view used to read from FusionInspector's abridged TSV
         assert ev["fusion_name"] == "G1--G2" and ev["left_gene"] == "G1" and ev["right_gene"] == "G2"
         assert (ev["left_local_breakpoint"], ev["right_local_breakpoint"]) == (j, j + 1)
