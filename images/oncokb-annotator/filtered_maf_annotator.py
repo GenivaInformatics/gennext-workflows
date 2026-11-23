@@ -192,6 +192,10 @@ REFHUB_MAX_FAILURES = 3
 # 0.8 refuses genomic_first, and the cache then asks by genomic change.
 DEFAULT_REFHUB_PATH = "genomic_first"
 
+# refhub 0.8's answer to ?path=genomic_first (HTTP 400). Any other 400 is
+# handled as a refhub failure, and genomic first stays on.
+REFHUB_08_PATH_REFUSAL = "path is genomic or protein"
+
 # OncoKB endpoints refhub caches, by the path upstream posts to.
 REFHUB_ENDPOINTS = {
     "/annotate/mutations/byGenomicChange": "/oncokb/cache/annotate/mutations/byGenomicChange",
@@ -273,10 +277,11 @@ class RefhubCache:
         except requests.exceptions.RequestException as error:
             return self._give_up(f"unreachable ({type(error).__name__})")
         if (reply.status_code == 400 and self.path == "genomic_first"
-                and "genomic_first" not in reply.text):
+                and REFHUB_08_PATH_REFUSAL in reply.text):
             # refhub 0.8 doesn't know genomic first: ask it by genomic change.
             self.log("refhub cache does not offer genomic first; asking it by genomic change")
             self.path = "genomic"
+            self.counts["requests"] -= 1
             return self.post(url, body)
         if reply.status_code != 200:
             if reply.status_code == 401:
@@ -292,12 +297,14 @@ class RefhubCache:
         self.failures = 0
 
         if all(status == "unavailable" for status in statuses):
-            # OncoKB is down for refhub: asking it directly would fail too, and
-            # a chunk failing directly goes row by row. Mark the rows; they are
-            # tried again through refhub after the pause.
+            # refhub could not reach OncoKB for any of these rows: ask OncoKB
+            # directly, as without the cache (the cache never fails a step).
+            # refhub itself answered, so this is not a refhub failure.
             reasons = sorted({a.get("reason", "") for a in answers})
             self.log(f"refhub cache could not reach OncoKB ({', '.join(reasons)}); "
-                     "trying these rows again later")
+                     "asking OncoKB directly")
+            self.counts["direct"] += 1
+            return None
         reply_answers = []
         for answer in answers:
             status = answer["status"]
@@ -496,7 +503,7 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
         def through_refhub():
             return bool(_refhub and _refhub.enabled)
 
-        def again(rows):
+        def again(rows, last):
             """Rows still unanswered after another try."""
             if not through_refhub():
                 return one_by_one(rows)
@@ -505,9 +512,14 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
                 part = rows[start:start + chunk_rows]
                 left = run(part)
                 if left is None:
-                    # The direct fallback failed; refhub is still on: keep the
-                    # rows for the next pass rather than send them one by one.
-                    left = part if through_refhub() else one_by_one(part, unknown(still))
+                    # The direct fallback failed. With refhub still on and a
+                    # pass to come, keep the rows for it; on the last pass,
+                    # send them one by one, so one failing row doesn't take
+                    # its chunk with it.
+                    if through_refhub() and not last:
+                        left = part
+                    else:
+                        left = one_by_one(part, unknown(still))
                 still += left
             return still
 
@@ -518,21 +530,25 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
             left = run(indices)
             if left is None:
                 # A row failure from asking OncoKB directly. With refhub still
-                # on, the rows are tried again together after the pause (a
-                # 500-row chunk one by one took 15 min in run c1125512).
-                left = indices if through_refhub() else one_by_one(indices, unknown(failed))
+                # on and a retry pass to come, the rows are tried again
+                # together after the pause (a 500-row chunk one by one takes
+                # about 15 min); with no retry pass, one by one now.
+                if through_refhub() and retry_waits:
+                    left = indices
+                else:
+                    left = one_by_one(indices, unknown(failed))
             failed += left
             if number % 5 == 0 or number == len(starts):
                 print(f"OncoKB: {indices[-1] + 1} of {len(lines)} MAF rows done, "
                       f"{unknown(failed)} failed so far, {len(failed) - unknown(failed)} known bad",
                       flush=True)
-        for wait in retry_waits:
+        for number, wait in enumerate(retry_waits, 1):
             retry = [i for i in failed if i not in known_bad]
             if not retry:
                 break
             print(f"OncoKB: {len(retry)} rows failed; trying them again alone in {wait} s", flush=True)
             sleep(wait)
-            failed = [i for i in failed if i in known_bad] + again(retry)
+            failed = [i for i in failed if i in known_bad] + again(retry, number == len(retry_waits))
 
         if unknown(failed) > limit:
             raise OncoKBServerError(

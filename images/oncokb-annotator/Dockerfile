@@ -43,7 +43,10 @@
 #                          byGenomicChange answer, by protein change only for
 #                          rows OncoKB fails on; those are counted in the step
 #                          log only. Output unchanged
-#                          through refhub, not row by row
+#   0.3.11-upstream-v4.1.0 as 0.3.9; review fixes: held rows go one by one on
+#                          the last pass; refhub reporting OncoKB unavailable
+#                          for every row sends them to OncoKB directly again;
+#                          only refhub 0.8's refusal turns genomic first off
 FROM python:3.12.12-alpine3.22@sha256:848ba4413eb897e225159b8fc1b02094576cbae4aa73fc13142608ae2c8c0e32
 
 ARG ONCOKB_ANNOTATOR_VERSION=v4.1.0
