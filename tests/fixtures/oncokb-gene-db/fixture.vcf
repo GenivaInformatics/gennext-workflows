@@ -1,0 +1,29 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr10,length=133797422>
+##contig=<ID=chr12,length=133275309>
+##contig=<ID=chr17,length=83257441>
+##contig=<ID=chr19,length=58617616>
+##contig=<ID=chr2,length=242193529>
+##contig=<ID=chr20,length=64444167>
+##contig=<ID=chr6,length=170805979>
+##contig=<ID=chr7,length=159345973>
+##contig=<ID=chr9,length=138394717>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	SYNTH
+chr10	43118396	ret_nonsense	C	T	.	PASS	.	GT	0/1
+chr12	25245325	kras_fs	CG	C	.	PASS	.	GT	0/1
+chr12	25245350	kras_g12d	C	T	.	PASS	.	GT	0/1
+chr17	7675088	tp53_r175h	C	T	.	PASS	.	GT	0/1
+chr17	31230267	nf1_missense	C	A	.	PASS	.	GT	0/1
+chr19	52225979	ppp2r1a_stoploss	T	C	.	PASS	.	GT	0/1
+chr2	232336629	dis3l2_syn_stop	G	A	.	PASS	.	GT	0/1
+chr20	37397842	src_missense	G	T	.	PASS	.	GT	0/1
+chr6	117365180	ros1_missense	A	C	.	PASS	.	GT	0/1
+chr7	5529226	actb_missense	C	T	.	PASS	.	GT	0/1
+chr7	55174771	egfr_e746_a750del	AGGAATTAAGAGAAGC	A	.	PASS	.	GT	0/1
+chr7	55181325	egfr_dup	C	CGACAACCCC	.	PASS	.	GT	0/1
+chr7	55191822	egfr_l858r	T	G	.	PASS	.	GT	0/1
+chr7	140753336	braf_v600e	A	T	.	PASS	.	GT	0/1
+chr7	140924561	braf_intron_plus5	C	A	.	PASS	.	GT	0/1
+chr7	140924566	braf_exon_edge_syn	C	T	.	PASS	.	GT	0/1
+chr9	21971121	cdkn2a_ex2	G	A	.	PASS	.	GT	0/1

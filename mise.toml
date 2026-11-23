@@ -23,6 +23,15 @@ python3 images/gennext-bpview/tests/test_columns_match.py
 python3 images/gennext-bpview/tests/test_load_events.py
 """
 
+[tasks."test:oncokb-gene-db"]
+description = "annovar-template's oncokbGene protocol and annovar-to-maf in their production images on the fixture, and install.sh under busybox"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+tests/test_annovar_oncokb_gene.sh
+tests/test_oncokb_gene_db_install.sh
+"""
+
 [tasks.ci]
 description = "The check gate"
-depends = ["test:oncokb-annotator", "test:gennext-bpview"]
+depends = ["test:oncokb-annotator", "test:gennext-bpview", "test:oncokb-gene-db"]
