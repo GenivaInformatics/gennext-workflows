@@ -1,4 +1,5 @@
 import csv
+import json
 import os
 from pathlib import Path
 import sys
@@ -645,6 +646,7 @@ class RefhubCacheTest(unittest.TestCase):
 
     def test_answers_come_back_as_oncokb_would_send_them(self):
         cache, refhub = self.cache(refhub_answers())
+        cache.path = "genomic"
         response = cache.post(ONCOKB_POST, self.queries("5", "6"))
         self.assertEqual(response.status_code, 200)
         self.assertEqual([a["query"]["genomicLocation"] for a in response.json()],
@@ -693,10 +695,72 @@ class RefhubCacheTest(unittest.TestCase):
         self.assertIsNone(cache.post(ONCOKB_POST, self.queries("5")))
         self.assertEqual(len(refhub.calls), 1)
 
-    def test_oncokb_unavailable_to_refhub_for_every_query_goes_to_oncokb_directly(self):
+    def test_oncokb_unavailable_to_refhub_for_every_row_sends_them_to_oncokb_directly(self):
         cache, _ = self.cache(refhub_answers(unavailable={"5", "6"}))
         self.assertIsNone(cache.post(ONCOKB_POST, self.queries("5", "6")))
-        self.assertIn("could not reach OncoKB (http_503)", self.log[0])
+        self.assertIn("could not reach OncoKB (http_503); asking OncoKB directly", self.log[0])
+        self.assertEqual(cache.counts["direct"], 1)
+        # refhub itself answered: not a refhub failure.
+        self.assertEqual((cache.failures, cache.enabled), (0, True))
+
+    def test_only_refhub_08s_refusal_turns_genomic_first_off(self):
+        cache, refhub = self.cache(lambda q: (400, {"error": "query 0: bad genomic location"}))
+        cache.path = "genomic_first"
+        self.assertIsNone(cache.post(ONCOKB_POST, self.queries("5")))
+        self.assertEqual(cache.path, "genomic_first")
+        self.assertEqual(len(refhub.calls), 1)
+        self.assertIn("HTTP 400", self.log[0])
+
+    def test_somatic_queries_ask_refhub_genomic_first_by_default(self):
+        cache, refhub = self.cache(refhub_answers())
+        with patch.dict(os.environ, {}, clear=True):
+            RefhubCache(REFHUB, "tok", refhub).post(ONCOKB_POST, self.queries("5"))
+            RefhubCache(REFHUB, "tok", refhub).post(
+                "https://www.oncokb.org/api/v1/annotate/germline/mutations/byGenomicChange", self.queries("5"))
+        with patch.dict(os.environ, {"REFHUB_ONCOKB_PATH": "genomic"}):
+            RefhubCache(REFHUB, "tok", refhub).post(ONCOKB_POST, self.queries("5"))
+        with patch.dict(os.environ, {"REFHUB_ONCOKB_PATH": "protein"}):
+            RefhubCache(REFHUB, "tok", refhub).post(ONCOKB_POST, self.queries("5"))
+        urls = [c["url"] for c in refhub.calls]
+        self.assertEqual(urls, [
+            REFHUB + "/oncokb/cache/annotate/mutations/byGenomicChange?path=genomic_first",
+            REFHUB + "/oncokb/cache/annotate/germline/mutations/byGenomicChange",
+            REFHUB + "/oncokb/cache/annotate/mutations/byGenomicChange",
+            REFHUB + "/oncokb/cache/annotate/mutations/byGenomicChange?path=protein",
+        ])
+
+    def test_protein_route_answers_are_counted_for_the_log_and_passed_on_as_oncokbs(self):
+        def answers(queries):
+            out = []
+            for q in queries:
+                position = q["genomicLocation"].split(",")[1]
+                annotation = {"geneExist": True, "oncogenic": "Likely Oncogenic", "treatments": [],
+                              "query": {"genomicLocation": q["genomicLocation"], "consequence": "missense_variant"}}
+                answer = {"status": "annotation", "annotation": annotation, "source": "miss"}
+                if position == "6":
+                    answer["route"] = "protein"
+                out.append(answer)
+            return 200, out
+        cache, _ = self.cache(answers)
+        reply = cache.post(ONCOKB_POST, self.queries("5", "6")).json()
+        # What upstream gets is OncoKB's annotation only: no route anywhere.
+        self.assertNotIn("route", json.dumps(reply))
+        self.assertEqual([a["oncogenic"] for a in reply], ["Likely Oncogenic"] * 2)
+        self.assertEqual(cache.counts["protein_route"], 1)
+        self.assertIn("1 answered by protein change", cache.summary())
+
+    def test_refhub_without_genomic_first_is_asked_by_genomic_change(self):
+        replies = iter([(400, {"error": "path is genomic or protein"}),
+                        (200, [{"status": "annotation", "annotation": {}, "source": "hit"}])])
+        cache, refhub = self.cache(lambda q: next(replies))
+        cache.path = "genomic_first"
+        self.assertEqual(cache.post(ONCOKB_POST, self.queries("5")).status_code, 200)
+        urls = [c["url"] for c in refhub.calls]
+        self.assertEqual(urls, [
+            REFHUB + "/oncokb/cache/annotate/mutations/byGenomicChange?path=genomic_first",
+            REFHUB + "/oncokb/cache/annotate/mutations/byGenomicChange",
+        ])
+        self.assertEqual(cache.counts["direct"], 0)
 
     def test_rows_refhub_cannot_annotate_come_back_marked_in_one_answer(self):
         cache, _ = self.cache(refhub_answers(bad={"6"}, failed={"7"}, unavailable={"8"}))
@@ -780,7 +844,8 @@ class RefhubCacheTest(unittest.TestCase):
         self.assertEqual(waits, [])
         self.assertIn("known bad in refhub's cache, written unannotated", out)
         self.assertIn("refhub cache: 2 requests; answers: 5 hits, 0 asked of OncoKB, 0 stale, 1 known bad, "
-                      "0 not answered; 0 requests sent to OncoKB directly", out)
+                      "0 not answered; 0 answered by protein change (OncoKB failed them by genomic "
+                      "change); 0 requests sent to OncoKB directly", out)
 
     def test_known_bad_rows_are_no_outage(self):
         # 40 known-bad intronic rows of 45: more than max_unanswered (10).
@@ -791,6 +856,112 @@ class RefhubCacheTest(unittest.TestCase):
         self.assertEqual(sum(1 for r in by_position.values() if r["ANNOTATED"] == "False"), 40)
         self.assertEqual(len(calls), 15)
         self.assertEqual(waits, [])
+
+    @staticmethod
+    def direct_oncokb(fail=lambda locations: False):
+        """OncoKB asked directly: answers each query, or HTTP 500 (as
+        upstream raises it) for a request `fail` picks."""
+        def post(url, body):
+            queries = json.loads(json.dumps(body, default=lambda o: o.__dict__))
+            if fail([q["genomicLocation"] for q in queries]):
+                raise OncoKBServerError("HTTP 500")
+            return _response(url, 200, [oncokb_answer(q) for q in queries])
+        return post
+
+    def run_with_direct(self, rows, reply, direct):
+        # Route first, so the patched _direct_post below is the one used.
+        route_through_refhub()
+        session = FakeRefhub(reply)
+        waits = []
+        with tempfile.TemporaryDirectory() as temp:
+            source, annotated, output = [Path(temp) / n for n in ("in.maf", "a.maf", "out.maf")]
+            write_tsv(source, HEADER, rows)
+            out = io.StringIO()
+            with patch("AnnotatorCore.validate_oncokb_token"), \
+                    patch("filtered_maf_annotator._direct_post", side_effect=direct) as direct_mock, \
+                    contextlib.redirect_stdout(out):
+                annotate_maf(source, annotated, "tok", "GRCh38", refhub_url=REFHUB,
+                             refhub_session=session, refhub_chunk_rows=3, sleep=waits.append)
+            header, _ = count_maf(source)
+            merge_maf(source, annotated, output, header)
+            with output.open(newline="") as file:
+                merged = list(csv.reader(file, delimiter="\t"))
+        names = maf_annotation_header()
+        by_position = {row[2]: dict(zip(names, row[len(HEADER):])) for row in merged[1:]}
+        return by_position, session.calls, direct_mock.call_count, waits, out.getvalue()
+
+    def test_oncokb_unavailable_to_refhub_goes_to_oncokb_directly(self):
+        # refhub can't reach OncoKB for any row of the first chunk: OncoKB is
+        # asked directly, as without the cache; no pause, nothing left over.
+        def reply(queries):
+            return refhub_answers(unavailable={"1", "2", "3"})(queries)
+        by_position, calls, direct, waits, out = self.run_with_direct(ROWS, reply, self.direct_oncokb())
+        self.assertTrue(all(r["ANNOTATED"] == "True" for r in by_position.values()))
+        self.assertEqual([len(c["queries"]) for c in calls], [3, 2])
+        self.assertEqual((direct, waits), (1, []))
+        self.assertIn("asking OncoKB directly", out)
+
+    def test_a_row_failing_alone_right_after_its_chunk_gets_one_more_pause(self):
+        # refhub fails the first chunk's rows (502) for the whole run; OncoKB
+        # directly fails any request with row 3 and another row (homopolymer
+        # 500), and row 3 alone once more just after (a transient), then
+        # answers it. 0.3.7 passed this: one by one, then alone after 60 s.
+        def reply(queries):
+            if {q["genomicLocation"].split(",")[1] for q in queries} & {"1", "2", "3"}:
+                return 502, "Bad Gateway"
+            return refhub_answers()(queries)
+        solo = {"n": 0}
+
+        def fail(locations):
+            if "1,3,3,A,G" not in locations:
+                return False
+            if len(locations) > 1:
+                return True
+            solo["n"] += 1
+            return solo["n"] == 1
+        by_position, calls, direct_calls, waits, out = self.run_with_direct(
+            ROWS, reply, self.direct_oncokb(fail))
+        self.assertTrue(all(r["ANNOTATED"] == "True" for r in by_position.values()), by_position)
+        self.assertEqual(waits, [60, 60])
+        self.assertIn("trying them alone again in 60 s", out)
+
+    def test_held_rows_go_one_by_one_on_the_last_pass(self):
+        # The review's probe: 5 rows, chunks of 3; refhub answers 502 for the
+        # first chunk's rows, and OncoKB directly fails any request holding
+        # row 3 with another row. 0.3.7 annotated all five; so must this.
+        def reply(queries):
+            if {q["genomicLocation"].split(",")[1] for q in queries} & {"1", "2", "3"}:
+                return 502, "Bad Gateway"
+            return refhub_answers()(queries)
+        direct = self.direct_oncokb(lambda locations: len(locations) > 1 and "1,3,3,A,G" in locations)
+        by_position, calls, direct_calls, waits, out = self.run_with_direct(ROWS, reply, direct)
+        self.assertTrue(all(r["ANNOTATED"] == "True" for r in by_position.values()), by_position)
+        self.assertEqual(waits, [60])
+        # Chunk 1 direct on pass 1 and on the retry, then rows 1-3 alone.
+        self.assertEqual(direct_calls, 5)
+
+    def test_a_failed_direct_fallback_keeps_the_rows_for_refhub(self):
+        # refhub answers HTTP 502 once; the direct fallback fails (500).
+        replies = {"n": 0}
+
+        def reply(queries):
+            replies["n"] += 1
+            return (502, "Bad Gateway") if replies["n"] == 1 else refhub_answers()(queries)
+        session = FakeRefhub(reply)
+        waits = []
+        with tempfile.TemporaryDirectory() as temp:
+            source, annotated = [Path(temp) / n for n in ("in.maf", "a.maf")]
+            write_tsv(source, HEADER, ROWS)
+            with patch("AnnotatorCore.validate_oncokb_token"), \
+                    patch("filtered_maf_annotator._direct_post", side_effect=OncoKBServerError("HTTP 500")) as direct, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                annotate_maf(source, annotated, "tok", "GRCh38", refhub_url=REFHUB,
+                             refhub_session=session, refhub_chunk_rows=3, sleep=waits.append)
+        # One direct try for chunk 1-3; its rows went again with chunk 4-5's
+        # leftovers after the pause, never one by one.
+        self.assertEqual(direct.call_count, 1)
+        self.assertEqual([len(c["queries"]) for c in session.calls], [3, 2, 3])
+        self.assertEqual(waits, [60])
 
     def test_many_rows_refhub_could_not_answer_are_still_an_outage(self):
         rows = [["S1", "chr1", str(n), str(n), "TTTT", "-", "NOTCH2", "Intron", "intronic", "PASS"]

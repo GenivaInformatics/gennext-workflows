@@ -34,6 +34,22 @@
 #   0.3.7-upstream-v4.1.0  as 0.3.6; refhub answers 500 rows a call, row by
 #                          row: known-bad rows are filled without resending
 #                          their chunk and don't count towards the outage cap
+#   0.3.8-upstream-v4.1.0  as 0.3.7; asks refhub by protein change
+#                          (?path=protein; REFHUB_ONCOKB_PATH=genomic opts
+#                          out); rows refhub can't get answered, or a chunk
+#                          whose direct fallback fails, are retried together
+#   0.3.9-upstream-v4.1.0  as 0.3.8; asks refhub genomic first
+#                          (?path=genomic_first, refhub 0.9): OncoKB's own
+#                          byGenomicChange answer, by protein change only for
+#                          rows OncoKB fails on; those are counted in the step
+#                          log only. Output unchanged
+#   0.3.11-upstream-v4.1.0 as 0.3.9; review fixes: held rows go one by one on
+#                          the last pass; refhub reporting OncoKB unavailable
+#                          for every row sends them to OncoKB directly again;
+#                          only refhub 0.8's refusal turns genomic first off
+#   0.3.13-upstream-v4.1.0 as 0.3.11; rows first sent alone on the last pass
+#                          (their chunk failed) are tried alone once more after
+#                          a pause, as 0.3.7 retried every row
 FROM python:3.12.12-alpine3.22@sha256:848ba4413eb897e225159b8fc1b02094576cbae4aa73fc13142608ae2c8c0e32
 
 ARG ONCOKB_ANNOTATOR_VERSION=v4.1.0

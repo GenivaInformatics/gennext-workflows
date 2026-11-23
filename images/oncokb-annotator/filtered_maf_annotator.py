@@ -181,6 +181,21 @@ REFHUB_RETRY = "refhub:not_answered"
 # After this many refhub failures in a row, this run stops asking it.
 REFHUB_MAX_FAILURES = 3
 
+# How refhub asks OncoKB for somatic queries:
+# - "genomic_first" (the default, refhub 0.9+): by genomic change, OncoKB's
+#   own answer as it is; only the rows OncoKB fails on that way are answered
+#   by protein change (counted in this step's log, nowhere else);
+# - "protein": refhub maps the genomic change to a protein change itself and
+#   asks byProteinChange;
+# - "genomic": byGenomicChange only.
+# REFHUB_ONCOKB_PATH overrides. refhub before 0.8 ignores the setting; refhub
+# 0.8 refuses genomic_first, and the cache then asks by genomic change.
+DEFAULT_REFHUB_PATH = "genomic_first"
+
+# refhub 0.8's answer to ?path=genomic_first (HTTP 400). Any other 400 is
+# handled as a refhub failure, and genomic first stays on.
+REFHUB_08_PATH_REFUSAL = "path is genomic or protein"
+
 # OncoKB endpoints refhub caches, by the path upstream posts to.
 REFHUB_ENDPOINTS = {
     "/annotate/mutations/byGenomicChange": "/oncokb/cache/annotate/mutations/byGenomicChange",
@@ -220,16 +235,17 @@ class RefhubCache:
     never fails a step.
     """
 
-    def __init__(self, base_url, token, session=None, log=None):
+    def __init__(self, base_url, token, session=None, log=None, path=None):
         import requests
         self.base_url = base_url.rstrip("/")
+        self.path = path or os.environ.get("REFHUB_ONCOKB_PATH", DEFAULT_REFHUB_PATH).strip() or "genomic"
         self.token = token
         self.session = session or requests.Session()
         self.log = log or (lambda message: print(f"OncoKB: {message}", flush=True))
         self.failures = 0
         self.enabled = True
         self.counts = {"requests": 0, "direct": 0, "hit": 0, "miss": 0, "refreshed": 0,
-                       "stale": 0, "bad": 0, "failed": 0}
+                       "stale": 0, "bad": 0, "failed": 0, "protein_route": 0}
 
     def _give_up(self, why):
         self.failures += 1
@@ -251,12 +267,22 @@ class RefhubCache:
         # Serialized as upstream serializes its POST body.
         queries = json.loads(json.dumps(body, default=lambda o: o.__dict__))
         self.counts["requests"] += 1
+        target = self.base_url + endpoint
+        if self.path != "genomic" and "/germline/" not in endpoint:
+            target += f"?path={self.path}"
         try:
             reply = self.session.post(
-                self.base_url + endpoint, json=queries, timeout=REFHUB_TIMEOUT,
+                target, json=queries, timeout=REFHUB_TIMEOUT,
                 headers={"Authorization": f"Bearer {self.token}"})
         except requests.exceptions.RequestException as error:
             return self._give_up(f"unreachable ({type(error).__name__})")
+        if (reply.status_code == 400 and self.path == "genomic_first"
+                and REFHUB_08_PATH_REFUSAL in reply.text):
+            # refhub 0.8 doesn't know genomic first: ask it by genomic change.
+            self.log("refhub cache does not offer genomic first; asking it by genomic change")
+            self.path = "genomic"
+            self.counts["requests"] -= 1
+            return self.post(url, body)
         if reply.status_code != 200:
             if reply.status_code == 401:
                 self.enabled = False
@@ -271,15 +297,23 @@ class RefhubCache:
         self.failures = 0
 
         if all(status == "unavailable" for status in statuses):
+            # refhub could not reach OncoKB for any of these rows: ask OncoKB
+            # directly, as without the cache (the cache never fails a step).
+            # refhub itself answered, so this is not a refhub failure.
             reasons = sorted({a.get("reason", "") for a in answers})
+            self.log(f"refhub cache could not reach OncoKB ({', '.join(reasons)}); "
+                     "asking OncoKB directly")
             self.counts["direct"] += 1
-            self.log(f"refhub cache could not reach OncoKB ({', '.join(reasons)}); asking OncoKB directly")
             return None
         reply_answers = []
         for answer in answers:
             status = answer["status"]
             if status == "annotation":
                 self.counts[answer.get("source")] = self.counts.get(answer.get("source"), 0) + 1
+                if answer.get("route") == "protein":
+                    # OncoKB failed the row by genomic change; refhub answered
+                    # it by protein change. Logged here only, never written.
+                    self.counts["protein_route"] += 1
                 reply_answers.append(answer["annotation"])
             elif status == "bad":
                 self.counts["bad"] += 1
@@ -294,7 +328,8 @@ class RefhubCache:
         return (f"refhub cache: {c['requests']} requests; answers: {c['hit']} hits, "
                 f"{c['miss'] + c['refreshed']} asked of OncoKB, {c['stale']} stale, "
                 f"{c['bad']} known bad, {c['failed']} not answered; "
-                f"{c['direct']} requests sent to OncoKB directly")
+                f"{c['protein_route']} answered by protein change (OncoKB failed them "
+                f"by genomic change); {c['direct']} requests sent to OncoKB directly")
 
 
 # The RefhubCache upstream's POSTs go through, or None; set by annotate_maf.
@@ -465,34 +500,69 @@ def annotate_maf(input_path, output_path, token, reference, tumor_type=".",
             """Rows OncoKB left unanswered that refhub doesn't know are bad."""
             return len([i for i in rows if i not in known_bad])
 
-        def again(rows):
+        def through_refhub():
+            return bool(_refhub and _refhub.enabled)
+
+        def again(rows, last):
             """Rows still unanswered after another try."""
-            if not (_refhub and _refhub.enabled):
+            if not through_refhub():
                 return one_by_one(rows)
             still = []
             for start in range(0, len(rows), chunk_rows):
                 part = rows[start:start + chunk_rows]
                 left = run(part)
-                still += one_by_one(part, unknown(still)) if left is None else left
+                if left is None:
+                    # The direct fallback failed. With refhub still on and a
+                    # pass to come, keep the rows for it; on the last pass,
+                    # send them one by one, so one failing row doesn't take
+                    # its chunk with it.
+                    if through_refhub() and not last:
+                        left = part
+                    else:
+                        left = one_by_one(part, unknown(still))
+                        if last:
+                            # Sent alone only now, straight after the
+                            # chunk's 500: they get one more pause.
+                            solo_late.update(left)
+                still += left
             return still
 
         failed = []
+        # Rows first sent alone on the last pass (their chunk failed): as
+        # 0.3.7 did for every row, they are tried alone once more after a pause.
+        solo_late = set()
         starts = range(0, len(lines), chunk_rows)
         for number, start in enumerate(starts, 1):
             indices = list(range(start, min(start + chunk_rows, len(lines))))
             left = run(indices)
-            failed += one_by_one(indices, unknown(failed)) if left is None else left
+            if left is None:
+                # A row failure from asking OncoKB directly. With refhub still
+                # on and a retry pass to come, the rows are tried again
+                # together after the pause (a 500-row chunk one by one takes
+                # about 15 min); with no retry pass, one by one now.
+                if through_refhub() and retry_waits:
+                    left = indices
+                else:
+                    left = one_by_one(indices, unknown(failed))
+            failed += left
             if number % 5 == 0 or number == len(starts):
                 print(f"OncoKB: {indices[-1] + 1} of {len(lines)} MAF rows done, "
                       f"{unknown(failed)} failed so far, {len(failed) - unknown(failed)} known bad",
                       flush=True)
-        for wait in retry_waits:
+        for number, wait in enumerate(retry_waits, 1):
             retry = [i for i in failed if i not in known_bad]
             if not retry:
                 break
             print(f"OncoKB: {len(retry)} rows failed; trying them again alone in {wait} s", flush=True)
             sleep(wait)
-            failed = [i for i in failed if i in known_bad] + again(retry)
+            failed = [i for i in failed if i in known_bad] + again(retry, number == len(retry_waits))
+        late = [i for i in failed if i in solo_late and i not in known_bad]
+        if late and retry_waits:
+            wait = retry_waits[-1]
+            print(f"OncoKB: {len(late)} rows failed alone right after their chunk; "
+                  f"trying them alone again in {wait} s", flush=True)
+            sleep(wait)
+            failed = [i for i in failed if i not in late] + one_by_one(late)
 
         if unknown(failed) > limit:
             raise OncoKBServerError(
