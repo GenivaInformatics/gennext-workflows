@@ -34,7 +34,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-snv-script
-        image: bergun/oncokb-annotator:0.3.13-upstream-v4.1.0@sha256:c5f5e224b88608d9b38ea859f87b32c67962e08c02ba698922e74c83acf51456
+        image: bergun/oncokb-annotator:0.3.14-upstream-v4.1.0@sha256:c582353784f55046b58911dc3ad52292acbca52c5deecd2864b37fcbd8e8612d
         workingDir: /app/oncokb/
         command: [sh]
         source: |
@@ -196,7 +196,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-sv-script
-        image: bergun/oncokb-annotator:0.3.13-upstream-v4.1.0@sha256:c5f5e224b88608d9b38ea859f87b32c67962e08c02ba698922e74c83acf51456
+        image: bergun/oncokb-annotator:0.3.14-upstream-v4.1.0@sha256:c582353784f55046b58911dc3ad52292acbca52c5deecd2864b37fcbd8e8612d
         command: [sh]
         source: |
           input_file="/mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-sv-in-f'])}}"
@@ -345,7 +345,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-fusions-script
-        image: bergun/oncokb-annotator:0.3.13-upstream-v4.1.0@sha256:c5f5e224b88608d9b38ea859f87b32c67962e08c02ba698922e74c83acf51456
+        image: bergun/oncokb-annotator:0.3.14-upstream-v4.1.0@sha256:c582353784f55046b58911dc3ad52292acbca52c5deecd2864b37fcbd8e8612d
         command: [sh]
         source: |
           input_file="/mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-fusions-in-f'])}}"
@@ -500,7 +500,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-snv-script
-        image: bergun/oncokb-annotator:0.3.13-upstream-v4.1.0@sha256:c5f5e224b88608d9b38ea859f87b32c67962e08c02ba698922e74c83acf51456
+        image: bergun/oncokb-annotator:0.3.14-upstream-v4.1.0@sha256:c582353784f55046b58911dc3ad52292acbca52c5deecd2864b37fcbd8e8612d
         workingDir: /app/oncokb/
         command: [sh]
         source: |
@@ -665,7 +665,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-sv-script
-        image: bergun/oncokb-annotator:0.3.13-upstream-v4.1.0@sha256:c5f5e224b88608d9b38ea859f87b32c67962e08c02ba698922e74c83acf51456
+        image: bergun/oncokb-annotator:0.3.14-upstream-v4.1.0@sha256:c582353784f55046b58911dc3ad52292acbca52c5deecd2864b37fcbd8e8612d
         command: [sh]
         source: |
           input_file="/mnt/input/{{=sprig.osBase(inputs.parameters['oncokb-sv-in-f'])}}"
@@ -821,7 +821,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-cnv-script
-        image: bergun/oncokb-annotator:0.3.13-upstream-v4.1.0@sha256:c5f5e224b88608d9b38ea859f87b32c67962e08c02ba698922e74c83acf51456
+        image: bergun/oncokb-annotator:0.3.14-upstream-v4.1.0@sha256:c582353784f55046b58911dc3ad52292acbca52c5deecd2864b37fcbd8e8612d
         command: [python3]
         source: |
           import csv
