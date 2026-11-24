@@ -43,6 +43,10 @@ CANCERVARDB="$cv/cancervardb" tests/test_annovar_oncokb_gene.sh
 tests/test_oncokb_gene_db_install.sh
 """
 
+[tasks."test:hrd-null-fallback"]
+description = "HRD that scarHRD could not compute is written and posted as null, not 0: the scarhrd fallback and collect-hrd-data, run from the templates"
+run = "python3 tests/test_hrd_null_fallback.py"
+
 [tasks.ci]
 description = "The check gate"
-depends = ["test:oncokb-annotator", "test:gennext-bpview", "test:oncokb-gene-db"]
+depends = ["test:oncokb-annotator", "test:gennext-bpview", "test:oncokb-gene-db", "test:hrd-null-fallback"]
