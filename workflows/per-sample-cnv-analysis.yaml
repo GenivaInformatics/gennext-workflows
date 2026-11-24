@@ -440,12 +440,13 @@ spec:
             # scarHRD needs allele-specific copy numbers (cn1/cn2). cnvkit only
             # emits those when there are enough reads/variants to call BAF; a
             # near-empty sample yields a plain call.cns without them. In that
-            # case emit a zero-filled fallback so collect-hrd-data still runs
+            # case emit a fallback with null scores (not computable): collect-hrd-data
+            # posts them as null, the frontend shows "—" rather than a score of 0,
             # and the sample completes instead of failing the whole workflow.
             if [[ ! -s "$CNS" ]] || ! head -n1 "$CNS" | grep -qw cn1 || ! head -n1 "$CNS" | grep -qw cn2; then
-                echo "WARN: ${CNS} lacks cn1/cn2 (insufficient reads for allele-specific CN). Writing zero-filled HRD fallback." >&2
+                echo "WARN: ${CNS} lacks cn1/cn2 (insufficient reads for allele-specific CN). Writing null HRD fallback (scores not computable)." >&2
                 cat > "$HRD_JSON" <<EOF
-            {"HRD": 0, "Telomeric_AI": 0, "LST": 0, "HRD_sum": 0}
+            {"HRD": null, "Telomeric_AI": null, "LST": null, "HRD_sum": null, "reason": "no allele-specific copy numbers (cn1/cn2) in call.cns"}
             EOF
                 exit 0
             fi

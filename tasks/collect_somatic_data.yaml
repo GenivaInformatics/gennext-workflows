@@ -201,13 +201,22 @@ spec:
           with open(hrd_json_f, 'r') as f:
               hrd_data_raw = json.load(f)
 
-          # Map HRD fields (cast floats to int)
+          # Map HRD fields (cast floats to int). A null score means scarHRD could
+          # not run (the scarhrd step's fallback when call.cns has no cn1/cn2):
+          # it is posted as JSON null and stored as NULL, never as 0. A missing
+          # key is still an error.
+          def score(key):
+              value = hrd_data_raw[key]
+              return None if value is None else int(value)
+
           hrd_data = {
-            "hrdValue": int(hrd_data_raw["HRD"]),
-            "hrdTelomericAi": int(hrd_data_raw["Telomeric_AI"]),
-            "hrdLst": int(hrd_data_raw["LST"]),
-            "hrdSum": int(hrd_data_raw["HRD_sum"]),
+            "hrdValue": score("HRD"),
+            "hrdTelomericAi": score("Telomeric_AI"),
+            "hrdLst": score("LST"),
+            "hrdSum": score("HRD_sum"),
             }
+          if hrd_data_raw.get("reason"):
+              print("HRD not computed:", hrd_data_raw["reason"])
 
           print(hrd_data)
           payload = {"runId": "{{inputs.parameters.run-id}}", "sampleId": "{{inputs.parameters.sample-id}}", "somaticData": hrd_data, "token": token }
