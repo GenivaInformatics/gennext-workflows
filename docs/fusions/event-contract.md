@@ -33,6 +33,7 @@ Paths are relative to the sample's output directory
 | `prototype` | `true` while the rules are the prototype's |
 | `arriba_settings` | `max_sensitivity` or `filters_restored` (Q5); see §5 |
 | `pon` | `none`, or the PoN file name and size |
+| `oncokb_curated_fusions` | the curated-fusion snapshot used: its data version, entry count and file name |
 | `events` | number of rows in `fusion_events` |
 
 The load step writes both tables in one transaction, `fusion_events_meta` last, so a sample never
@@ -111,6 +112,7 @@ the same junction.
 | `reading_frame` | VARCHAR | Arriba's: `in-frame`, `out-of-frame`, `stop-codon`. When no caller gives one (rescued Arriba calls, STAR-Fusion-only events), derived from the MANE Select CDS phase (fusion-events ≥ 0.6.0), only when both breakpoints are at exon boundaries inside the CDS; never `stop-codon` (stop codons at the junction aren't detected). Null when not computable |
 | `reading_frame_source` | VARCHAR | `arriba` or `mane` (derived; the UI says so); null when `reading_frame` is null. Tiers use the caller's frame only |
 | `canonical_junction` | BOOLEAN | Both breakpoints at exon boundaries of the MANE Select transcripts (`site5` = `site3` = `exon_boundary`) |
+| `adjacent_readthrough` | BOOLEAN | Same chromosome and strand, partners under 50 kb apart (`READTHROUGH_MAX_DISTANCE`), and no other gene (with a MANE Select transcript) overlapping the interval between the breakpoints |
 | `splice_type` | VARCHAR | STAR-Fusion's `ONLY_REF_SPLICE` / `INCL_NON_REF_SPLICE`, or derived from Arriba's sites |
 | `kinase_gene` | VARCHAR | The partner with a protein kinase domain (Pfam PF00069); the 3′ partner when both have one; null when neither has one |
 | `kinase_retained` | BOOLEAN | At least 90% of the kinase partner's kinase domain lies on the kept side of its breakpoint (`kinase_domain_fraction`). Null when `kinase_gene` is null. |
@@ -213,7 +215,7 @@ the bpview BAM that the read view and desktop IGV load. The unit is the fragment
 | `curated_known` | BOOLEAN | In Mitelman or COSMIC |
 | `oncokb_oncogenic`, `oncokb_mutation_effect` | VARCHAR | OncoKB, for the gene pair |
 | `oncokb_highest_level`, `oncokb_highest_dx_level` | VARCHAR | e.g. `LEVEL_1`, `LEVEL_Dx1` |
-| `oncokb_pair_specific` | BOOLEAN | OncoKB curates this exact gene pair (`VARIANT_IN_ONCOKB`), as opposed to a partner-agnostic level such as "any NTRK2 fusion" |
+| `oncokb_pair_specific` | BOOLEAN | OncoKB curates this exact gene pair: its curated fusion list names the alteration "GENE5-GENE3 Fusion" (either gene order), as opposed to a partner-agnostic level such as "any NTRK2 fusion". From a pinned snapshot of the list, shipped with fusion-events and versioned with the OncoKB data release (`fusion_events_meta.oncokb_curated_fusions`); no OncoKB calls from the workflow. Null without a list |
 | `pair_clinical_tier`, `pair_fii` | VARCHAR, DOUBLE | Today's gene-pair tier and FII, for comparison |
 
 ### Recurrence
@@ -231,7 +233,7 @@ All null when the sample was built without a PoN (the prototype's default).
 |---|---|---|
 | `tier` | INTEGER | 1–3, a default prioritisation, never a filter. Every event is in the table. |
 | `tier_basis` | VARCHAR | `oncokb_actionable`, `oncokb_oncogenic`, `curated_known`, `none` |
-| `tier_flags` | VARCHAR[] | What held it back: `out_of_frame`, `weak_caller_evidence`, `low_unique_molecules`, `low_support`, `rescued`, `rescue_capped`, `no_molecules`, `orientation_unknown`, `pon_recurrent`, `pon_capped` |
+| `tier_flags` | VARCHAR[] | What held it back: `out_of_frame`, `weak_caller_evidence`, `low_unique_molecules`, `low_support`, `rescued`, `rescue_capped`, `no_molecules`, `readthrough_capped`, `orientation_unknown`, `pon_recurrent`, `pon_capped` |
 | `tier_reason` | VARCHAR | The same in words, for the hover and the detail |
 
 ### Caller and annotator details (fusion-events 0.5.0, additive)
@@ -321,9 +323,13 @@ backend and the filter body.
   branch therefore rarely applies; Arriba's Mitelman tag (from its known-fusions file) and the
   STAR-Fusion branch do the work.
 - **Rescue rule (Berk, 25 Nov; fusion-events 0.6.0).** A rescued call stays above tier 3 only when OncoKB
-  curates that exact gene pair (`oncokb_pair_specific`), whatever its molecule count; partner-agnostic
+  curates that exact gene pair (`oncokb_pair_specific`: OncoKB's curated fusion list), whatever its molecule count; partner-agnostic
   levels or a database tag alone don't lift it. Even then it never reaches tier 1. `tier_flags` gets
   `rescue_capped`, and `tier_reason` says which part applied.
+- **Adjacent-gene read-through (Berk, 25 Nov; fusion-events 0.6.0).** An `adjacent_readthrough` event is
+  tier 3 unless OncoKB's curated list has the exact pair (`tier_flags` `readthrough_capped`; `tier_reason`
+  gives the distance and the 50 kb limit). Intrachromosomal fusions further apart, or with a gene between
+  them (e.g. GOPC–ROS1, ~240 kb), are untouched.
 - **No counted molecule (Berk, 25 Nov; fusion-events 0.6.0).** An event with 0 `unique_molecules` is tier 3,
   whatever the path, a kept curated call included (`tier_flags` `no_molecules`).
 - **Low support (Q1).** `low_support` when `unique_molecules` < 2. Capped at tier 2, ordered after

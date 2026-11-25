@@ -15,6 +15,8 @@ RUN micromamba install -y -n base -c bioconda -c conda-forge \
 ENV PATH=/opt/conda/bin:$PATH
 
 COPY --from=arriba /usr/local/var/lib/arriba/protein_domains_hg38_GRCh38_v2.5.1.gff3 /opt/bpview/ref/
+# OncoKB curated fusion list, a pinned snapshot (alteration names): the "exact pair" test of fusion-events.
+COPY ref/oncokb_curated_fusions.tsv /opt/bpview/ref/
 COPY bpview.py fusion_events.py /opt/bpview/
 COPY tests /opt/bpview/tests
 RUN python /opt/bpview/tests/test_bpview.py \

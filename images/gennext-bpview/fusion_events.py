@@ -76,7 +76,8 @@ CURATED_DB = {"Mitelman", "COSMIC"}
 # Every field a user may filter on is its own typed column. List columns (VARCHAR[]) are written
 # '|'-separated in the TSV and split on load; an empty cell is an empty list.
 TIER_FLAGS = ("out_of_frame", "weak_caller_evidence", "low_unique_molecules", "low_support", "rescued",
-              "rescue_capped", "no_molecules", "orientation_unknown", "pon_recurrent", "pon_capped")
+              "rescue_capped", "no_molecules", "readthrough_capped", "orientation_unknown", "pon_recurrent",
+              "pon_capped")
 COLUMNS = [
     # identity and order
     ("sample_id", "VARCHAR"), ("event_id", "VARCHAR"), ("event_rank", "INTEGER"), ("fusion", "VARCHAR"),
@@ -155,11 +156,16 @@ COLUMNS = [
     # reading_frame_source: "arriba" (Arriba's call) or "mane" (derived from the MANE Select CDS phase of
     # both partners when no caller gives a frame); null when reading_frame is null.
     ("reading_frame_source", "VARCHAR"),
-    # OncoKB curates this exact gene pair (VARIANT_IN_ONCOKB), as opposed to a partner-agnostic level.
+    # OncoKB curates this exact gene pair: its curated fusion list has "GENE5-GENE3 Fusion" (either order), as
+    # opposed to a partner-agnostic level. From the pinned snapshot (--oncokb-curated-fusions); null without one.
     ("oncokb_pair_specific", "BOOLEAN"),
     # Both breakpoints at exon boundaries of the MANE Select transcripts.
     ("canonical_junction", "BOOLEAN"),
+    # Same chromosome and strand, < READTHROUGH_MAX_DISTANCE apart, no other gene between the breakpoints.
+    ("adjacent_readthrough", "BOOLEAN"),
 ]
+READTHROUGH_MAX_DISTANCE = 50_000  # bp (Berk, 25 Nov): an adjacent-gene read-through is capped at tier 3
+CURATED_FUSIONS_DEFAULT = os.path.join(os.path.dirname(os.path.realpath(__file__)), "ref", "oncokb_curated_fusions.tsv")
 ONCOKB_LEVELS = ("LEVEL_1", "LEVEL_2", "LEVEL_3A", "LEVEL_3B", "LEVEL_4", "LEVEL_R1", "LEVEL_R2",
                  "LEVEL_Dx1", "LEVEL_Dx2", "LEVEL_Dx3", "LEVEL_Px1", "LEVEL_Px2", "LEVEL_Px3")
 SUPPORT_FILTERS = {"in_vitro", "relative_support", "min_support"}
@@ -253,6 +259,69 @@ def load_transcripts(path):
         if gene not in best or t["rank"] > best[gene]["rank"]:
             best[gene] = t
     return best
+
+
+def load_curated_fusions(path):
+    """OncoKB's curated fusion list (a pinned snapshot) -> (set of alteration names, version label).
+    TSV with a header row; the `alteration` column holds OncoKB's name, e.g. "EML4-ALK Fusion"; an optional
+    `oncokb_data_version` column (or a "#version: v7.7" line) gives the data release. No file -> (None, "none")."""
+    if not path or path == "." or not os.path.isfile(path):
+        if path and path != ".":
+            print(f"WARNING: OncoKB curated fusion list {path!r} not found: oncokb_pair_specific will be empty",
+                  file=sys.stderr)
+        return None, "none"
+    names, version, hdr = set(), "", None
+    with open(path) as fh:
+        for line in fh:
+            line = line.rstrip("\n")
+            if not line.strip():
+                continue
+            if line.startswith("#"):
+                m = re.match(r"#\s*version:\s*(\S+)", line)
+                version = m.group(1) if m else version
+                continue
+            f = line.split("\t")
+            if hdr is None:
+                hdr = f
+                continue
+            r = dict(zip(hdr, f))
+            alt = (r.get("alteration") or "").strip()
+            if alt:
+                names.add(alt)
+            version = version or (r.get("oncokb_data_version") or "").strip()
+    return names, f"{version or 'unversioned'} ({len(names)} fusions, {os.path.basename(path)})"
+
+
+def curated_pair(names, n1, n2):
+    """True when OncoKB's curated list names "A-B Fusion" for a genic name pair, in either gene order."""
+    if names is None:
+        return None
+    return any(f"{a}-{b} Fusion" in names or f"{b}-{a} Fusion" in names for a in n1 for b in n2)
+
+
+def gene_spans(transcripts):
+    """{chrom: [(start, end, gene)]} from the selected transcripts (MANE Select)."""
+    out = {}
+    for g, t in transcripts.items():
+        if t["exons"]:
+            out.setdefault(t["chrom"], []).append((min(a for a, _, _ in t["exons"]), max(b for _, b, _ in t["exons"]), g))
+    return out
+
+
+def adjacent_readthrough(ev, spans):
+    """Partner distance (bp) when the event is an adjacent-gene read-through: same chromosome and strand,
+    closer than READTHROUGH_MAX_DISTANCE, and no other gene overlapping the interval between the breakpoints;
+    else None. Genes are those with a MANE Select transcript in --gtf."""
+    if ev["chr1"] != ev["chr2"] or not ev["oriented"] or strand5(ev) != strand3(ev):
+        return None
+    d = abs(ev["pos1"] - ev["pos2"])
+    if d >= READTHROUGH_MAX_DISTANCE:
+        return None
+    lo, hi = sorted((ev["pos1"], ev["pos2"]))
+    partners = set(ev["names1"]) | set(ev["names2"])
+    if any(a < hi and b > lo and g not in partners for a, b, g in spans.get(ev["chr1"], [])):
+        return None
+    return d
 
 
 def load_kinase_domains(path):
@@ -552,6 +621,12 @@ def tier_event(row, opts):
             flags.append("rescue_capped")
             reasons.append("rescued call: never tier I")
             tier = 2
+    if row["adjacent_readthrough"] and not row["oncokb_pair_specific"] and tier < 3:
+        flags.append("readthrough_capped")
+        reasons.append(f"adjacent-gene read-through ({row['readthrough_distance']:,} bp apart, under "
+                       f"{READTHROUGH_MAX_DISTANCE:,} bp, no gene between) without OncoKB curation of this exact "
+                       "pair: tier III")
+        tier = 3
     if not row["unique_molecules"] and tier < 3:
         # Berk, 25 Nov: no counted molecule, no tier above III, whatever the path (a kept curated call too)
         flags.append("no_molecules")
@@ -721,6 +796,8 @@ def build_rows(opts):
     events = bpview.merge_events(arriba, starf, opts.merge_tolerance)
     pairs, bp, pon = load_pairs(opts.oncokb_json), load_bpview(opts.bpview_events), load_pon(opts.pon)
     transcripts, domains = load_transcripts(opts.gtf), load_kinase_domains(opts.protein_domains)
+    curated, _ = load_curated_fusions(opts.oncokb_curated_fusions)
+    spans = gene_spans(transcripts)
     rows = []
     for ev in events:
         a, s = ev.get("arriba") or {}, ev.get("starfusion") or {}
@@ -780,7 +857,10 @@ def build_rows(opts):
             pon_gene_pair_count=npair, pon_junction_count=njunc, pon_size=size,
             bpview_contig=b["contig"] if b else None, builder_version=__version__)
         row.update(caller_details(ev, entry))
-        row["oncokb_pair_specific"] = {"True": True, "False": False}.get(onc.get("VARIANT_IN_ONCOKB"))
+        row["oncokb_pair_specific"] = curated_pair(curated, n1, n2)
+        rt = adjacent_readthrough(ev, spans) if spans else None
+        row["adjacent_readthrough"] = (rt is not None) if spans else None
+        row["readthrough_distance"] = rt
         row.update({c: None for c, _ in COLUMNS if c not in row})
         row.update(caller_sides(ev, b))
         row["curated_known"] = bool(CURATED_DB & set(row["known_db"]))
@@ -793,8 +873,7 @@ def build_rows(opts):
     # junction (both breakpoints at exon boundaries) first (Berk, 25 Nov); then supported before low support,
     # unique molecules, and caller priority as before.
     def leads(r):
-        exact = r["curated_known"] or (r["oncokb_pair_specific"] and (
-            (r["oncokb_oncogenic"] or "") in ONCOGENIC or bool(r["oncokb_highest_level"])))
+        exact = r["curated_known"] or r["oncokb_pair_specific"]
         # an event with no supporting molecule in the BAM doesn't lead
         return bool(r["canonical_junction"]) and bool(exact) and (r["unique_molecules"] or 0) >= 1
 
@@ -817,6 +896,7 @@ def write_meta(path, opts, rows):
             ("prototype", "true" if opts.prototype else "false"),
             ("arriba_settings", opts.arriba_settings or ""),
             ("pon", f"{os.path.basename(opts.pon)} ({len(pon['samples'])} samples)" if pon else "none"),
+            ("oncokb_curated_fusions", load_curated_fusions(opts.oncokb_curated_fusions)[1]),
             ("events", str(len(rows)))]
     with open(path, "w") as fh:
         fh.write("key\tvalue\n")
@@ -972,6 +1052,8 @@ def main(argv=None):
     b.add_argument("--arriba-tsv")
     b.add_argument("--starfusion-tsv")
     b.add_argument("--oncokb-json", help="fusions_with_oncokb.json from oncokb-fusion-annotation")
+    b.add_argument("--oncokb-curated-fusions", default=CURATED_FUSIONS_DEFAULT,
+                   help="pinned snapshot of OncoKB's curated fusion list (alteration names); '.' for none")
     b.add_argument("--bpview-events", help="bpview events.json (optional)")
     b.add_argument("--pon", help="recurrence panel from `fusion-events pon` (optional)")
     b.add_argument("--gtf", help="GTF with MANE Select transcripts, for exon5/exon3 (optional)")

@@ -632,7 +632,8 @@ spec:
                   'starfusion_cited_missing': 'INTEGER',
                   'reading_frame_source': 'VARCHAR',
                   'oncokb_pair_specific': 'BOOLEAN',
-                  'canonical_junction': 'BOOLEAN'
+                  'canonical_junction': 'BOOLEAN',
+                  'adjacent_readthrough': 'BOOLEAN'
                 });
           CREATE OR REPLACE TABLE fusion_events_meta AS
             SELECT * FROM read_csv('@META@', delim='\t', header=true, nullstr='', quote='',
