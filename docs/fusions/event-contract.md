@@ -167,9 +167,15 @@ the bpview BAM that the read view and desktop IGV load. The unit is the fragment
   - `{caller}_bam_molecules`: fragments with `XC` containing the caller, `XG` ∈ {`1junction`,
     `2spanning`}, and no record with 0x400.
   - `{caller}_bam_pcr_copies`: the same with at least one record flagged 0x400.
+  - **Junction reads (bpview ≥ 0.4.1)** are either a chimeric split read (two records, primary +
+    supplementary) or one spliced record whose blocks lie on both partners, joined by an N/D gap from one
+    breakpoint to the other: STAR's alignment of a read-through between neighbouring genes. Both are drawn
+    crossing the junction and counted the same way. Earlier bpview drew the spliced kind as wild-type and
+    didn't count it.
   - `{caller}_bam_split_reads_5p` / `_3p`: the non-duplicate `1junction` fragments among those, by the
     side of the split read. `XJ:Z` (`5p` or `3p`) on a junction-class record (`XF = junction`) is the
-    partner of its primary, non-supplementary alignment: Arriba's "anchor". A fragment's side is its
+    partner of its primary, non-supplementary alignment: Arriba's "anchor". For a spliced read-through
+    record, which has no supplementary part, it's the partner holding more of its aligned bases. A fragment's side is its
     first junction mate's (read 1's `XJ`, else read 2's). Spanning pairs have no side, so 5p + 3p can be
     below the molecules.
   - **Caveat:** a cited fragment that bpview classes differently (e.g. `3junction_weak`, or a context
@@ -225,7 +231,7 @@ All null when the sample was built without a PoN (the prototype's default).
 |---|---|---|
 | `tier` | INTEGER | 1–3, a default prioritisation, never a filter. Every event is in the table. |
 | `tier_basis` | VARCHAR | `oncokb_actionable`, `oncokb_oncogenic`, `curated_known`, `none` |
-| `tier_flags` | VARCHAR[] | What held it back: `out_of_frame`, `weak_caller_evidence`, `low_unique_molecules`, `low_support`, `rescued`, `rescue_capped`, `orientation_unknown`, `pon_recurrent`, `pon_capped` |
+| `tier_flags` | VARCHAR[] | What held it back: `out_of_frame`, `weak_caller_evidence`, `low_unique_molecules`, `low_support`, `rescued`, `rescue_capped`, `no_molecules`, `orientation_unknown`, `pon_recurrent`, `pon_capped` |
 | `tier_reason` | VARCHAR | The same in words, for the hover and the detail |
 
 ### Caller and annotator details (fusion-events 0.5.0, additive)
@@ -318,6 +324,8 @@ backend and the filter body.
   curates that exact gene pair (`oncokb_pair_specific`), whatever its molecule count; partner-agnostic
   levels or a database tag alone don't lift it. Even then it never reaches tier 1. `tier_flags` gets
   `rescue_capped`, and `tier_reason` says which part applied.
+- **No counted molecule (Berk, 25 Nov; fusion-events 0.6.0).** An event with 0 `unique_molecules` is tier 3,
+  whatever the path, a kept curated call included (`tier_flags` `no_molecules`).
 - **Low support (Q1).** `low_support` when `unique_molecules` < 2. Capped at tier 2, ordered after
   supported events of the same tier. The view shows them by default; "Hide low support" is off by default.
 - **Default view (Q4 A).** Event samples have no built-in caller filters. Sort by `event_rank`; tiers 1

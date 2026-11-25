@@ -138,8 +138,87 @@ def test_merge():
     assert len(ev) == 2 and ev[0]["starfusion"]["left_breakpoint"] == "chr1:1002:+", ev
 
 
+def test_single_record_junctions():
+    """0.4.1: a read-through read (one spliced record, N gap from bp1 to bp2) is a junction read; an ITD's
+    wild-type reads, which overlap both segments, are not; an ITD's chimeric split read still is."""
+    sys.path.insert(0, os.path.join(HERE, ".."))
+    import bpview
+    random.seed(7)
+    C = "".join(random.choice("ACGT") for _ in range(4000))
+    with tempfile.TemporaryDirectory() as d:
+        fa = os.path.join(d, "g.fa")
+        with open(fa, "w") as fh:
+            fh.write(">chrC\n" + C + "\n")
+        pysam.faidx(fa)
+        gtf = os.path.join(d, "g.gtf")
+        with open(gtf, "w") as fh:
+            for g, a, b in (("RT5", 100, 1000), ("RT3", 2001, 3400), ("ITD", 500, 2500)):
+                attr = f'gene_id "{g}"; gene_name "{g}"; transcript_id "{g}.1";'
+                fh.write(f"chrC\tt\tgene\t{a}\t{b}\t.\t+\t.\t{attr}\n")
+                fh.write(f"chrC\tt\texon\t{a}\t{b}\t.\t+\t.\t{attr}\n")
+        hdr = pysam.AlignmentHeader.from_dict({"HD": {"VN": "1.6", "SO": "coordinate"},
+                                               "SQ": [{"SN": "chrC", "LN": 4000}]})
+        recs = []
+
+        def rec(name, start, cigar, seq, r1=True, rev=False, sa=None, supp=False):
+            r = pysam.AlignedSegment(hdr)
+            r.query_name, r.reference_id, r.reference_start = name, 0, start
+            r.cigarstring, r.query_sequence = cigar, seq
+            r.query_qualities = pysam.qualitystring_to_array("I" * len(seq))
+            r.mapping_quality, r.is_paired, r.is_read1, r.is_read2 = 255, False, r1, False
+            r.is_reverse, r.is_supplementary = rev, supp
+            if sa:
+                r.set_tag("SA", sa)
+            recs.append(r)
+        # read-through RT5(..1000) -> RT3(2001..): one spliced record each, like STAR's 8M23291N106M6143N31M
+        rec("rt_a", 950, "50M1000N50M", C[950:1000] + C[2000:2050])   # 50 + 50 aligned: side 5p (tie)
+        rec("rt_b", 970, "30M1000N70M", C[970:1000] + C[2000:2070])   # 30 + 70: side 3p
+        rec("rt_wt", 920, "100M", C[920:1020])                        # wild-type RT5 read: not a junction
+        # ITD inside ITD (500..2500): 5' part up to 2000, 3' part again from 1001 (a duplication)
+        rec("itd_wt1", 950, "100M", C[950:1050])                      # overlaps both segments: wild-type
+        rec("itd_wt2", 1950, "100M", C[1950:2050])
+        s1 = C[1950:2000] + C[1000:1050]                               # chimeric split read across the ITD
+        rec("itd_j", 1950, "50M50S", s1, sa="chrC,1001,+,50S50M,60,0;")
+        rec("itd_j", 1000, "50H50M", C[1000:1050], sa="chrC,1951,+,50M50S,60,0;", supp=True)
+        bam = os.path.join(d, "in.bam")
+        with pysam.AlignmentFile(bam + ".u", "wb", header=hdr) as o:
+            for r in recs:
+                o.write(r)
+        pysam.sort("-o", bam, bam + ".u")
+        pysam.index(bam)
+        arriba = os.path.join(d, "a.tsv")
+        with open(arriba, "w") as fh:
+            fh.write("#gene1\tgene2\tstrand1(gene/fusion)\tstrand2(gene/fusion)\tbreakpoint1\tbreakpoint2\t"
+                     "split_reads1\tsplit_reads2\tdiscordant_mates\tconfidence\tdirection1\tdirection2\ttype\n")
+            fh.write("RT5\tRT3\t+/+\t+/+\tchrC:1000\tchrC:2001\t2\t0\t0\tlow\tdownstream\tupstream\tdeletion/read-through\n")
+            fh.write("ITD\tITD\t+/+\t+/+\tchrC:2000\tchrC:1001\t1\t0\t0\tlow\tdownstream\tupstream\tduplication/ITD\n")
+        out = os.path.join(d, "out")
+        subprocess.run([sys.executable, BPVIEW, "--sample-id", "T", "--bam", bam, "--fasta", fa, "--gtf", gtf,
+                        "--arriba-tsv", arriba, "--out-prefix", out], check=True)
+        doc = json.load(open(out + ".events.json"))
+        ev = {e["gene1"]: e for e in doc["events"]}
+        rt, itd = ev["RT5"], ev["ITD"]
+        assert rt["fragments_nondup"].get("junction") == 2, rt["fragments_nondup"]
+        # (the ITD's reads also cross the read-through breakpoints, so the wild-type counts include them)
+        assert itd["fragments_nondup"].get("junction") == 1, itd["fragments_nondup"]
+        assert not itd["fragments_nondup"].get("junction_weak"), itd["fragments_nondup"]
+        b = pysam.AlignmentFile(out + ".bam")
+        by = {}
+        for r in b.fetch(rt["contig"]):
+            by[r.query_name] = r
+        j = rt["junction_1based"]
+        # drawn crossing the junction, as one alignment: 50M50M merged to 100M at the junction
+        assert by["rt_a"].get_tag("XF") == "junction" and by["rt_a"].get_tag("XG") == "1junction"
+        assert by["rt_a"].reference_start == j - 50 and by["rt_a"].cigarstring == "100M", by["rt_a"].cigarstring
+        assert by["rt_a"].get_tag("XJ") == "5p" and by["rt_b"].get_tag("XJ") == "3p"
+        assert by["rt_wt"].get_tag("XF") == "wt5", by["rt_wt"].get_tag("XF")
+        ib = {r.query_name: r.get_tag("XF") for r in b.fetch(itd["contig"])}
+        assert ib.get("itd_j") == "junction" and ib.get("itd_wt1") != "junction" and ib.get("itd_wt2") != "junction", ib
+
+
 def main():
     test_gene_names()
+    test_single_record_junctions()
     test_merge()
     with tempfile.TemporaryDirectory() as d:
         fa, gtf, bam, arriba, sf = write_inputs(d)

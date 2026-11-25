@@ -373,6 +373,18 @@ def test_tier_rules_0_6(d):
                     "--oncokb-json", jp, "--gtf", gtf, "--protein-domains", ".", "--out-tsv", out], check=True)
     r = [x for x in csv.DictReader(open(out), delimiter="\t") if x["fusion"] == "EK--AK"][0]
     assert r["tier"] == "2" and "never tier I" in r["tier_reason"], r
+    # no counted molecule: tier III through any path, a kept curated call included (Berk, 25 Nov)
+    bp = os.path.join(d, "t6.events.json")
+    with open(bp, "w") as fh:  # bpview drew the CLDN18-ARHGAP26-shaped call and found no molecule
+        json.dump({"events": [{"breakpoint1": "chr7:350", "breakpoint2": "chr8:300", "keep1": "le", "keep2": "ge",
+                               "contig": "CL--AR", "fragments_nondup": {"wt5": 6}, "fragments_dup": {"wt5": 141}}]}, fh)
+    tsv(ap, hdr, arr)
+    subprocess.run([sys.executable, FE, "build", "--sample-id", "T6", "--arriba-tsv", ap, "--starfusion-tsv", sp,
+                    "--oncokb-json", jp, "--gtf", gtf, "--protein-domains", ".", "--bpview-events", bp,
+                    "--out-tsv", out], check=True)
+    r = [x for x in csv.DictReader(open(out), delimiter="\t") if x["fusion"] == "CL--AR"][0]
+    assert r["unique_molecules"] == "0" and r["tier"] == "3" and "no_molecules" in r["tier_flags"], r
+    assert "no counted molecule: tier III" in r["tier_reason"], r["tier_reason"]
     # mane_frame: out of frame when the phases differ; UTR or intronic breakpoints give None
     t = fe_tx = fusion_events.load_transcripts(gtf)
     e = dict(pos1=199, keep1="le", pos2=100, keep2="ge")

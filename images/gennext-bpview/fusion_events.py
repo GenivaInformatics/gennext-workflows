@@ -76,7 +76,7 @@ CURATED_DB = {"Mitelman", "COSMIC"}
 # Every field a user may filter on is its own typed column. List columns (VARCHAR[]) are written
 # '|'-separated in the TSV and split on load; an empty cell is an empty list.
 TIER_FLAGS = ("out_of_frame", "weak_caller_evidence", "low_unique_molecules", "low_support", "rescued",
-              "rescue_capped", "orientation_unknown", "pon_recurrent", "pon_capped")
+              "rescue_capped", "no_molecules", "orientation_unknown", "pon_recurrent", "pon_capped")
 COLUMNS = [
     # identity and order
     ("sample_id", "VARCHAR"), ("event_id", "VARCHAR"), ("event_rank", "INTEGER"), ("fusion", "VARCHAR"),
@@ -552,6 +552,11 @@ def tier_event(row, opts):
             flags.append("rescue_capped")
             reasons.append("rescued call: never tier I")
             tier = 2
+    if not row["unique_molecules"] and tier < 3:
+        # Berk, 25 Nov: no counted molecule, no tier above III, whatever the path (a kept curated call too)
+        flags.append("no_molecules")
+        reasons.append("no counted molecule: tier III")
+        tier = 3
     if row["low_support"]:
         flags.append("low_support")
         if tier == 1:
