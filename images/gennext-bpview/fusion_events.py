@@ -156,8 +156,8 @@ COLUMNS = [
     # reading_frame_source: "arriba" (Arriba's call) or "mane" (derived from the MANE Select CDS phase of
     # both partners when no caller gives a frame); null when reading_frame is null.
     ("reading_frame_source", "VARCHAR"),
-    # OncoKB recognises this specific gene pair (not only one gene's fusions, not as a loss-of-function event).
-    # Derived from the stored OncoKB fields (see oncokb_exact_pair); a curated-list snapshot, if given, wins.
+    # OncoKB's answer for this specific gene pair (not only one gene's fusions, not as a loss-of-function event),
+    # decided from the OncoKB API response stored at annotation time (oncokb_exact_pair).
     ("oncokb_pair_specific", "BOOLEAN"),
     # Both breakpoints at exon boundaries of the MANE Select transcripts.
     ("canonical_junction", "BOOLEAN"),
@@ -166,8 +166,8 @@ COLUMNS = [
 ]
 READTHROUGH_MAX_DISTANCE = 50_000  # bp (Berk, 25 Nov): an adjacent-gene read-through is capped at tier 3
 LOF_EFFECTS = {"Loss-of-function", "Likely Loss-of-function"}
-EXACT_PAIR_RULE = ("derived: VARIANT_IN_ONCOKB=True, two different genes, MUTATION_EFFECT not (Likely) "
-                   "Loss-of-function, ONCOGENIC not Unknown")
+EXACT_PAIR_RULE = ("OncoKB API answer: a matched alteration names both genes; else VARIANT_IN_ONCOKB=True, two "
+                   "different genes, MUTATION_EFFECT not (Likely) Loss-of-function, ONCOGENIC not Unknown")
 ONCOKB_LEVELS = ("LEVEL_1", "LEVEL_2", "LEVEL_3A", "LEVEL_3B", "LEVEL_4", "LEVEL_R1", "LEVEL_R2",
                  "LEVEL_Dx1", "LEVEL_Dx2", "LEVEL_Dx3", "LEVEL_Px1", "LEVEL_Px2", "LEVEL_Px3")
 SUPPORT_FILTERS = {"in_vitro", "relative_support", "min_support"}
@@ -263,57 +263,33 @@ def load_transcripts(path):
     return best
 
 
-def load_curated_fusions(path):
-    """OncoKB's curated fusion list (a pinned snapshot) -> (set of alteration names, version label).
-    TSV with a header row; the `alteration` column holds OncoKB's name, e.g. "EML4-ALK Fusion"; an optional
-    `oncokb_data_version` column (or a "#version: v7.7" line) gives the data release. No file -> (None, "none")."""
-    if not path or path == "." or not os.path.isfile(path):
-        if path and path != ".":
-            print(f"WARNING: OncoKB curated fusion list {path!r} not found: oncokb_pair_specific will be empty",
-                  file=sys.stderr)
-        return None, "none"
-    names, version, hdr = set(), "", None
-    with open(path) as fh:
-        for line in fh:
-            line = line.rstrip("\n")
-            if not line.strip():
-                continue
-            if line.startswith("#"):
-                m = re.match(r"#\s*version:\s*(\S+)", line)
-                version = m.group(1) if m else version
-                continue
-            f = line.split("\t")
-            if hdr is None:
-                hdr = f
-                continue
-            r = dict(zip(hdr, f))
-            alt = (r.get("alteration") or "").strip()
-            if alt:
-                names.add(alt)
-            version = version or (r.get("oncokb_data_version") or "").strip()
-    return names, f"{version or 'unversioned'} ({len(names)} fusions, {os.path.basename(path)})"
-
-
 def oncokb_exact_pair(entry, fusion):
-    """Derived "exact pair" (Berk / coordinator, 25 Nov; OncoKB's curated list isn't downloadable on our
-    licence): OncoKB matched this variant (VARIANT_IN_ONCOKB), the partners are two different genes, and the
-    match is not a loss-of-function or unknown-oncogenicity one. OncoKB also sets VARIANT_IN_ONCOKB for
-    tumour-suppressor and intragenic fusions it treats as truncating; the effect test drops those.
-    -> True / False, or None when the pair has no OncoKB annotation. Not OncoKB's own curated list."""
+    """Is OncoKB's answer for this fusion about this specific gene pair? Decided from the OncoKB API response
+    stored by the annotator at annotation time (Berk, 25 Nov: rulings over the API answer, never a copy of
+    OncoKB's data). -> True / False, or None when the pair has no OncoKB annotation.
+
+    1. If the response records the alterations OncoKB matched (optional field MATCHED_ALTERATIONS: a list,
+       or a ';' / ','-separated string, e.g. "EML4-ALK Fusion" vs "Fusions"), the pair is specific when a
+       matched alteration names both genes, in either order.
+    2. Otherwise: VARIANT_IN_ONCOKB is True, the partners are two different genes, MUTATION_EFFECT is not
+       Loss-of-function or Likely Loss-of-function, and ONCOGENIC is not Unknown. OncoKB also sets
+       VARIANT_IN_ONCOKB for tumour-suppressor and intragenic fusions it matches as truncating; the effect test
+       drops those (rollout check of 9,736 stored rows, 25 Nov)."""
     onc = (entry or {}).get("OncoKB")
     if not onc:
         return None
     g5, _, g3 = (fusion or "").partition("--")
-    return (onc.get("VARIANT_IN_ONCOKB") == "True" and bool(g5) and bool(g3) and g5 != g3
+    if not g5 or not g3:
+        return False
+    matched = onc.get("MATCHED_ALTERATIONS")
+    if matched:
+        alts = matched if isinstance(matched, list) else re.split(r"[;,]", matched)
+        alts = {a.strip() for a in alts if a and a.strip()}
+        return any(re.search(rf"(^|[\s-]){re.escape(x)}-{re.escape(y)}(\s|$)", a)
+                   for a in alts for x, y in ((g5, g3), (g3, g5)))
+    return (onc.get("VARIANT_IN_ONCOKB") == "True" and g5 != g3
             and onc.get("MUTATION_EFFECT") not in LOF_EFFECTS
             and (onc.get("ONCOGENIC") or "Unknown") != "Unknown")
-
-
-def curated_pair(names, n1, n2):
-    """True when OncoKB's curated list names "A-B Fusion" for a genic name pair, in either gene order."""
-    if names is None:
-        return None
-    return any(f"{a}-{b} Fusion" in names or f"{b}-{a} Fusion" in names for a in n1 for b in n2)
 
 
 def gene_spans(transcripts):
@@ -813,7 +789,6 @@ def build_rows(opts):
     events = bpview.merge_events(arriba, starf, opts.merge_tolerance)
     pairs, bp, pon = load_pairs(opts.oncokb_json), load_bpview(opts.bpview_events), load_pon(opts.pon)
     transcripts, domains = load_transcripts(opts.gtf), load_kinase_domains(opts.protein_domains)
-    curated, _ = load_curated_fusions(opts.oncokb_curated_fusions)
     spans = gene_spans(transcripts)
     rows = []
     for ev in events:
@@ -874,9 +849,7 @@ def build_rows(opts):
             pon_gene_pair_count=npair, pon_junction_count=njunc, pon_size=size,
             bpview_contig=b["contig"] if b else None, builder_version=__version__)
         row.update(caller_details(ev, entry))
-        # a curated-list snapshot (--oncokb-curated-fusions), when given, wins over the derived rule
-        row["oncokb_pair_specific"] = (curated_pair(curated, n1, n2) if curated is not None
-                                       else oncokb_exact_pair(entry, fusion))
+        row["oncokb_pair_specific"] = oncokb_exact_pair(entry, fusion)
         rt = adjacent_readthrough(ev, spans) if spans else None
         row["adjacent_readthrough"] = (rt is not None) if spans else None
         row["readthrough_distance"] = rt
@@ -915,8 +888,7 @@ def write_meta(path, opts, rows):
             ("prototype", "true" if opts.prototype else "false"),
             ("arriba_settings", opts.arriba_settings or ""),
             ("pon", f"{os.path.basename(opts.pon)} ({len(pon['samples'])} samples)" if pon else "none"),
-            ("oncokb_exact_pair", ("curated list " + load_curated_fusions(opts.oncokb_curated_fusions)[1])
-             if opts.oncokb_curated_fusions not in (None, "", ".") else EXACT_PAIR_RULE),
+            ("oncokb_exact_pair", EXACT_PAIR_RULE),
             ("events", str(len(rows)))]
     with open(path, "w") as fh:
         fh.write("key\tvalue\n")
@@ -1072,9 +1044,6 @@ def main(argv=None):
     b.add_argument("--arriba-tsv")
     b.add_argument("--starfusion-tsv")
     b.add_argument("--oncokb-json", help="fusions_with_oncokb.json from oncokb-fusion-annotation")
-    b.add_argument("--oncokb-curated-fusions", default=".",
-                   help="optional pinned snapshot of OncoKB's curated fusion list (alteration names); when given "
-                        "it decides oncokb_pair_specific instead of the derived rule. Default: none")
     b.add_argument("--bpview-events", help="bpview events.json (optional)")
     b.add_argument("--pon", help="recurrence panel from `fusion-events pon` (optional)")
     b.add_argument("--gtf", help="GTF with MANE Select transcripts, for exon5/exon3 (optional)")

@@ -340,15 +340,12 @@ def test_tier_rules_0_6(d):
              "CL--AR": okb("", "Unknown", False, ["Mitelman"]),
              "FR--TA": okb("LEVEL_3B", "Oncogenic", True)}
     ap, sp, jp, out = (os.path.join(d, x) for x in ("t6.arriba.tsv", "t6.sf.tsv", "t6.json", "t6.ev.tsv"))
-    cur = os.path.join(d, "curated.tsv")  # OncoKB's curated fusion list: the exact pairs (either gene order)
-    with open(cur, "w") as fh:
-        fh.write("#version: test\nalteration\tgene\nEK-AK Fusion\tAK\nTA-FR Fusion\tFR\n")
     tsv(ap, hdr, arr)
     tsv(sp, SF_HDR, sf)
     with open(jp, "w") as fh:
         json.dump([dict(v, Fusion=k) for k, v in pairs.items()], fh)
     subprocess.run([sys.executable, FE, "build", "--sample-id", "T6", "--arriba-tsv", ap, "--starfusion-tsv", sp,
-                    "--oncokb-json", jp, "--gtf", gtf, "--protein-domains", ".", "--oncokb-curated-fusions", cur,
+                    "--oncokb-json", jp, "--gtf", gtf, "--protein-domains", ".",
                     "--out-tsv", out], check=True)
     ev = {r["fusion"]: r for r in csv.DictReader(open(out), delimiter="\t")}
     ek, nt, fg, cl, fr = (ev[k] for k in ("EK--AK", "NT--MY", "FG--CI", "CL--AR", "FR--TA"))
@@ -374,7 +371,7 @@ def test_tier_rules_0_6(d):
     arr2 = [row("EK", "AK", "chr1", "chr2", 199, 300, 5, "high", ".", "rescued", "relative_support(1)")]
     tsv(ap, hdr, arr2)
     subprocess.run([sys.executable, FE, "build", "--sample-id", "T6", "--arriba-tsv", ap, "--starfusion-tsv", sp,
-                    "--oncokb-json", jp, "--gtf", gtf, "--protein-domains", ".", "--oncokb-curated-fusions", cur,
+                    "--oncokb-json", jp, "--gtf", gtf, "--protein-domains", ".",
                     "--out-tsv", out], check=True)
     r = [x for x in csv.DictReader(open(out), delimiter="\t") if x["fusion"] == "EK--AK"][0]
     assert r["tier"] == "2" and "never tier I" in r["tier_reason"], r
@@ -386,23 +383,16 @@ def test_tier_rules_0_6(d):
     tsv(ap, hdr, arr)
     subprocess.run([sys.executable, FE, "build", "--sample-id", "T6", "--arriba-tsv", ap, "--starfusion-tsv", sp,
                     "--oncokb-json", jp, "--gtf", gtf, "--protein-domains", ".", "--bpview-events", bp,
-                    "--oncokb-curated-fusions", cur, "--out-tsv", out], check=True)
+                    "--out-tsv", out], check=True)
     r = [x for x in csv.DictReader(open(out), delimiter="\t") if x["fusion"] == "CL--AR"][0]
     assert r["unique_molecules"] == "0" and r["tier"] == "3" and "no_molecules" in r["tier_flags"], r
     assert "no counted molecule: tier III" in r["tier_reason"], r["tier_reason"]
     meta = os.path.join(d, "t6.meta.tsv")
     subprocess.run([sys.executable, FE, "build", "--sample-id", "T6", "--arriba-tsv", ap, "--starfusion-tsv", sp,
-                    "--oncokb-json", jp, "--protein-domains", ".", "--oncokb-curated-fusions", cur, "--out-tsv", out,
-                    "--out-meta-tsv", meta], check=True)
-    assert dict(l.rstrip("\n").split("\t") for l in open(meta))["oncokb_exact_pair"].startswith("curated list test (2 fusions"), meta
-    subprocess.run([sys.executable, FE, "build", "--sample-id", "T6", "--arriba-tsv", ap, "--starfusion-tsv", sp,
                     "--oncokb-json", jp, "--protein-domains", ".", "--out-tsv", out, "--out-meta-tsv", meta], check=True)
-    assert dict(l.rstrip("\n").split("\t") for l in open(meta))["oncokb_exact_pair"].startswith("derived: VARIANT_IN_ONCOKB"), meta
-    # Without a list, the derived rule decides (default): the EML4-ALK shape stays exact
-    r = [x for x in csv.DictReader(open(out), delimiter="\t") if x["fusion"] == "EK--AK"][0]
-    assert r["oncokb_pair_specific"] == "true" and r["tier"] == "2", r
+    assert dict(l.rstrip("\n").split("\t") for l in open(meta))["oncokb_exact_pair"].startswith("OncoKB API answer"), meta
 
-    # The derived exact-pair rule on the shapes seen in the real OncoKB output (oncokb-cache's check)
+    # The exact-pair rule over OncoKB's answer, on the shapes seen in the real OncoKB output (oncokb-cache's check)
     def ok(v, effect, onc):
         return {"OncoKB": {"VARIANT_IN_ONCOKB": v, "MUTATION_EFFECT": effect, "ONCOGENIC": onc}}
     X = fusion_events.oncokb_exact_pair
@@ -413,27 +403,34 @@ def test_tier_rules_0_6(d):
     assert X(ok("True", "Gain-of-function", "Unknown"), "MIEN1--ERBB2") is False                   # unknown oncogenicity
     assert X(ok("False", "Likely Gain-of-function", "Likely Oncogenic"), "NTRK2--MYO9A") is False   # gene-level only
     assert X(None, "GOPC--ROS1") is None                                                            # no annotation
+    # refinement: when OncoKB's matched alterations are recorded, a match naming both genes decides
+    m = lambda alts, **kw: {"OncoKB": dict({"VARIANT_IN_ONCOKB": "True", "MUTATION_EFFECT": "Gain-of-function",
+                                             "ONCOGENIC": "Oncogenic", "MATCHED_ALTERATIONS": alts}, **kw)}
+    assert X(m(["EML4-ALK Fusion"]), "EML4--ALK") is True
+    assert X(m("Fusions;Oncogenic Mutations"), "NTRK2--MYO9A") is False        # gene-level match only
+    assert X(m(["TACC3-FGFR3 Fusion"]), "FGFR3--TACC3") is True                # either gene order
+    assert X(m(["BRAF-AGK Fusion"]), "BRAF--MRPS33") is False                  # names one gene only
 
     # Adjacent-gene read-through (Berk, 25 Nov): same chromosome and strand, < 50 kb, no gene between ->
-    # tier III unless OncoKB's curated list has the pair. MSMB-NCOA4 shape: kept, Mitelman, 6 molecules.
+    # tier III unless OncoKB recognises the exact pair. MSMB-NCOA4 shape: kept, Mitelman, 6 molecules.
     g2 = os.path.join(d, "rt.gtf")
     with open(g2, "w") as fh:
         for chrom, name, a, b in (("chr20", "RA", 1000, 2000), ("chr20", "RB", 25000, 26000),          # 23 kb, adjacent
                                   ("chr21", "FA", 1000, 2000), ("chr21", "FB", 70000, 71000),          # 68 kb: too far
                                   ("chr22", "GA", 1000, 2000), ("chr22", "MID", 9000, 9500), ("chr22", "GB", 20000, 21000),
-                                  ("chr19", "EA", 1000, 2000), ("chr19", "EB", 25000, 26000)):        # curated exception
+                                  ("chr19", "EA", 1000, 2000), ("chr19", "EB", 25000, 26000)):        # OncoKB-exact exception
             fh.write(f'{chrom}\tT\texon\t{a}\t{b}\t.\t+\t0\tgene_name "{name}"; transcript_id "{name}-201"; '
                      f'exon_number 1; tag "MANE_Select";\n')
     rows = [row("RA", "RB", "chr20", "chr20", 2000, 25000, 6, "low", "in-frame", "kept", tags="Mitelman"),
             row("FA", "FB", "chr21", "chr21", 2000, 70000, 6, "low", "in-frame", "kept", tags="Mitelman"),
             row("GA", "GB", "chr22", "chr22", 2000, 20000, 6, "low", "in-frame", "kept", tags="Mitelman"),
             row("EA", "EB", "chr19", "chr19", 2000, 25000, 6, "low", "in-frame", "kept", tags="Mitelman")]
-    with open(cur, "a") as fh:
-        fh.write("EB-EA Fusion\tEA\n")
+    with open(jp, "w") as fh:  # OncoKB's answer for EA--EB is pair-specific
+        json.dump([dict(v, Fusion=k) for k, v in dict(pairs, **{"EA--EB": okb("LEVEL_1", "Oncogenic", True)}).items()], fh)
     tsv(ap, hdr, rows)
     tsv(sp, SF_HDR, [])
     subprocess.run([sys.executable, FE, "build", "--sample-id", "RT", "--arriba-tsv", ap, "--starfusion-tsv", sp,
-                    "--oncokb-json", jp, "--gtf", g2, "--protein-domains", ".", "--oncokb-curated-fusions", cur,
+                    "--oncokb-json", jp, "--gtf", g2, "--protein-domains", ".",
                     "--out-tsv", out], check=True)
     ev = {r["fusion"]: r for r in csv.DictReader(open(out), delimiter="\t")}
     ra = ev["RA--RB"]
@@ -441,7 +438,7 @@ def test_tier_rules_0_6(d):
     assert "23,000 bp apart, under 50,000 bp" in ra["tier_reason"], ra["tier_reason"]
     assert ev["FA--FB"]["adjacent_readthrough"] == "false" and ev["FA--FB"]["tier"] == "2", ev["FA--FB"]  # 68 kb
     assert ev["GA--GB"]["adjacent_readthrough"] == "false" and ev["GA--GB"]["tier"] == "2", ev["GA--GB"]  # gene between
-    ea = ev["EA--EB"]  # adjacent, but OncoKB's list has the pair (in the other gene order)
+    ea = ev["EA--EB"]  # adjacent, but OncoKB's answer is about this specific pair
     assert ea["adjacent_readthrough"] == "true" and ea["oncokb_pair_specific"] == "true" and ea["tier"] == "2", ea
     # mane_frame: out of frame when the phases differ; UTR or intronic breakpoints give None
     t = fe_tx = fusion_events.load_transcripts(gtf)
