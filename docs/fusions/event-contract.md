@@ -314,10 +314,10 @@ backend and the filter body.
   the pairs fusion-report saw (Arriba's kept calls and STAR-Fusion's). For a discarded-only pair that
   branch therefore rarely applies; Arriba's Mitelman tag (from its known-fusions file) and the
   STAR-Fusion branch do the work.
-- **Rescue rule (Berk, 25 Nov; fusion-events 0.6.0).** A rescued call never reaches tier 1. A rescued call
-  below the tier 1 support bar (`unique_molecules` < 2) stays tier 3 unless OncoKB curates that exact gene
-  pair (`oncokb_pair_specific`); partner-agnostic levels or a database tag alone don't lift it.
-  `tier_flags` gets `rescue_capped`, and `tier_reason` says which part applied.
+- **Rescue rule (Berk, 25 Nov; fusion-events 0.6.0).** A rescued call stays above tier 3 only when OncoKB
+  curates that exact gene pair (`oncokb_pair_specific`), whatever its molecule count; partner-agnostic
+  levels or a database tag alone don't lift it. Even then it never reaches tier 1. `tier_flags` gets
+  `rescue_capped`, and `tier_reason` says which part applied.
 - **Low support (Q1).** `low_support` when `unique_molecules` < 2. Capped at tier 2, ordered after
   supported events of the same tier. The view shows them by default; "Hide low support" is off by default.
 - **Default view (Q4 A).** Event samples have no built-in caller filters. Sort by `event_rank`; tiers 1

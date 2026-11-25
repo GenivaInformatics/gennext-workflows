@@ -541,13 +541,12 @@ def tier_event(row, opts):
         else:
             reasons.append("not known or actionable")
     if row["arriba_status"] == "rescued":
-        # Rescue rule (Berk, 25 Nov): a rescued call never reaches tier 1; one below the tier 1 support bar
-        # stays tier 3 unless OncoKB curates that exact gene pair (partner-agnostic levels don't count).
-        n = row["unique_molecules"]
-        if n < opts.tier1_min_unique_molecules and not row["oncokb_pair_specific"] and tier < 3:
+        # Rescue rule (Berk, 25 Nov): a rescued call stays above tier 3 only when OncoKB curates that exact
+        # gene pair, whatever its molecule count (partner-agnostic levels and database tags don't count),
+        # and even then it never reaches tier 1.
+        if not row["oncokb_pair_specific"] and tier < 3:
             flags.append("rescue_capped")
-            reasons.append(f"rescued call with {n} unique molecule(s), below the tier I bar of "
-                           f"{opts.tier1_min_unique_molecules}, and no OncoKB curation of this exact pair: tier III")
+            reasons.append("rescued call without OncoKB curation of this exact gene pair: tier III")
             tier = 3
         elif tier == 1:
             flags.append("rescue_capped")

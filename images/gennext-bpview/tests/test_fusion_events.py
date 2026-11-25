@@ -352,19 +352,27 @@ def test_tier_rules_0_6(d):
     assert ek["tier"] == "2" and "rescue_capped" not in ek["tier_flags"], ek
     assert (ek["reading_frame"], ek["reading_frame_source"]) == ("in-frame", "mane"), ek
     assert ek["oncokb_pair_specific"] == "true" and ek["canonical_junction"] == "true", ek
-    # partner-agnostic kinase hit: a rescued call never reaches tier I
-    assert nt["tier"] == "2" and "rescue_capped" in nt["tier_flags"] and "never tier I" in nt["tier_reason"], nt
+    # partner-agnostic kinase hit with 2 molecules: rescued without an exact OncoKB pair -> tier III
+    assert nt["tier"] == "3" and "rescue_capped" in nt["tier_flags"], nt
+    assert "without OncoKB curation of this exact gene pair: tier III" in nt["tier_reason"], nt["tier_reason"]
     assert nt["oncokb_pair_specific"] == "false" and nt["reading_frame"] == "", nt  # mid-exon: not computable
     # a partner-agnostic single molecule, rescued: tier III
     assert fg["tier"] == "3" and "rescue_capped" in fg["tier_flags"], fg
-    assert "no OncoKB curation of this exact pair: tier III" in fg["tier_reason"], fg["tier_reason"]
+    assert "without OncoKB curation of this exact gene pair: tier III" in fg["tier_reason"], fg["tier_reason"]
     # CLDN18-ARHGAP26 shape: Arriba's frame, source arriba; not canonical (mid-exon), so it doesn't lead
     assert cl["tier"] == "2" and (cl["reading_frame"], cl["reading_frame_source"]) == ("in-frame", "arriba"), cl
     assert cl["site5"] == "exon" and cl["canonical_junction"] == "false", cl
     # Order in tier II: canonical exact pairs first (FGFR3-TACC3 shape, then EML4-ALK shape), then the rest
-    # by the existing order (CLDN18-ARHGAP26 shape with 84 molecules, then the partner-agnostic kinase hit)
+    # by the existing order (CLDN18-ARHGAP26 shape)
     order = sorted((r for r in ev.values() if r["tier"] == "2"), key=lambda r: int(r["event_rank"]))
-    assert [r["fusion"] for r in order] == ["FR--TA", "EK--AK", "CL--AR", "NT--MY"], [r["fusion"] for r in order]
+    assert [r["fusion"] for r in order] == ["FR--TA", "EK--AK", "CL--AR"], [r["fusion"] for r in order]
+    # an exact OncoKB pair that is rescued with enough molecules still never reaches tier I
+    arr2 = [row("EK", "AK", "chr1", "chr2", 199, 300, 5, "high", ".", "rescued", "relative_support(1)")]
+    tsv(ap, hdr, arr2)
+    subprocess.run([sys.executable, FE, "build", "--sample-id", "T6", "--arriba-tsv", ap, "--starfusion-tsv", sp,
+                    "--oncokb-json", jp, "--gtf", gtf, "--protein-domains", ".", "--out-tsv", out], check=True)
+    r = [x for x in csv.DictReader(open(out), delimiter="\t") if x["fusion"] == "EK--AK"][0]
+    assert r["tier"] == "2" and "never tier I" in r["tier_reason"], r
     # mane_frame: out of frame when the phases differ; UTR or intronic breakpoints give None
     t = fe_tx = fusion_events.load_transcripts(gtf)
     e = dict(pos1=199, keep1="le", pos2=100, keep2="ge")
