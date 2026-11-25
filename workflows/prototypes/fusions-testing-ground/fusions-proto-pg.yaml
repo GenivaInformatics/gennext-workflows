@@ -503,7 +503,8 @@ spec:
                   coalesce(string_split(oncokb_mutation_effect_citations, '|'), []::VARCHAR[]) AS oncokb_mutation_effect_citations,
                   coalesce(string_split(oncokb_treatment_citations, '|'), []::VARCHAR[]) AS oncokb_treatment_citations,
                   coalesce(string_split(oncokb_dx_citations, '|'), []::VARCHAR[]) AS oncokb_dx_citations,
-                  coalesce(string_split(oncokb_px_citations, '|'), []::VARCHAR[]) AS oncokb_px_citations
+                  coalesce(string_split(oncokb_px_citations, '|'), []::VARCHAR[]) AS oncokb_px_citations,
+                  coalesce(string_split(oncokb_matched_alterations, '|'), []::VARCHAR[]) AS oncokb_matched_alterations
             )
             FROM read_csv('@EV@', delim='\t', header=true, nullstr='', quote='',
                 columns={
@@ -617,6 +618,8 @@ spec:
                   'oncokb_px_citations': 'VARCHAR',
                   'oncokb_gene_in_oncokb': 'BOOLEAN',
                   'oncokb_variant_in_oncokb': 'BOOLEAN',
+                  'oncokb_variant_summary': 'VARCHAR',
+                  'oncokb_matched_alterations': 'VARCHAR',
                   'pair_fii_explained': 'VARCHAR',
                   'arriba_split_reads_5p': 'INTEGER',
                   'arriba_split_reads_3p': 'INTEGER',
