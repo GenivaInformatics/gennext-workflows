@@ -108,6 +108,9 @@ def render(text, params, manifest=None):
         return "" if value is None else str(value)
 
     text = MANIFEST_EXPR.sub(manifest_field, text)
+    text = re.sub(
+        r"\{\{=sprig\.default\('([^']*)', inputs\.parameters\['([\w-]+)'\]\)\}\}",
+        lambda m: params[m.group(2)] or m.group(1), text)
     funcs = {"osBase": lambda p: os.path.basename(p.rstrip("/")),
              "osDir": lambda p: go_clean(os.path.dirname(p)),
              "osClean": go_clean}
@@ -197,7 +200,7 @@ def run_script(host, tmpl, params, secrets, image=None, network="none", extra=()
     cmd += script["command"][1:] + ["/argo/staging/script"]
     started = time.monotonic()
     run = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    print(f"     ran {tmpl['name']} in {image.split('@')[0]} "
+    print(f"     ran {tmpl['name']} in {image.split('@')[0]}@{image.split('@sha256:')[-1][:8]} "
           f"({time.monotonic() - started:.0f} s, exit {run.returncode})", flush=True)
     return run
 
@@ -359,8 +362,8 @@ def run_padding_repair(host, ctx):
         "gnomad-vcf": other + "common_variants/gnomad4/gnomad4_1pct.vcf.gz",
         "turkish-variome-vcf": other + "common_variants/turkish_variome/turkish_variome_1pct.vcf.gz",
     }
-    # The live template names the tag; the method row names the same image by digest.
-    check(tmpl["script"]["image"] == V1_IMAGE.split("@")[0],
+    # The live template names the tag, which resolves to v1's digest.
+    check(tmpl["script"]["image"] == "bergun/gennext-tmb-calc:0.5.0",
           "padding-repair: compute-tmb-data is still on tmb-calc 0.5.0")
     run = run_script(host, tmpl, inputs_for(tmpl, args), {}, image=V1_IMAGE)
     return run, tmb_dir(host) / "tmb_api_payload.json"
@@ -451,8 +454,40 @@ def publish(host, ctx, caller, mf, status=200):
         server.shutdown()
 
 
+def v0_workflow_checks():
+    """The gennext-dev V0 Workflow can't post and runs this branch's code."""
+    sys.path.insert(0, str(REPO / "tests"))
+    import make_tmb_v0_workflow as gen  # noqa: E402 (path set just above)
+
+    args = type("Args", (), dict(
+        node="n1", run_id=RUN_ID, sample_id=SAMPLE_ID, duckdb="/d/s_results.duckdb",
+        target_bed="/d/kit.valid.bed", scratch_dir="/s/tmb-v0/", input_type="vcf",
+        target_source="kit_bed", ref_base_dir=REF_BASE, method_id=METHOD_ID))
+    wf = gen.build(args)
+    text = json.dumps(wf)
+    check("secretKeyRef" not in text and "gennext-backend" not in text
+          and "publish-tmb" not in text and "http://" not in text,
+          "V0 workflow: no secret, no backend URL, no publish step")
+    by_name = {t["name"]: t for t in wf["spec"]["templates"]}
+    check(by_name["compute-tmb"] == templates("tasks/collect_tmb_data_v2.yaml")["compute-tmb"],
+          "V0 workflow: compute-tmb is this branch's, verbatim")
+    caller = dag_task("workflows/somatic/v2/somatic-dna-vcf.yaml", "collect-tmb-data")
+    v2_task = [t for t in by_name["main"]["dag"]["tasks"] if t["name"] == "v2"][0]
+    check([p["value"] for p in v2_task["arguments"]["parameters"] if p["name"].startswith("tmb-")]
+          == [p["value"] for p in caller["arguments"]["parameters"] if p["name"].startswith("tmb-")],
+          "V0 workflow: the vcf caller's manifest expressions, verbatim")
+    mounts = [m for t in wf["spec"]["templates"] for m in (t.get("script") or {}).get("volumeMounts", [])
+              if not m.get("readOnly")]
+    check(all(m["name"] == "output-dir" for m in mounts),
+          "V0 workflow: only the scratch output directories are writable")
+    sample = json.loads(wf["spec"]["arguments"]["parameters"][2]["value"])["samples"][0]
+    check(json.loads(sample["tmbMethodArgs"]) == METHODS["v1"]["cli_args"]
+          and sample["tmbCalculatorImage"] == V1_IMAGE, "V0 workflow: carries the v1 method row")
+
+
 def main():
     static_checks()
+    v0_workflow_checks()
     with tempfile.TemporaryDirectory() as tmp:
         # V0, per caller, kit BED.
         v0 = {}
@@ -523,15 +558,20 @@ def main():
         good = manifest("v1", "fastq")
         bad_ref = json.loads(good["samples"][0]["tmbReferenceFiles"])
         bad_ref[2]["sha256"] = "0" * 64
-        missing_ref = [{"path": "common_variants/gnomad4/gnomad4.1_exomes_pass_ac10.vcf.gz.missing",
-                        "sha256": "0" * 64}]
+        listed = json.loads(good["samples"][0]["tmbReferenceFiles"])
+        missing_ref = listed + [{"path": "common_variants/gnomad4/not_installed_here.vcf.gz",
+                                 "sha256": "0" * 64}]
         args = METHODS["v1"]["cli_args"]
         cases = [
             ("a reference file with the wrong checksum", {"tmbReferenceFiles": json.dumps(bad_ref)}, "checksum mismatch"),
             ("a reference file missing on the node", {"tmbReferenceFiles": json.dumps(missing_ref)}, "missing on this node"),
-            ("a reference path outside /mnt/ref", {"tmbReferenceFiles": json.dumps([{"path": "../x", "sha256": "0" * 64}])}, "relative"),
-            ("an empty tmbMethodId (manifest without methods)", {"tmbMethodId": None}, "no tmbMethodId"),
+            ("a reference path outside /mnt/ref", {"tmbReferenceFiles": json.dumps(listed + [{"path": "../x", "sha256": "0" * 64}])}, "relative"),
+            ("an empty tmbMethodId", {"tmbMethodId": None}, "no tmbMethodId"),
             ("an image not pinned by digest", {"tmbCalculatorImage": "bergun/gennext-tmb-calc:0.5.0"}, "not pinned"),
+            ("an image with a tag (the backend refuses it)", {"tmbCalculatorImage": "bergun/gennext-tmb-calc:0.5.0@" + V1_IMAGE.split("@")[1]}, "not pinned"),
+            ("args naming a /mnt/ref file that is not listed", {"tmbMethodArgs": json.dumps(args + ["--cosmic-vcf", "/mnt/ref/cosmic/other.vcf.gz"])}, "not a listed reference file"),
+            ("args naming /mnt/ref outside the mount", {"tmbMethodArgs": json.dumps(args + ["--cosmic-vcf", "/mnt/refx/a.vcf.gz"])}, "must name a file under"),
+            ("a short option other than -v", {"tmbMethodArgs": json.dumps(args + ["-o", "/tmp"])}, "short option"),
             ("a method that sets --api-endpoint", {"tmbMethodArgs": json.dumps(args + ["--api-endpoint", "http://x"])}, "may not set"),
             ("a method that sets a prefix of --output-dir", {"tmbMethodArgs": json.dumps(args + ["--output", "/tmp"])}, "may not set"),
             ("an unknown target source", {"tmbTargetSource": "bed"}, "target source"),
@@ -545,6 +585,23 @@ def main():
                                     image=V1_IMAGE)
             check(run.returncode != 0 and message in run.stderr,
                   f"compute fails on {what}")
+        # A backend that predates TMB methods: none of the six fields. The
+        # image falls back to the pinned python image, so the pod starts and
+        # the script says why it fails (an empty image would be refused by
+        # Kubernetes before any script ran).
+        old = manifest("v1", "fastq", tmbMethodId=None, tmbInputType=None,
+                       tmbCalculatorImage=None, tmbMethodArgs=None,
+                       tmbReferenceFiles=None, tmbTargetSource=None)
+        _, steps = v2_steps(host, ctx, "fastq", old)
+        tmpl, params = steps["compute-tmb"]
+        fallback = render(tmpl["script"]["image"], params)
+        check(fallback.startswith("python:3.11-alpine3.18@sha256:"),
+              "compute: a manifest without tmb* fields still gets a pinned image")
+        run, _ = run_v2_compute(host, ctx, "fastq", old)
+        check(run.returncode != 0 and "the run manifest has no tmbMethodId" in run.stderr,
+              "compute: a manifest without tmb* fields fails with its own message")
+        check(render(tmpl["script"]["image"], dict(params, **{"tmb-calculator-image": V1_IMAGE}))
+              == V1_IMAGE, "compute: with the field set, the manifest's image is used")
         payload.write_text("stale")
         canary = "$(touch /mnt/output/shell-ran)"
         run, _ = run_v2_compute(host, ctx, "fastq",

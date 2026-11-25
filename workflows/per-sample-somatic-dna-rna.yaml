@@ -4,8 +4,8 @@ metadata:
   name: per-sample-somatic-dna-rna
   namespace: argo
   annotations:
-    gennext.bio/expected-pods-fastq: "74"
-    gennext.bio/expected-pods-bam: "66"
+    gennext.bio/expected-pods-fastq: "75"
+    gennext.bio/expected-pods-bam: "67"
 spec:
   serviceAccountName: gennext-workflows
   entrypoint: main

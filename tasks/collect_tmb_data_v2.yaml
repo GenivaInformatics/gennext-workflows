@@ -133,7 +133,11 @@ spec:
             type: Directory
       script:
         name: tmb-calculator
-        image: "{{inputs.parameters.tmb-calculator-image}}"
+        # The method's calculator. A manifest without tmb* fields (a backend
+        # that predates TMB methods) has no image, and Kubernetes would
+        # refuse the pod before the script could say why. Then this pinned
+        # python image runs the script, which fails on the empty tmbMethodId.
+        image: "{{=sprig.default('python:3.11-alpine3.18@sha256:4799cdc47a1b7ecc2829e71e74d06ce7c0af54dec4f5ff139f869cc2c4283b1d', inputs.parameters['tmb-calculator-image'])}}"
         command: [python]
         workingDir: /mnt/input
         env:
@@ -209,7 +213,8 @@ spec:
               fail("the run manifest has no tmbMethodId")
           method_id = env("TMB_METHOD_ID")
           image = env("TMB_CALCULATOR_IMAGE")
-          if not re.fullmatch(r"[a-z0-9./_:-]+@sha256:[0-9a-f]{64}", image):
+          # The backend's rule for tmb_methods.calculator_image.
+          if not re.fullmatch(r"[a-z0-9./_-]+@sha256:[0-9a-f]{64}", image):
               fail(f"calculator image is not pinned by digest: {image}")
           input_type = env("TMB_INPUT_TYPE")
           if input_type not in ("fastq", "bam", "vcf"):
@@ -235,8 +240,36 @@ spec:
               if option.startswith("--") and len(option) > 2 and any(
                       f.startswith(option) for f in FIXED):
                   fail(f"method arguments may not set {arg}")
+              # Short options could alias a fixed one in a later image; the
+              # calculators' only short option is -v. Negative numbers pass.
+              if (arg.startswith("-") and not arg.startswith("--")
+                      and arg != "-v" and not re.fullmatch(r"-\.?[0-9].*", arg)):
+                  fail(f"method arguments may not use the short option {arg}")
           if not isinstance(reference_files, list):
               fail("reference files must be a JSON array")
+
+
+          def safe_relative(path):
+              return (bool(path) and not path.startswith("/")
+                      and all(part not in ("", ".", "..") for part in path.split("/")))
+
+
+          # Every file the arguments name under /mnt/ref must be a checked
+          # reference file (path before the first ':', as in --common-vcf
+          # path:FIELD[:THRESHOLD]). The backend's create route has the same
+          # rule; rows written by a migration don't pass through it.
+          listed = {entry.get("path") for entry in reference_files
+                    if isinstance(entry, dict)}
+          for arg in method_args:
+              start = arg.find(REF_ROOT)
+              if start < 0:
+                  continue
+              rest = arg[start:]
+              if not rest.startswith(REF_ROOT + "/"):
+                  fail(f"{arg} must name a file under {REF_ROOT}/")
+              rel = rest[len(REF_ROOT) + 1:].split(":", 1)[0]
+              if not safe_relative(rel) or rel not in listed:
+                  fail(f"{arg} names {rel}, which is not a listed reference file")
 
           # Every reference file must be present with the method's checksum.
           # This catches a node with a missing, wrong or partial file.
@@ -246,8 +279,7 @@ spec:
                       and isinstance(entry.get("sha256"), str)):
                   fail(f"reference file entry must have a path and a sha256: {entry}")
               rel = entry["path"]
-              if (not rel or rel.startswith("/")
-                      or ".." in rel.split("/")):
+              if not safe_relative(rel):
                   fail(f"reference file path must be relative to {REF_ROOT}: {rel}")
               path = os.path.join(REF_ROOT, rel)
               if not os.path.isfile(path):

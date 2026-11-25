@@ -1,7 +1,7 @@
 {
   "_source": "tmb_methods rows as seeded (versioning design 2.1 and 2.2). reference_files checksums here are the real files'; the test computes its own for the synthetic fixture files under ref/.",
   "v1": {
-    "calculator_image": "bergun/gennext-tmb-calc:0.5.0@sha256:9bcb6107a7b10f65dadcd38c53f397a8e779cbccad7e773f0fdb30f396d5cc83",
+    "calculator_image": "bergun/gennext-tmb-calc@sha256:9bcb6107a7b10f65dadcd38c53f397a8e779cbccad7e773f0fdb30f396d5cc83",
     "cli_args": ["--af-lower-threshold", "0.05", "--af-upper-threshold", "0.95",
                  "--filter-dets", "--dets-threshold", "2.5",
                  "--blacklist-genes", "PHOX2B,CHEK2",
@@ -22,7 +22,7 @@
     "input_overrides": {}
   },
   "v2": {
-    "calculator_image": "bergun/gennext-tmb-calc:0.6.0-0d65fee@sha256:4e22916093bce3527a9d746e51e6f042210760f3eaf7a5f8a0b7e539cb860227",
+    "calculator_image": "bergun/gennext-tmb-calc@sha256:4e22916093bce3527a9d746e51e6f042210760f3eaf7a5f8a0b7e539cb860227",
     "cli_args": ["--af-lower-threshold", "0.05", "--af-upper-threshold", "0.95",
                  "--min-depth", "50", "--exclude-mnv",
                  "--filter-dets", "--dets-threshold", "2.5",
