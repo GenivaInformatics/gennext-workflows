@@ -641,11 +641,13 @@ spec:
           CREATE OR REPLACE TABLE fusion_events_meta AS
             SELECT * FROM read_csv('@META@', delim='\t', header=true, nullstr='', quote='',
                                    columns={'key': 'VARCHAR', 'value': 'VARCHAR'});
+          -- The table must hold exactly the rows the builder wrote (meta key "events"); a mismatch aborts the
+          -- transaction, so neither table is written and the sample stays legacy.
+          SELECT CASE WHEN (SELECT count(*) FROM fusion_events)
+                           <> (SELECT CAST(value AS BIGINT) FROM fusion_events_meta WHERE key = 'events')
+                      THEN error('fusion_events row count differs from the meta count') END;
           COMMIT;
           SQL
-          # The table must hold exactly the rows the builder wrote (meta key "events").
-          CHECK=$(duckdb -csv -noheader "${DB}" "SELECT (SELECT count(*) FROM fusion_events) = (SELECT CAST(value AS BIGINT) FROM fusion_events_meta WHERE key = 'events')")
-          [ "${CHECK}" = "true" ] || { echo "ERROR: fusion_events row count differs from the meta count (${CHECK})"; exit 1; }
           echo "loaded into ${DB}: $(duckdb -csv -noheader "${DB}" "SELECT count(*) FROM fusion_events") events"
 
     # Sample and run state, to the DEV backend only. The address is fixed here on purpose: this

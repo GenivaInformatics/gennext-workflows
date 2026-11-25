@@ -173,7 +173,8 @@ the bpview BAM that the read view and desktop IGV load. The unit is the fragment
     supplementary) or one spliced record whose blocks lie on both partners, joined by an N/D gap from one
     breakpoint to the other: STAR's alignment of a read-through between neighbouring genes. Both are drawn
     crossing the junction and counted the same way. Earlier bpview drew the spliced kind as wild-type and
-    didn't count it.
+    didn't count it. The gap must run from one breakpoint to the other in the fusion's direction (bpview 0.4.2),
+    with no tolerance: a read whose gap ends a base off the breakpoint isn't counted.
   - `{caller}_bam_split_reads_5p` / `_3p`: the non-duplicate `1junction` fragments among those, by the
     side of the split read. `XJ:Z` (`5p` or `3p`) on a junction-class record (`XF = junction`) is the
     partner of its primary, non-supplementary alignment: Arriba's "anchor". For a spliced read-through
@@ -324,15 +325,15 @@ backend and the filter body.
   the pairs fusion-report saw (Arriba's kept calls and STAR-Fusion's). For a discarded-only pair that
   branch therefore rarely applies; Arriba's Mitelman tag (from its known-fusions file) and the
   STAR-Fusion branch do the work.
-- **Rescue rule (Berk, 25 Nov; fusion-events 0.6.0).** A rescued call stays above tier 3 only when OncoKB
+- **Rescue rule (fusion-events 0.6.0).** A rescued call stays above tier 3 only when OncoKB
   gives its answer for that specific gene pair (`oncokb_pair_specific`, a rule over the OncoKB API answer; see §4), whatever its molecule count; partner-agnostic
   levels or a database tag alone don't lift it. Even then it never reaches tier 1. `tier_flags` gets
   `rescue_capped`, and `tier_reason` says which part applied.
-- **Adjacent-gene read-through (Berk, 25 Nov; fusion-events 0.6.0).** An `adjacent_readthrough` event is
+- **Adjacent-gene read-through (fusion-events 0.6.0).** An `adjacent_readthrough` event is
   tier 3 unless OncoKB's answer is for that specific pair (`oncokb_pair_specific`; `tier_flags` `readthrough_capped`; `tier_reason`
   gives the distance and the 50 kb limit). Intrachromosomal fusions further apart, or with a gene between
   them (e.g. GOPC–ROS1, ~240 kb), are untouched.
-- **No counted molecule (Berk, 25 Nov; fusion-events 0.6.0).** An event with 0 `unique_molecules` is tier 3,
+- **No counted molecule (fusion-events 0.6.0).** An event with 0 `unique_molecules` is tier 3,
   whatever the path, a kept curated call included (`tier_flags` `no_molecules`).
 - **Low support (Q1).** `low_support` when `unique_molecules` < 2. Capped at tier 2, ordered after
   supported events of the same tier. The view shows them by default; "Hide low support" is off by default.

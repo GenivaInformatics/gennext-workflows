@@ -297,7 +297,7 @@ def test_caller_sides():
 
 
 def test_tier_rules_0_6(d):
-    """0.6.0 (Berk, 25 Nov), on the shapes of the real samples: the rescue rule, the order within a tier,
+    """0.6.0, on the shapes of the real samples: the rescue rule, the order within a tier,
     and the MANE-derived reading frame."""
     gtf = os.path.join(d, "t6.gtf")
     with open(gtf, "w") as fh:
@@ -375,7 +375,7 @@ def test_tier_rules_0_6(d):
                     "--out-tsv", out], check=True)
     r = [x for x in csv.DictReader(open(out), delimiter="\t") if x["fusion"] == "EK--AK"][0]
     assert r["tier"] == "2" and "never tier I" in r["tier_reason"], r
-    # no counted molecule: tier III through any path, a kept curated call included (Berk, 25 Nov)
+    # no counted molecule: tier III through any path, a kept curated call included
     bp = os.path.join(d, "t6.events.json")
     with open(bp, "w") as fh:  # bpview drew the CLDN18-ARHGAP26-shaped call and found no molecule
         json.dump({"events": [{"breakpoint1": "chr7:350", "breakpoint2": "chr8:300", "keep1": "le", "keep2": "ge",
@@ -418,7 +418,7 @@ def test_tier_rules_0_6(d):
     assert X(k(""), "BRAF--MRPS33") is True                    # OncoKB named nothing: today's rule decides
     assert X(k("Fusions;MSH2-KCNK12 Fusion", MUTATION_EFFECT="Likely Loss-of-function"), "MSH2--KCNK12") is True
 
-    # Adjacent-gene read-through (Berk, 25 Nov): same chromosome and strand, < 50 kb, no gene between ->
+    # Adjacent-gene read-through: same chromosome and strand, < 50 kb, no gene between ->
     # tier III unless OncoKB recognises the exact pair. MSMB-NCOA4 shape: kept, Mitelman, 6 molecules.
     g2 = os.path.join(d, "rt.gtf")
     with open(g2, "w") as fh:

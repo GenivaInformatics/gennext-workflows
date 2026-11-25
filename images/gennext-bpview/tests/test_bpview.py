@@ -177,6 +177,9 @@ def test_single_record_junctions():
         # ITD inside ITD (500..2500): 5' part up to 2000, 3' part again from 1001 (a duplication)
         rec("itd_wt1", 950, "100M", C[950:1050])                      # overlaps both segments: wild-type
         rec("itd_wt2", 1950, "100M", C[1950:2050])
+        # reviewer's probe (0.4.2): a wild-type read across the ITD whose forward gap spans the breakpoints in
+        # reverse order (1001 -> 2000, while the fusion runs 2000 -> 1001) must not become a junction
+        rec("itd_fwd", 950, "51M998N49M", C[950:1001] + C[1999:2048])
         s1 = C[1950:2000] + C[1000:1050]                               # chimeric split read across the ITD
         rec("itd_j", 1950, "50M50S", s1, sa="chrC,1001,+,50S50M,60,0;")
         rec("itd_j", 1000, "50H50M", C[1000:1050], sa="chrC,1951,+,50M50S,60,0;", supp=True)
@@ -214,6 +217,7 @@ def test_single_record_junctions():
         assert by["rt_wt"].get_tag("XF") == "wt5", by["rt_wt"].get_tag("XF")
         ib = {r.query_name: r.get_tag("XF") for r in b.fetch(itd["contig"])}
         assert ib.get("itd_j") == "junction" and ib.get("itd_wt1") != "junction" and ib.get("itd_wt2") != "junction", ib
+        assert ib.get("itd_fwd") not in ("junction", "junction_weak"), ib
 
 
 def main():

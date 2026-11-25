@@ -38,8 +38,10 @@ XJ:Z ("5p" or "3p") on a junction-class record is the partner of its primary ali
 side is that of its first junction mate (read 1, else read 2).
 
 A junction read is either two records (primary + supplementary, STAR's chimeric output) or, from 0.4.1,
-one spliced record whose blocks lie on both segments and meet exactly at the junction: STAR aligns a
-read-through between neighbouring genes as one alignment with a long N gap. Its XJ side is the partner
+one spliced record whose blocks lie on both segments and meet exactly at the junction, joined by an N/D gap
+running from bp1 to bp2 in the fusion's direction (0.4.2): STAR aligns a read-through between neighbouring
+genes as one alignment with a long N gap. The gap must end exactly at the breakpoints (no tolerance), so
+a read-through read whose gap is off by a base stays uncounted. Its XJ side is the partner
 holding more of its aligned bases.
 
 Calls are merged by junction (+-10 bp): each STAR-Fusion call joins the nearest Arriba call, and
@@ -72,7 +74,7 @@ import sys
 
 import pysam
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 
 REF_CONSUME = {0, 2, 3, 7, 8}
 QRY_CONSUME = {0, 1, 4, 7, 8}
@@ -444,11 +446,14 @@ def _merge_ops(cig):
     return out
 
 
-def _gap_joins(rec, b1, b2):
-    """True when the record has a deletion or splice gap (N/D) whose flanking bases are exactly the two
-    breakpoints: one alignment running from one partner straight into the other."""
+def _gap_joins(rec, b1, b2, rc):
+    """True when the record has a deletion or splice gap (N/D) running from one partner straight into the
+    other in the fusion's direction: from bp1 to bp2 in genome order on forward segments (left flank bp1,
+    right flank bp2), from bp2 to bp1 on reverse-complemented ones. A gap the other way round (a wild-type
+    read across an ITD/duplication, whose breakpoints lie in reverse order) doesn't join the fusion."""
+    want = (b2, b1) if rc else (b1, b2)
     for op, ln, p in _expand(rec):
-        if op in (2, 3) and p is not None and {p - 1, p + ln} == {b1, b2}:
+        if op in (2, 3) and p is not None and (p - 1, p + ln) == want:
             return True
     return False
 
@@ -478,7 +483,7 @@ def classify_mate(rl, segs, junction, min_anchor):
         b1 = segs[0].start if segs[0].rc else segs[0].end   # the breakpoints, genomic
         b2 = segs[1].end if segs[1].rc else segs[1].start
         if A["rev"] == B["rev"] and (not same or (A["cend"] == junction and B["cstart"] == junction
-                                                  and _gap_joins(A["rec"], b1, b2))):
+                                                  and _gap_joins(A["rec"], b1, b2, segs[0].rc))):
             L = len(sq)
             qa0, qa1 = A["lead"], L - A["trail"]
             qb0, qb1 = B["lead"], L - B["trail"]

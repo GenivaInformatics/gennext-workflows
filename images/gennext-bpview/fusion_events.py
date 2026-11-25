@@ -166,7 +166,7 @@ COLUMNS = [
     # Same chromosome and strand, < READTHROUGH_MAX_DISTANCE apart, no other gene between the breakpoints.
     ("adjacent_readthrough", "BOOLEAN"),
 ]
-READTHROUGH_MAX_DISTANCE = 50_000  # bp (Berk, 25 Nov): an adjacent-gene read-through is capped at tier 3
+READTHROUGH_MAX_DISTANCE = 50_000  # bp: an adjacent-gene read-through is capped at tier 3
 LOF_EFFECTS = {"Loss-of-function", "Likely Loss-of-function"}
 EXACT_PAIR_RULE = ("OncoKB API answer: a matched alteration is 'GENE5-GENE3 Fusion' (either order), when OncoKB "
                    "names its matches; else VARIANT_IN_ONCOKB=True, two different genes, MUTATION_EFFECT not "
@@ -268,7 +268,7 @@ def load_transcripts(path):
 
 def oncokb_exact_pair(entry, fusion):
     """Is OncoKB's answer for this fusion about this specific gene pair? Decided from the OncoKB API response
-    stored by the annotator at annotation time (Berk, 25 Nov: rulings over the API answer, never a copy of
+    stored by the annotator at annotation time (a ruling over the API answer, never a copy of
     OncoKB's data). -> True / False, or None when the pair has no OncoKB annotation.
 
     1. If the response records the alterations OncoKB matched (ONCOKB_MATCHED_ALTERATIONS, written by the
@@ -607,7 +607,7 @@ def tier_event(row, opts):
         else:
             reasons.append("not known or actionable")
     if row["arriba_status"] == "rescued":
-        # Rescue rule (Berk, 25 Nov): a rescued call stays above tier 3 only when OncoKB recognises that exact
+        # Rescue rule: a rescued call stays above tier 3 only when OncoKB recognises that exact
         # gene pair, whatever its molecule count (partner-agnostic levels and database tags don't count),
         # and even then it never reaches tier 1.
         if not row["oncokb_pair_specific"] and tier < 3:
@@ -625,7 +625,7 @@ def tier_event(row, opts):
                        "gene pair: tier III")
         tier = 3
     if not row["unique_molecules"] and tier < 3:
-        # Berk, 25 Nov: no counted molecule, no tier above III, whatever the path (a kept curated call too)
+        # No counted molecule, no tier above III, whatever the path (a kept curated call too)
         flags.append("no_molecules")
         reasons.append("no counted molecule: tier III")
         tier = 3
@@ -868,7 +868,7 @@ def build_rows(opts):
                                   + (["low_support"] if row["low_support"] else []))
         rows.append((row, bpview.priority(ev)))
     # Default order: tier; then exact curated or OncoKB-curated actionable/oncogenic pairs at a canonical
-    # junction (both breakpoints at exon boundaries) first (Berk, 25 Nov); then supported before low support,
+    # junction (both breakpoints at exon boundaries) first; then supported before low support,
     # unique molecules, and caller priority as before.
     def leads(r):
         exact = r["curated_known"] or r["oncokb_pair_specific"]
