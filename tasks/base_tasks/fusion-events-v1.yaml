@@ -41,7 +41,7 @@ spec:
         image: bergun/gennext-bpview:0.6.0@sha256:@@IMAGE_DIGEST@@
         command: [bash]
         resources:
-          requests: {cpu: "1", memory: 4Gi}
+          requests: {cpu: "1", memory: 3Gi}
           limits: {memory: 12Gi}
         volumeMounts:
           - {name: bam, mountPath: /mnt/input/bam, readOnly: true}
@@ -267,9 +267,11 @@ spec:
           CREATE OR REPLACE TABLE fusion_events_meta AS
             SELECT * FROM read_csv('@META@', delim='\t', header=true, nullstr='', quote='',
                                    columns={'key': 'VARCHAR', 'value': 'VARCHAR'});
+          -- The table must hold exactly the rows the builder wrote (meta key "events"); a mismatch aborts the
+          -- transaction, so neither table is written and the sample stays legacy.
+          SELECT CASE WHEN (SELECT count(*) FROM fusion_events)
+                           <> (SELECT CAST(value AS BIGINT) FROM fusion_events_meta WHERE key = 'events')
+                      THEN error('fusion_events row count differs from the meta count') END;
           COMMIT;
           SQL
-          # The table must hold exactly the rows the builder wrote (meta key "events").
-          CHECK=$(duckdb -csv -noheader "${DB}" "SELECT (SELECT count(*) FROM fusion_events) = (SELECT CAST(value AS BIGINT) FROM fusion_events_meta WHERE key = 'events')")
-          [ "${CHECK}" = "true" ] || { echo "ERROR: fusion_events row count differs from the meta count (${CHECK})"; exit 1; }
           echo "loaded into ${DB}: $(duckdb -csv -noheader "${DB}" "SELECT count(*) FROM fusion_events") events"
