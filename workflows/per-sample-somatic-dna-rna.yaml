@@ -4,8 +4,8 @@ metadata:
   name: per-sample-somatic-dna-rna
   namespace: argo
   annotations:
-    gennext.bio/expected-pods-fastq: "74"
-    gennext.bio/expected-pods-bam: "66"
+    gennext.bio/expected-pods-fastq: "75"
+    gennext.bio/expected-pods-bam: "67"
 spec:
   serviceAccountName: gennext-workflows
   entrypoint: main
@@ -156,6 +156,8 @@ spec:
                   value: "{{workflow.parameters.sample-uuid}}"
                 - name: dna-input-files
                   value: "{{tasks.load-and-prepare-dna.outputs.parameters.dna-input-files}}"
+                - name: sample-run-data
+                  value: "{{tasks.load-and-prepare-dna.outputs.parameters.sample-run-data}}"
                 - name: tumor-type
                   value: "{{tasks.load-and-prepare-dna.outputs.parameters.tumor-type}}"
                 - name: ref-version

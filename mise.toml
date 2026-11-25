@@ -47,6 +47,10 @@ tests/test_oncokb_gene_db_install.sh
 description = "HRD that scarHRD could not compute is written and posted as null, not 0: the scarhrd fallback and collect-hrd-data, run from the templates"
 run = "python3 tests/test_hrd_null_fallback.py"
 
+[tasks."test:tmb-v2-byte-identity"]
+description = "collect-tmb-data-v2 with v1 methods stages byte-identical TMB payloads to today's collect-tmb-data (V0) and padding repair (V0b); the v2 method, compute checks and publish, run from the templates in the pinned images"
+run = "python3 tests/test_tmb_v2_byte_identity.py"
+
 [tasks.ci]
 description = "The check gate"
-depends = ["test:oncokb-annotator", "test:gennext-bpview", "test:oncokb-gene-db", "test:hrd-null-fallback"]
+depends = ["test:oncokb-annotator", "test:gennext-bpview", "test:oncokb-gene-db", "test:hrd-null-fallback", "test:tmb-v2-byte-identity"]

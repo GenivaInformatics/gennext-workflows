@@ -1,0 +1,41 @@
+{
+  "_source": "tmb_methods rows as seeded (versioning design 2.1 and 2.2). reference_files checksums here are the real files'; the test computes its own for the synthetic fixture files under ref/.",
+  "v1": {
+    "calculator_image": "bergun/gennext-tmb-calc@sha256:9bcb6107a7b10f65dadcd38c53f397a8e779cbccad7e773f0fdb30f396d5cc83",
+    "cli_args": ["--af-lower-threshold", "0.05", "--af-upper-threshold", "0.95",
+                 "--filter-dets", "--dets-threshold", "2.5",
+                 "--blacklist-genes", "PHOX2B,CHEK2",
+                 "--filter-cosmic", "--cosmic-vcf", "/mnt/ref/cosmic/Cosmic_CompleteTargetedScreensMutant_v103_GRCh38.vcf.gz",
+                 "--filter-common-variants",
+                 "--common-vcf", "/mnt/ref/common_variants/gnomad4/gnomad4_1pct.vcf.gz:AF",
+                 "--common-vcf", "/mnt/ref/common_variants/turkish_variome/turkish_variome_1pct.vcf.gz:TR_AF",
+                 "--common-af-threshold", "0.01",
+                 "--verbose"],
+    "reference_files": [
+      {"path": "cosmic/Cosmic_CompleteTargetedScreensMutant_v103_GRCh38.vcf.gz", "sha256": "1bb62e0ef0e87250c5d8858fce7230366066490b5c37c199227940c5f2470bbc"},
+      {"path": "cosmic/Cosmic_CompleteTargetedScreensMutant_v103_GRCh38.vcf.gz.tbi", "sha256": "e24ece27bfbb91a4bfd5d5c0b0e14bc704c128b038f7c04cda3cdf67bfc3ac18"},
+      {"path": "common_variants/gnomad4/gnomad4_1pct.vcf.gz", "sha256": "a7619f743274aa23a508bfa906af2391d7d9ae4ea0f22eada030a77eaa3639e9"},
+      {"path": "common_variants/gnomad4/gnomad4_1pct.vcf.gz.tbi", "sha256": "46525f4fb80b2a95d3afc410f1edf31c7dbf3baaddd08000008be87bca62d7e3"},
+      {"path": "common_variants/turkish_variome/turkish_variome_1pct.vcf.gz", "sha256": "7d50d1519a375c4b3109647a4fa12e315cf63d25c4a6318769982bbc59c352e1"},
+      {"path": "common_variants/turkish_variome/turkish_variome_1pct.vcf.gz.tbi", "sha256": "5f51f27b1d102f63d6490941ade518f9d062f6291112ab7de99ef1dcaf7dbd13"}
+    ],
+    "input_overrides": {}
+  },
+  "v2": {
+    "calculator_image": "bergun/gennext-tmb-calc@sha256:4e22916093bce3527a9d746e51e6f042210760f3eaf7a5f8a0b7e539cb860227",
+    "cli_args": ["--af-lower-threshold", "0.05", "--af-upper-threshold", "0.95",
+                 "--min-depth", "50", "--exclude-mnv",
+                 "--filter-dets", "--dets-threshold", "2.5",
+                 "--filter-common-variants",
+                 "--common-vcf", "/mnt/ref/common_variants/gnomad4/gnomad4.1_exomes_pass_ac10.vcf.gz:AF:4e-5",
+                 "--filter-proximity", "--proximity-window", "500", "--proximity-min-neighbours", "5",
+                 "--proximity-germline-fraction", "0.95", "--proximity-vaf-tolerance", "0.1",
+                 "--tmb-denominator", "cds",
+                 "--verbose"],
+    "reference_files": [
+      {"path": "common_variants/gnomad4/gnomad4.1_exomes_pass_ac10.vcf.gz", "sha256": "7f52b48a308e26eec9db4d83832e10a931d36ca3ff07dea05729a73fcec374ec"},
+      {"path": "common_variants/gnomad4/gnomad4.1_exomes_pass_ac10.vcf.gz.tbi", "sha256": "8151cbe66e09fea58b3120a752cb1d449b8c1730f3aa0dae002fed0f5e0ba4c8"}
+    ],
+    "input_overrides": {"vcf": {"remove": ["--min-depth"]}}
+  }
+}
