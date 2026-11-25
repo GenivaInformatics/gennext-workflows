@@ -629,7 +629,10 @@ spec:
                   'starfusion_bam_split_reads_3p': 'INTEGER',
                   'starfusion_bam_molecules': 'INTEGER',
                   'starfusion_bam_pcr_copies': 'INTEGER',
-                  'starfusion_cited_missing': 'INTEGER'
+                  'starfusion_cited_missing': 'INTEGER',
+                  'reading_frame_source': 'VARCHAR',
+                  'oncokb_pair_specific': 'BOOLEAN',
+                  'canonical_junction': 'BOOLEAN'
                 });
           CREATE OR REPLACE TABLE fusion_events_meta AS
             SELECT * FROM read_csv('@META@', delim='\t', header=true, nullstr='', quote='',

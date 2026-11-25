@@ -185,8 +185,10 @@ def test_contract_v1(d):
                     "--oncokb-json", js, "--protein-domains", ".", "--out-tsv", out], check=True)
     ev = {r["gene5"]: r for r in csv.DictReader(open(out), delimiter="\t")}
     assert ev["EML"]["arriba_status"] == "rescued" and ev["EML"]["arriba_filters"] == "in_vitro", ev["EML"]
-    assert ev["EML"]["tier_flags"] == "weak_caller_evidence|low_unique_molecules|low_support|rescued", ev["EML"]
-    assert ev["EML"]["tier"] == "2" and ev["EML"]["prototype_rules"] == "rescue|low_support", ev["EML"]
+    # 0.6.0 rescue rule: a rescued single molecule stays tier III unless OncoKB curates the exact pair
+    # (a Mitelman tag alone no longer keeps it in tier II)
+    assert ev["EML"]["tier_flags"] == "weak_caller_evidence|low_unique_molecules|rescue_capped|low_support|rescued", ev["EML"]
+    assert ev["EML"]["tier"] == "3" and ev["EML"]["prototype_rules"] == "rescue|low_support", ev["EML"]
     assert ev["TRIM"]["callers"] == "arriba|starfusion" and ev["TRIM"]["breakpoint_offset"] == "4", ev["TRIM"]
     assert ev["KEEP"]["arriba_status"] == "kept" and ev["KEEP"]["arriba_filters"] == "", ev["KEEP"]
     # ONC is a rescued OncoKB LEVEL_1 pair with one molecule: low support keeps it out of tier 1.
@@ -199,9 +201,9 @@ def test_contract_v1(d):
     subprocess.run([sys.executable, FE, "build", "--sample-id", "R", "--arriba-tsv", outa, "--starfusion-tsv", sfp,
                     "--oncokb-json", d, "--protein-domains", ".", "--out-tsv", out], check=True)
     rows = list(csv.DictReader(open(out), delimiter="\t"))
-    # no OncoKB annotation at all; Arriba's Mitelman tag still makes EML a curated tier 2
+    # no OncoKB annotation at all: no crash, and the rescued single-molecule EML stays tier III (0.6.0)
     assert rows and all(r["oncokb_highest_level"] == "" for r in rows), rows
-    assert {r["gene5"]: r["tier"] for r in rows}["EML"] == "2"
+    assert {r["gene5"]: r["tier"] for r in rows}["EML"] == "3"
     # An unoriented call's ID has '.' strands.
     a = arriba_row("U1", "U2", "chr1:10", "chr2:20", 2, 2, "high", ".", strands="./.")
     _, rows = run_build(d, "U", [a], [], {})
@@ -294,6 +296,83 @@ def test_caller_sides():
     assert "arriba_bam_molecules" not in out and out["arriba_split_reads_5p"] == 7, out
 
 
+def test_tier_rules_0_6(d):
+    """0.6.0 (Berk, 25 Nov), on the shapes of the real samples: the rescue rule, the order within a tier,
+    and the MANE-derived reading frame."""
+    gtf = os.path.join(d, "t6.gtf")
+    with open(gtf, "w") as fh:
+        def gene(chrom, name):
+            for n, (a, b) in enumerate([(100, 199), (300, 399), (500, 599)], 1):
+                for feat in ("exon", "CDS"):
+                    fh.write(f'{chrom}\tT\t{feat}\t{a}\t{b}\t.\t+\t0\tgene_name "{name}"; transcript_id "{name}-201"; '
+                             f'exon_number {n}; tag "MANE_Select";\n')
+        for i, g in enumerate(("EK", "AK", "NT", "MY", "FG", "CI", "CL", "AR", "FR", "TA")):
+            gene(f"chr{i + 1}", g)
+    hdr = ARRIBA_HDR + ["filters", "arriba_status"]
+
+    def row(g5, g3, c5, c3, p5, p3, split, conf, frame, status, filters=".", tags="."):
+        r = arriba_row(g5, g3, f"{c5}:{p5}", f"{c3}:{p3}", split, 0, conf, frame, tags=tags)
+        r.update(filters=filters, arriba_status=status)
+        return r
+    arr = [
+        # EML4-ALK shape: rescued, 1 molecule, exact OncoKB pair, both at exon boundaries, no Arriba frame
+        row("EK", "AK", "chr1", "chr2", 199, 300, 1, "low", ".", "rescued", "in_vitro(1)"),
+        # partner-agnostic kinase hit: rescued, 2 molecules (at the tier I bar), partner-agnostic LEVEL_1, both callers
+        row("NT", "MY", "chr3", "chr4", 150, 350, 2, "low", ".", "rescued", "relative_support(1)"),
+        # a partner-agnostic single molecule, rescued, both callers
+        row("FG", "CI", "chr5", "chr6", 150, 350, 1, "low", ".", "rescued", "relative_support(1)"),
+        # CLDN18-ARHGAP26 shape: kept, 84 molecules, curated (Mitelman), 5' breakpoint mid-exon
+        row("CL", "AR", "chr7", "chr8", 350, 300, 84, "high", "in-frame", "kept", tags="Mitelman"),
+        # FGFR3-TACC3 shape: kept, 29 molecules, exact OncoKB pair, canonical junction
+        row("FR", "TA", "chr9", "chr10", 399, 500, 29, "high", "in-frame", "kept"),
+    ]
+    sf = [sf_row("NT", "MY", "chr3:150", "chr4:350", 2, 0), sf_row("FG", "CI", "chr5:150", "chr6:350", 1, 0)]
+    for r in sf:
+        r["annots"] = "."
+
+    def okb(level, onc, exact, dbs=()):
+        e = oncokb(level, onc, dbs)
+        e["OncoKB"]["VARIANT_IN_ONCOKB"] = "True" if exact else "False"
+        return e
+    pairs = {"EK--AK": okb("LEVEL_1", "Oncogenic", True, ["Mitelman"]),
+             "NT--MY": okb("LEVEL_1", "Likely Oncogenic", False),
+             "FG--CI": okb("LEVEL_2", "Likely Oncogenic", False),
+             "CL--AR": okb("", "Unknown", False, ["Mitelman"]),
+             "FR--TA": okb("LEVEL_3B", "Oncogenic", True)}
+    ap, sp, jp, out = (os.path.join(d, x) for x in ("t6.arriba.tsv", "t6.sf.tsv", "t6.json", "t6.ev.tsv"))
+    tsv(ap, hdr, arr)
+    tsv(sp, SF_HDR, sf)
+    with open(jp, "w") as fh:
+        json.dump([dict(v, Fusion=k) for k, v in pairs.items()], fh)
+    subprocess.run([sys.executable, FE, "build", "--sample-id", "T6", "--arriba-tsv", ap, "--starfusion-tsv", sp,
+                    "--oncokb-json", jp, "--gtf", gtf, "--protein-domains", ".", "--out-tsv", out], check=True)
+    ev = {r["fusion"]: r for r in csv.DictReader(open(out), delimiter="\t")}
+    ek, nt, fg, cl, fr = (ev[k] for k in ("EK--AK", "NT--MY", "FG--CI", "CL--AR", "FR--TA"))
+    # EML4-ALK shape: stays tier II (OncoKB curates the exact pair), frame derived from MANE (n5 = 100, n3 = 100)
+    assert ek["tier"] == "2" and "rescue_capped" not in ek["tier_flags"], ek
+    assert (ek["reading_frame"], ek["reading_frame_source"]) == ("in-frame", "mane"), ek
+    assert ek["oncokb_pair_specific"] == "true" and ek["canonical_junction"] == "true", ek
+    # partner-agnostic kinase hit: a rescued call never reaches tier I
+    assert nt["tier"] == "2" and "rescue_capped" in nt["tier_flags"] and "never tier I" in nt["tier_reason"], nt
+    assert nt["oncokb_pair_specific"] == "false" and nt["reading_frame"] == "", nt  # mid-exon: not computable
+    # a partner-agnostic single molecule, rescued: tier III
+    assert fg["tier"] == "3" and "rescue_capped" in fg["tier_flags"], fg
+    assert "no OncoKB curation of this exact pair: tier III" in fg["tier_reason"], fg["tier_reason"]
+    # CLDN18-ARHGAP26 shape: Arriba's frame, source arriba; not canonical (mid-exon), so it doesn't lead
+    assert cl["tier"] == "2" and (cl["reading_frame"], cl["reading_frame_source"]) == ("in-frame", "arriba"), cl
+    assert cl["site5"] == "exon" and cl["canonical_junction"] == "false", cl
+    # Order in tier II: canonical exact pairs first (FGFR3-TACC3 shape, then EML4-ALK shape), then the rest
+    # by the existing order (CLDN18-ARHGAP26 shape with 84 molecules, then the partner-agnostic kinase hit)
+    order = sorted((r for r in ev.values() if r["tier"] == "2"), key=lambda r: int(r["event_rank"]))
+    assert [r["fusion"] for r in order] == ["FR--TA", "EK--AK", "CL--AR", "NT--MY"], [r["fusion"] for r in order]
+    # mane_frame: out of frame when the phases differ; UTR or intronic breakpoints give None
+    t = fe_tx = fusion_events.load_transcripts(gtf)
+    e = dict(pos1=199, keep1="le", pos2=100, keep2="ge")
+    assert fusion_events.mane_frame(t["EK"], t["AK"], e, "exon_boundary", "exon_boundary") == "out-of-frame"
+    assert fusion_events.mane_frame(t["EK"], t["AK"], dict(e, pos1=250), "intron", "exon_boundary") is None
+    assert fusion_events.mane_frame(t["EK"], t["AK"], dict(e, pos2=50), "exon_boundary", "exon_boundary") is None
+
+
 def main():
     with tempfile.TemporaryDirectory() as d:
         pairs = {"ALK1--PART1": oncokb("LEVEL_1", "Oncogenic"),         # actionable
@@ -383,6 +462,7 @@ def main():
         test_contract_v1(d)
         test_caller_details(d)
         test_caller_sides()
+        test_tier_rules_0_6(d)
 
         # Empty caller outputs give an empty table with a header.
         _, rows = run_build(d, "S2", [], [], {})

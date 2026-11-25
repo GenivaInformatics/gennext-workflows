@@ -61,7 +61,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bpview  # noqa: E402  (same image, same directory)
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 CONTRACT_VERSION = "1"
 
 ACTIONABLE = {"LEVEL_1", "LEVEL_2", "LEVEL_R1"}
@@ -76,7 +76,7 @@ CURATED_DB = {"Mitelman", "COSMIC"}
 # Every field a user may filter on is its own typed column. List columns (VARCHAR[]) are written
 # '|'-separated in the TSV and split on load; an empty cell is an empty list.
 TIER_FLAGS = ("out_of_frame", "weak_caller_evidence", "low_unique_molecules", "low_support", "rescued",
-              "orientation_unknown", "pon_recurrent", "pon_capped")
+              "rescue_capped", "orientation_unknown", "pon_recurrent", "pon_capped")
 COLUMNS = [
     # identity and order
     ("sample_id", "VARCHAR"), ("event_id", "VARCHAR"), ("event_rank", "INTEGER"), ("fusion", "VARCHAR"),
@@ -151,6 +151,14 @@ COLUMNS = [
     ("starfusion_bam_split_reads_5p", "INTEGER"), ("starfusion_bam_split_reads_3p", "INTEGER"),
     ("starfusion_bam_molecules", "INTEGER"), ("starfusion_bam_pcr_copies", "INTEGER"),
     ("starfusion_cited_missing", "INTEGER"),
+    # --- 0.6.0 additions (contract v1, additive)
+    # reading_frame_source: "arriba" (Arriba's call) or "mane" (derived from the MANE Select CDS phase of
+    # both partners when no caller gives a frame); null when reading_frame is null.
+    ("reading_frame_source", "VARCHAR"),
+    # OncoKB curates this exact gene pair (VARIANT_IN_ONCOKB), as opposed to a partner-agnostic level.
+    ("oncokb_pair_specific", "BOOLEAN"),
+    # Both breakpoints at exon boundaries of the MANE Select transcripts.
+    ("canonical_junction", "BOOLEAN"),
 ]
 ONCOKB_LEVELS = ("LEVEL_1", "LEVEL_2", "LEVEL_3A", "LEVEL_3B", "LEVEL_4", "LEVEL_R1", "LEVEL_R2",
                  "LEVEL_Dx1", "LEVEL_Dx2", "LEVEL_Dx3", "LEVEL_Px1", "LEVEL_Px2", "LEVEL_Px3")
@@ -225,7 +233,7 @@ def load_transcripts(path):
             if line.startswith("#"):
                 continue
             f = line.rstrip("\n").split("\t")
-            if len(f) < 9 or f[2] != "exon":
+            if len(f) < 9 or f[2] not in ("exon", "CDS"):
                 continue
             a = f[8]
             g, t, n = (re.search(k + r' "?([^";]+)"?;', a) for k in ("gene_name", "transcript_id", "exon_number"))
@@ -234,8 +242,12 @@ def load_transcripts(path):
             rank = 2 if 'tag "MANE_Select"' in a else 1 if 'tag "Ensembl_canonical"' in a else 0
             if not rank:
                 continue
-            e = tx.setdefault((g.group(1), t.group(1)), dict(id=t.group(1), chrom=f[0], strand=f[6], rank=rank, exons=[]))
-            e["exons"].append((int(f[3]), int(f[4]), int(n.group(1))))
+            e = tx.setdefault((g.group(1), t.group(1)),
+                              dict(id=t.group(1), chrom=f[0], strand=f[6], rank=rank, exons=[], cds=[]))
+            if f[2] == "exon":
+                e["exons"].append((int(f[3]), int(f[4]), int(n.group(1))))
+            else:
+                e["cds"].append((int(f[3]), int(f[4])))
     best = {}
     for (gene, _), t in tx.items():
         if gene not in best or t["rank"] > best[gene]["rank"]:
@@ -366,6 +378,32 @@ def exon_site(tx, side, chrom, pos, keep):
     return tx["id"], ex[2], site
 
 
+def _kept_bases(segs, pos, keep):
+    """Bases of [start, end] segments on the kept side of a breakpoint (keep 'le': <= pos; 'ge': >= pos)."""
+    if keep == "le":
+        return sum(max(0, min(b, pos) - a + 1) for a, b in segs)
+    return sum(max(0, b - max(a, pos) + 1) for a, b in segs)
+
+
+def mane_frame(t5, t3, ev, site5, site3):
+    """Reading frame from the MANE Select CDS phase of both partners, or None when not computable.
+    Both breakpoints must be at exon boundaries inside the partner's CDS: a splice junction is exact, while a
+    mid-exon junction can carry inserted or microhomology bases that coordinates can't show. n5 = coding bases
+    of the 5' partner kept up to and including its breakpoint; n3 = coding bases of the 3' partner
+    before its breakpoint. In frame when n5 and n3 have the same phase (mod 3). Stop codons created at
+    the junction are not detected, so this never says stop-codon."""
+    if not t5 or not t3 or not t5.get("cds") or not t3.get("cds"):
+        return None
+    if site5 != "exon_boundary" or site3 != "exon_boundary":
+        return None
+    for t, pos in ((t5, ev["pos1"]), (t3, ev["pos2"])):
+        if not (min(a for a, _ in t["cds"]) <= pos <= max(b for _, b in t["cds"])):
+            return None  # in a UTR: the frame depends on which start codon is used
+    n5 = _kept_bases(t5["cds"], ev["pos1"], ev["keep1"])
+    n3 = sum(b - a + 1 for a, b in t3["cds"]) - _kept_bases(t3["cds"], ev["pos2"], ev["keep2"])
+    return "in-frame" if n5 % 3 == n3 % 3 else "out-of-frame"
+
+
 def gene_tx(names, transcripts, chrom):
     for n in names:
         t = transcripts.get(n)
@@ -448,7 +486,9 @@ def evidence_fails(row, opts):
     basic: frame and caller evidence, needed for tiers 1 and 2 through OncoKB.
     support: unique molecules, needed for tier 1 only."""
     basic, support = {}, {}
-    if row["reading_frame"] in ("out-of-frame", "stop-codon") and not opts.allow_out_of_frame:
+    # only the caller's frame counts as evidence; a MANE-derived frame (reading_frame_source "mane") is shown only
+    if (row.get("reading_frame_source") in (None, "arriba") and row["reading_frame"] in ("out-of-frame", "stop-codon")
+            and not opts.allow_out_of_frame):
         basic["out_of_frame"] = f"reading frame {row['reading_frame']}"
     if row["n_callers"] < 2 and row["arriba_confidence"] not in ("high", "medium"):
         basic["weak_caller_evidence"] = "one caller and Arriba confidence not high/medium"
@@ -500,6 +540,19 @@ def tier_event(row, opts):
                                                       + ([low["orientation_unknown"]] if "orientation_unknown" in low else [])))
         else:
             reasons.append("not known or actionable")
+    if row["arriba_status"] == "rescued":
+        # Rescue rule (Berk, 25 Nov): a rescued call never reaches tier 1; one below the tier 1 support bar
+        # stays tier 3 unless OncoKB curates that exact gene pair (partner-agnostic levels don't count).
+        n = row["unique_molecules"]
+        if n < opts.tier1_min_unique_molecules and not row["oncokb_pair_specific"] and tier < 3:
+            flags.append("rescue_capped")
+            reasons.append(f"rescued call with {n} unique molecule(s), below the tier I bar of "
+                           f"{opts.tier1_min_unique_molecules}, and no OncoKB curation of this exact pair: tier III")
+            tier = 3
+        elif tier == 1:
+            flags.append("rescue_capped")
+            reasons.append("rescued call: never tier I")
+            tier = 2
     if row["low_support"]:
         flags.append("low_support")
         if tier == 1:
@@ -677,6 +730,12 @@ def build_rows(opts):
         t5, x5, site5 = exon_site(gene_tx(ev["names1"], transcripts, ev["chr1"]), "5", ev["chr1"], ev["pos1"], ev["keep1"])
         t3, x3, site3 = exon_site(gene_tx(ev["names2"], transcripts, ev["chr2"]), "3", ev["chr2"], ev["pos2"], ev["keep2"])
         kg, kr, kf = kinase_info(ev, domains, opts.kinase_min_fraction)
+        caller_frame = a.get("reading_frame") if a.get("reading_frame") not in (None, ".", "") else None
+        frame, frame_src = (caller_frame, "arriba") if caller_frame else (None, None)
+        if frame is None:
+            tx5, tx3 = (gene_tx(ev["names" + i], transcripts, ev["chr" + i]) for i in ("1", "2"))
+            frame = mane_frame(tx5, tx3, ev, site5, site3)
+            frame_src = "mane" if frame else None
         status = a.get("status") if a else None
         bp5 = f"{ev['chr1']}:{ev['pos1']}:{strand5(ev)}"
         bp3 = f"{ev['chr2']}:{ev['pos2']}:{strand3(ev)}"
@@ -689,7 +748,9 @@ def build_rows(opts):
             gene5_aliases=list(ev["names1"]), gene3_aliases=list(ev["names2"]),
             breakpoint5=bp5, breakpoint3=bp3, orientation_known=bool(ev["oriented"]),
             transcript5=t5, transcript3=t3, exon5=x5, exon3=x3, site5=site5, site3=site3,
-            reading_frame=(a.get("reading_frame") if a.get("reading_frame") not in (None, ".") else None),
+            # tiers use the caller's frame only; a MANE-derived frame is shown, marked by reading_frame_source
+            reading_frame=frame, reading_frame_source=frame_src,
+            canonical_junction=(site5 == "exon_boundary" and site3 == "exon_boundary") if site5 and site3 else None,
             splice_type=bpview.splice_type(ev),
             kinase_gene=kg, kinase_retained=kr, kinase_domain_fraction=kf,
             callers=list(ev["callers"]), n_callers=len(ev["callers"]),
@@ -715,6 +776,7 @@ def build_rows(opts):
             pon_gene_pair_count=npair, pon_junction_count=njunc, pon_size=size,
             bpview_contig=b["contig"] if b else None, builder_version=__version__)
         row.update(caller_details(ev, entry))
+        row["oncokb_pair_specific"] = {"True": True, "False": False}.get(onc.get("VARIANT_IN_ONCOKB"))
         row.update({c: None for c, _ in COLUMNS if c not in row})
         row.update(caller_sides(ev, b))
         row["curated_known"] = bool(CURATED_DB & set(row["known_db"]))
@@ -723,8 +785,16 @@ def build_rows(opts):
         row["prototype_rules"] = ((["rescue"] if status == "rescued" else [])
                                   + (["low_support"] if row["low_support"] else []))
         rows.append((row, bpview.priority(ev)))
-    # Default order: tier, supported before low support, unique molecules, then caller priority.
-    rows.sort(key=lambda x: (x[0]["tier"], x[0]["low_support"], -x[0]["unique_molecules"],
+    # Default order: tier; then exact curated or OncoKB-curated actionable/oncogenic pairs at a canonical
+    # junction (both breakpoints at exon boundaries) first (Berk, 25 Nov); then supported before low support,
+    # unique molecules, and caller priority as before.
+    def leads(r):
+        exact = r["curated_known"] or (r["oncokb_pair_specific"] and (
+            (r["oncokb_oncogenic"] or "") in ONCOGENIC or bool(r["oncokb_highest_level"])))
+        # an event with no supporting molecule in the BAM doesn't lead
+        return bool(r["canonical_junction"]) and bool(exact) and (r["unique_molecules"] or 0) >= 1
+
+    rows.sort(key=lambda x: (x[0]["tier"], not leads(x[0]), x[0]["low_support"], -x[0]["unique_molecules"],
                              tuple(-v for v in x[1])))
     out, seen = [], {}
     for i, (row, _) in enumerate(rows):

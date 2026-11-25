@@ -93,7 +93,7 @@ the same junction.
 | Field | Type | Meaning |
 |---|---|---|
 | `event_id` | VARCHAR | Stable key for selection, views and the report: the junction, `chr5:pos5:strand5>chr3:pos3:strand3` (strand `+`/`-`, or `.` on both sides when `orientation_known` is false). The same junction in a re-run gets the same ID. It is unique **within a sample** only (the same junction in two samples has the same ID), so selection and the report key on (`sample_uuid`, `event_id`). In the rare case of two events at one junction, the second gets `#2`. |
-| `event_rank` | INTEGER | Default order, 1 = first: tier, then supported before `low_support`, then unique molecules (descending), then caller priority. |
+| `event_rank` | INTEGER | Default order, 1 = first: tier; then, from fusion-events 0.6.0, events that are an exact curated pair (`curated_known`) or an OncoKB-curated oncogenic/actionable pair (`oncokb_pair_specific`), at a `canonical_junction`, with at least 1 unique molecule; then supported before `low_support`, unique molecules (descending), caller priority. |
 | `sample_id` | VARCHAR | Sample name |
 | `fusion` | VARCHAR | `GENE5--GENE3`, the join key to the gene-pair data |
 | `gene5`, `gene3` | VARCHAR | Display genes |
@@ -108,7 +108,9 @@ the same junction.
 | `exon5` | INTEGER | Last exon of the 5′ partner kept in the fusion (number in `transcript5`) |
 | `exon3` | INTEGER | First exon of the 3′ partner kept in the fusion |
 | `site5`, `site3` | VARCHAR | Where the breakpoint lies in that transcript: `exon_boundary`, `exon`, `intron` or `outside` |
-| `reading_frame` | VARCHAR | Arriba's: `in-frame`, `out-of-frame`, `stop-codon`; null without Arriba |
+| `reading_frame` | VARCHAR | Arriba's: `in-frame`, `out-of-frame`, `stop-codon`. When no caller gives one (rescued Arriba calls, STAR-Fusion-only events), derived from the MANE Select CDS phase (fusion-events ≥ 0.6.0), only when both breakpoints are at exon boundaries inside the CDS; never `stop-codon` (stop codons at the junction aren't detected). Null when not computable |
+| `reading_frame_source` | VARCHAR | `arriba` or `mane` (derived; the UI says so); null when `reading_frame` is null. Tiers use the caller's frame only |
+| `canonical_junction` | BOOLEAN | Both breakpoints at exon boundaries of the MANE Select transcripts (`site5` = `site3` = `exon_boundary`) |
 | `splice_type` | VARCHAR | STAR-Fusion's `ONLY_REF_SPLICE` / `INCL_NON_REF_SPLICE`, or derived from Arriba's sites |
 | `kinase_gene` | VARCHAR | The partner with a protein kinase domain (Pfam PF00069); the 3′ partner when both have one; null when neither has one |
 | `kinase_retained` | BOOLEAN | At least 90% of the kinase partner's kinase domain lies on the kept side of its breakpoint (`kinase_domain_fraction`). Null when `kinase_gene` is null. |
@@ -205,6 +207,7 @@ the bpview BAM that the read view and desktop IGV load. The unit is the fragment
 | `curated_known` | BOOLEAN | In Mitelman or COSMIC |
 | `oncokb_oncogenic`, `oncokb_mutation_effect` | VARCHAR | OncoKB, for the gene pair |
 | `oncokb_highest_level`, `oncokb_highest_dx_level` | VARCHAR | e.g. `LEVEL_1`, `LEVEL_Dx1` |
+| `oncokb_pair_specific` | BOOLEAN | OncoKB curates this exact gene pair (`VARIANT_IN_ONCOKB`), as opposed to a partner-agnostic level such as "any NTRK2 fusion" |
 | `pair_clinical_tier`, `pair_fii` | VARCHAR, DOUBLE | Today's gene-pair tier and FII, for comparison |
 
 ### Recurrence
@@ -222,7 +225,7 @@ All null when the sample was built without a PoN (the prototype's default).
 |---|---|---|
 | `tier` | INTEGER | 1–3, a default prioritisation, never a filter. Every event is in the table. |
 | `tier_basis` | VARCHAR | `oncokb_actionable`, `oncokb_oncogenic`, `curated_known`, `none` |
-| `tier_flags` | VARCHAR[] | What held it back: `out_of_frame`, `weak_caller_evidence`, `low_unique_molecules`, `low_support`, `rescued`, `orientation_unknown`, `pon_recurrent`, `pon_capped` |
+| `tier_flags` | VARCHAR[] | What held it back: `out_of_frame`, `weak_caller_evidence`, `low_unique_molecules`, `low_support`, `rescued`, `rescue_capped`, `orientation_unknown`, `pon_recurrent`, `pon_capped` |
 | `tier_reason` | VARCHAR | The same in words, for the hover and the detail |
 
 ### Caller and annotator details (fusion-events 0.5.0, additive)
@@ -311,6 +314,10 @@ backend and the filter body.
   the pairs fusion-report saw (Arriba's kept calls and STAR-Fusion's). For a discarded-only pair that
   branch therefore rarely applies; Arriba's Mitelman tag (from its known-fusions file) and the
   STAR-Fusion branch do the work.
+- **Rescue rule (Berk, 25 Nov; fusion-events 0.6.0).** A rescued call never reaches tier 1. A rescued call
+  below the tier 1 support bar (`unique_molecules` < 2) stays tier 3 unless OncoKB curates that exact gene
+  pair (`oncokb_pair_specific`); partner-agnostic levels or a database tag alone don't lift it.
+  `tier_flags` gets `rescue_capped`, and `tier_reason` says which part applied.
 - **Low support (Q1).** `low_support` when `unique_molecules` < 2. Capped at tier 2, ordered after
   supported events of the same tier. The view shows them by default; "Hide low support" is off by default.
 - **Default view (Q4 A).** Event samples have no built-in caller filters. Sort by `event_rank`; tiers 1
