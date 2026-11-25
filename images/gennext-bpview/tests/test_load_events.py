@@ -69,7 +69,12 @@ def main():
         assert "events\t2" in text, text
         open(meta, "w").write(re.sub(r"events\t2", "events\t3", text))
         r = sh(*run, check=False)
-        assert r.returncode != 0 and "differs from the meta count" in r.stdout, (r.stdout, r.stderr)
+        assert r.returncode != 0 and "differs from the meta count" in (r.stdout + r.stderr), (r.stdout, r.stderr)
+        # ...and the transaction rolled back: the earlier, good load is still there unchanged
+        q = sh("docker", "run", "--rm", "--network", "none", "-u", uid, "-v", f"{d}/results:/mnt/results", image,
+               "duckdb", "-csv", "-noheader", "/mnt/results/db/T_fusions.duckdb",
+               "SELECT (SELECT count(*) FROM fusion_events), (SELECT value FROM fusion_events_meta WHERE key = 'events')").stdout.strip()
+        assert q == "2,2", q
     print("test_load_events: ok")
 
 
