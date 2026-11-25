@@ -33,7 +33,7 @@ Paths are relative to the sample's output directory
 | `prototype` | `true` while the rules are the prototype's |
 | `arriba_settings` | `max_sensitivity` or `filters_restored` (Q5); see §5 |
 | `pon` | `none`, or the PoN file name and size |
-| `oncokb_curated_fusions` | the curated-fusion snapshot used: its data version, entry count and file name |
+| `oncokb_exact_pair` | how `oncokb_pair_specific` was decided: the derived rule, or the curated-list snapshot used |
 | `events` | number of rows in `fusion_events` |
 
 The load step writes both tables in one transaction, `fusion_events_meta` last, so a sample never
@@ -215,7 +215,7 @@ the bpview BAM that the read view and desktop IGV load. The unit is the fragment
 | `curated_known` | BOOLEAN | In Mitelman or COSMIC |
 | `oncokb_oncogenic`, `oncokb_mutation_effect` | VARCHAR | OncoKB, for the gene pair |
 | `oncokb_highest_level`, `oncokb_highest_dx_level` | VARCHAR | e.g. `LEVEL_1`, `LEVEL_Dx1` |
-| `oncokb_pair_specific` | BOOLEAN | OncoKB curates this exact gene pair: its curated fusion list names the alteration "GENE5-GENE3 Fusion" (either gene order), as opposed to a partner-agnostic level such as "any NTRK2 fusion". From a pinned snapshot of the list, shipped with fusion-events and versioned with the OncoKB data release (`fusion_events_meta.oncokb_curated_fusions`); no OncoKB calls from the workflow. Null without a list |
+| `oncokb_pair_specific` | BOOLEAN | OncoKB recognises this specific gene pair, not only one gene's fusions, and not as a loss-of-function event. **Derived** from the pair's stored OncoKB fields, not OncoKB's own curated list (that list isn't downloadable on our licence): `VARIANT_IN_ONCOKB` = True, two different genes, `MUTATION_EFFECT` not Loss-of-function / Likely Loss-of-function, and `ONCOGENIC` not Unknown. The effect test is needed because OncoKB also sets `VARIANT_IN_ONCOKB` for tumour-suppressor and intragenic fusions it treats as truncating. Null when the pair has no OncoKB annotation (e.g. a rescued pair fusion-report never saw). If a curated-list snapshot is given (`--oncokb-curated-fusions`), the list decides instead. `fusion_events_meta.oncokb_exact_pair` says which applied |
 | `pair_clinical_tier`, `pair_fii` | VARCHAR, DOUBLE | Today's gene-pair tier and FII, for comparison |
 
 ### Recurrence
@@ -323,11 +323,11 @@ backend and the filter body.
   branch therefore rarely applies; Arriba's Mitelman tag (from its known-fusions file) and the
   STAR-Fusion branch do the work.
 - **Rescue rule (Berk, 25 Nov; fusion-events 0.6.0).** A rescued call stays above tier 3 only when OncoKB
-  curates that exact gene pair (`oncokb_pair_specific`: OncoKB's curated fusion list), whatever its molecule count; partner-agnostic
+  recognises that exact gene pair (`oncokb_pair_specific`, derived from its stored fields; see §4), whatever its molecule count; partner-agnostic
   levels or a database tag alone don't lift it. Even then it never reaches tier 1. `tier_flags` gets
   `rescue_capped`, and `tier_reason` says which part applied.
 - **Adjacent-gene read-through (Berk, 25 Nov; fusion-events 0.6.0).** An `adjacent_readthrough` event is
-  tier 3 unless OncoKB's curated list has the exact pair (`tier_flags` `readthrough_capped`; `tier_reason`
+  tier 3 unless OncoKB recognises the exact pair (`oncokb_pair_specific`; `tier_flags` `readthrough_capped`; `tier_reason`
   gives the distance and the 50 kb limit). Intrachromosomal fusions further apart, or with a gene between
   them (e.g. GOPC–ROS1, ~240 kb), are untouched.
 - **No counted molecule (Berk, 25 Nov; fusion-events 0.6.0).** An event with 0 `unique_molecules` is tier 3,
