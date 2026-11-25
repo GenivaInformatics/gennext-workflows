@@ -38,7 +38,7 @@ spec:
         - name: results
           hostPath: {path: "{{inputs.parameters.results-dir}}", type: Directory}
       script:
-        image: bergun/gennext-bpview:0.6.1@sha256:de67e144d552b257f53c80cd1963c8e1eb53fe2f864dca564e94d1a81c2bfba6
+        image: bergun/gennext-bpview:0.6.2@sha256:5fa64a14570c6d4227135958bfd6177550027c684ce05be54f39149a6d084ad6
         command: [bash]
         resources:
           requests: {cpu: "1", memory: 3Gi}
