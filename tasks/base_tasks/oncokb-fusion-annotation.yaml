@@ -29,7 +29,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-fusion-annotation
-        image: bergun/oncokb-annotator:0.3.3-upstream-v4.1.0@sha256:efbe90fe1924c485a929f6d6fe16e2355571b31b7a248320459a76cfc1bc44eb
+        image: bergun/oncokb-annotator:0.3.16-upstream-v4.1.0@sha256:ec3ee9f8a7b28f645017cc1cd39901ff3f7308d9cd1319dd42fbd50c14d0f01e
         command: [python3]
         source: |
           import json
@@ -96,7 +96,7 @@ spec:
           max_attempts = 3
 
           cmd = [
-              "python", "./FusionAnnotator.py",
+              "python", "./fusion_annotator.py",
               "-i", "/tmp/fusions_input.tsv",
               "-o", "/tmp/fusions_annotated.tsv",
               "-b", oncokb_token,

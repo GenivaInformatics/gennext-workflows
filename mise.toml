@@ -10,7 +10,7 @@ set -euo pipefail
 docker build -q -t oncokb-annotator:ci images/oncokb-annotator >/dev/null
 docker run --rm --network none --entrypoint sh \
   -v "$PWD/images/oncokb-annotator:/work:ro" oncokb-annotator:ci \
-  -c 'cd /tmp && PYTHONPATH=/work:/app/oncokb python3 -m unittest test_filtered_maf_annotator >/tmp/log 2>&1; rc=$?; grep -E "^(FAIL|ERROR):" /tmp/log; tail -4 /tmp/log; exit $rc'
+  -c 'cd /tmp && PYTHONPATH=/work:/app/oncokb python3 -m unittest test_filtered_maf_annotator test_fusion_annotator >/tmp/log 2>&1; rc=$?; grep -E "^(FAIL|ERROR):" /tmp/log; tail -4 /tmp/log; exit $rc'
 """
 
 [tasks."test:gennext-bpview"]
