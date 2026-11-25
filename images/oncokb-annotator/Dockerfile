@@ -54,6 +54,9 @@
 #   0.3.15-upstream-v4.1.0 as 0.3.14; fusion_annotator.py runs upstream's
 #                          FusionAnnotator.py and adds ONCOKB_MATCHED_ALTERATIONS
 #                          and ONCOKB_VARIANT_SUMMARY from the same answers
+#   0.3.16-upstream-v4.1.0 as 0.3.15; the columns are MATCHED_ALTERATIONS and
+#                          VARIANT_SUMMARY (upstream's naming); with -d only
+#                          MATCHED_ALTERATIONS is added
 #                          facts (oncokb_isoform*, oncokb_gene_db) send
 #                          their protein change to refhub as proteinFallback
 #                          (refhub's strict fallback). Output unchanged

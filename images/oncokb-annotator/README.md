@@ -1,6 +1,6 @@
 # OncoKB annotator image
 
-`bergun/oncokb-annotator:0.3.15-upstream-v4.1.0` is upstream
+`bergun/oncokb-annotator:0.3.16-upstream-v4.1.0` is upstream
 [oncokb-annotator](https://github.com/oncokb/oncokb-annotator) at tag `v4.1.0`
 (commit `77521cd`), unmodified, plus the three wrapper scripts in this
 directory. The previous image, `0.2.0-upstream-v3.4.2`, is upstream `v3.4.2`
@@ -139,18 +139,19 @@ Rows are not filtered by gene: OncoKB maps intronic rows our MAF calls
 `Unknown` to their gene, MET exon 14 skipping variants can be intronic, and
 the TERT promoter rows are `upstream`.
 
-**Fusions** (`fusion_annotator.py`, from `0.3.15`; used by
+**Fusions** (`fusion_annotator.py`, from `0.3.15`, columns renamed in `0.3.16`; used by
 `oncokb-fusion-annotation-template`). It runs upstream's `FusionAnnotator.py`
 unchanged, with the same arguments, and appends two columns built from the
 same `/annotate/structuralVariants` answers, with no extra calls:
 
-- `ONCOKB_MATCHED_ALTERATIONS`: the alterations OncoKB matched, as it names
+- `MATCHED_ALTERATIONS`: the alterations OncoKB matched, as it names
   them in `treatments[].alterations`, `diagnosticImplications[].alterations`
   and `prognosticImplications[].alterations`. Examples: `EML4-ALK Fusion` for
   a curated pair, `Fusions` for a gene-level match. They are `;`-joined and
   sorted. The column is empty when the answer has no treatment or
   implication, since OncoKB names no matched alteration then.
-- `ONCOKB_VARIANT_SUMMARY`: OncoKB's `variantSummary` sentence, on one line.
+- `VARIANT_SUMMARY`: OncoKB's `variantSummary` sentence, on one line. With
+  `-d`, upstream writes its own `VARIANT_SUMMARY`, so only `MATCHED_ALTERATIONS` is added.
 
 Upstream's columns, and their values, are unchanged. The template copies the
 two columns into `fusions_with_oncokb.json`'s `OncoKB` object along with the

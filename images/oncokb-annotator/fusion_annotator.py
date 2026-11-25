@@ -2,13 +2,15 @@
 """Upstream FusionAnnotator.py, unchanged, plus two columns from the same
 OncoKB answers (no extra calls):
 
-- ONCOKB_MATCHED_ALTERATIONS: the alterations OncoKB matched, as it names
+- MATCHED_ALTERATIONS: the alterations OncoKB matched, as it names
   them in treatments[].alterations, diagnosticImplications[].alterations and
   prognosticImplications[].alterations, e.g. "EML4-ALK Fusion" for a curated
   pair or "Fusions" for a gene-level match; ";"-joined, sorted, empty when
   the answer has no treatment or implication (OncoKB names no matched
   alteration then).
-- ONCOKB_VARIANT_SUMMARY: OncoKB's variantSummary sentence, on one line.
+- VARIANT_SUMMARY: OncoKB's variantSummary sentence, on one line. With
+  -d (include descriptions) upstream writes its own VARIANT_SUMMARY, so only
+  MATCHED_ALTERATIONS is added then.
 
 Both come after upstream's own columns; those, and every row's values in
 them, are what FusionAnnotator.py writes. Same arguments as
@@ -20,7 +22,14 @@ import sys
 
 import AnnotatorCore
 
-EXTRA_HEADERS = ["ONCOKB_MATCHED_ALTERATIONS", "ONCOKB_VARIANT_SUMMARY"]
+EXTRA_HEADERS = ["MATCHED_ALTERATIONS", "VARIANT_SUMMARY"]
+
+
+def extra_headers(include_descriptions):
+    """The columns added: upstream's -d already writes VARIANT_SUMMARY."""
+    return EXTRA_HEADERS[:1] if include_descriptions else EXTRA_HEADERS
+
+
 _IMPLICATIONS = ("treatments", "diagnosticImplications", "prognosticImplications")
 
 
@@ -54,7 +63,8 @@ def install():
     pull = AnnotatorCore.pull_structural_variant_info
 
     def headers_with_extra(include_descriptions, genomic_change_annotation, *args, **kwargs):
-        return headers(include_descriptions, genomic_change_annotation, *args, **kwargs) + EXTRA_HEADERS
+        return (headers(include_descriptions, genomic_change_annotation, *args, **kwargs)
+                + extra_headers(include_descriptions))
 
     def pull_with_extra(queries, include_descriptions):
         raw = []
@@ -72,8 +82,9 @@ def install():
         # An unanswered query gives a short list (upstream pads it when
         # writing): pad it first, so the extra columns land in their place.
         width = len(headers(include_descriptions, False))
+        extra = len(extra_headers(include_descriptions))
         return [list(columns) + [""] * (width - len(columns))
-                + [matched_alterations(answer), variant_summary(answer)]
+                + [matched_alterations(answer), variant_summary(answer)][:extra]
                 for columns, answer in zip(processed, raw)]
 
     AnnotatorCore.get_oncokb_annotation_column_headers = headers_with_extra

@@ -1,5 +1,5 @@
 """fusion_annotator.py: upstream FusionAnnotator.py's output, unchanged, plus
-ONCOKB_MATCHED_ALTERATIONS and ONCOKB_VARIANT_SUMMARY. OncoKB is faked;
+MATCHED_ALTERATIONS and VARIANT_SUMMARY. OncoKB is faked;
 upstream's real AnnotatorCore and FusionAnnotator.py run."""
 import csv
 import json
@@ -94,12 +94,12 @@ class FusionAnnotatorTest(unittest.TestCase):
         for a, b in zip(upstream[1:], ours[1:]):
             self.assertEqual(b[:width], a)
         by_fusion = {r[1]: dict(zip(ours[0], r)) for r in ours[1:]}
-        self.assertEqual(by_fusion["EML4-ALK"]["ONCOKB_MATCHED_ALTERATIONS"], "EML4-ALK Fusion;Fusions")
-        self.assertEqual(by_fusion["NTRK2-MYO9A"]["ONCOKB_MATCHED_ALTERATIONS"], "Fusions")
-        self.assertEqual(by_fusion["MSMB-NCOA4"]["ONCOKB_MATCHED_ALTERATIONS"], "Fusions")
+        self.assertEqual(by_fusion["EML4-ALK"]["MATCHED_ALTERATIONS"], "EML4-ALK Fusion;Fusions")
+        self.assertEqual(by_fusion["NTRK2-MYO9A"]["MATCHED_ALTERATIONS"], "Fusions")
+        self.assertEqual(by_fusion["MSMB-NCOA4"]["MATCHED_ALTERATIONS"], "Fusions")
         # No treatment or implication: OncoKB names no matched alteration.
-        self.assertEqual(by_fusion["MSH2-KCNK12"]["ONCOKB_MATCHED_ALTERATIONS"], "")
-        self.assertEqual(by_fusion["NTRK2-MYO9A"]["ONCOKB_VARIANT_SUMMARY"],
+        self.assertEqual(by_fusion["MSH2-KCNK12"]["MATCHED_ALTERATIONS"], "")
+        self.assertEqual(by_fusion["NTRK2-MYO9A"]["VARIANT_SUMMARY"],
                          "The NTRK2-MYO9A fusion has not specifically been reviewed by the OncoKB team. "
                          "However, NTRK2 fusions are likely oncogenic.")
         self.assertEqual(by_fusion["EML4-ALK"]["HIGHEST_LEVEL"], "LEVEL_1")
@@ -113,7 +113,27 @@ class FusionAnnotatorTest(unittest.TestCase):
         row = dict(zip(ours[0], ours[1]))
         self.assertEqual(len(ours[1]), len(ours[0]))
         self.assertEqual(row["ANNOTATED"], "False")
-        self.assertEqual((row["ONCOKB_MATCHED_ALTERATIONS"], row["ONCOKB_VARIANT_SUMMARY"]), ("", ""))
+        self.assertEqual((row["MATCHED_ALTERATIONS"], row["VARIANT_SUMMARY"]), ("", ""))
+
+    def test_with_descriptions_upstreams_variant_summary_is_not_doubled(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source, target = Path(temp) / "in.tsv", Path(temp) / "out.tsv"
+            source.write_text("Tumor_Sample_Barcode\tFusion\nS1\tEML4-ALK\n")
+            descriptions = dict(ANSWERS[("EML4", "ALK")], geneSummary="g", tumorTypeSummary="t",
+                                diagnosticSummary="", prognosticSummary="")
+            descriptions["mutationEffect"] = dict(descriptions["mutationEffect"], description="m")
+            def post(url, body):
+                return _response(url, 200, [descriptions])
+            with patch("AnnotatorCore.validate_oncokb_token"), \
+                    patch("AnnotatorCore.makeoncokbpostrequest", side_effect=post):
+                fusion_annotator.run(["-i", str(source), "-o", str(target), "-b", "tok", "-d"])
+            with target.open(newline="") as f:
+                rows = list(csv.reader(f, delimiter="\t"))
+        self.assertEqual(rows[0].count("VARIANT_SUMMARY"), 1)
+        self.assertEqual(rows[0][-1], "MATCHED_ALTERATIONS")
+        row = dict(zip(rows[0], rows[1]))
+        self.assertEqual(row["MATCHED_ALTERATIONS"], "EML4-ALK Fusion;Fusions")
+        self.assertEqual(row["VARIANT_SUMMARY"], "The EML4-ALK fusion is known to be oncogenic.")
 
     def test_the_patch_is_undone(self):
         headers = AnnotatorCore.get_oncokb_annotation_column_headers
