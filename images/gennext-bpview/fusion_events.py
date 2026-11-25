@@ -140,6 +140,8 @@ COLUMNS = [
     ("oncokb_mutation_effect_citations", "VARCHAR[]"), ("oncokb_treatment_citations", "VARCHAR[]"),
     ("oncokb_dx_citations", "VARCHAR[]"), ("oncokb_px_citations", "VARCHAR[]"),
     ("oncokb_gene_in_oncokb", "BOOLEAN"), ("oncokb_variant_in_oncokb", "BOOLEAN"),
+    # OncoKB's variantSummary and matched alteration names, when the annotator stored them (gennext-workflows#75)
+    ("oncokb_variant_summary", "VARCHAR"), ("oncokb_matched_alterations", "VARCHAR[]"),
     # fusion-report
     ("pair_fii_explained", "VARCHAR"),
     # Both callers side by side, on the event's 5'/3'. arriba_split_reads_5p/_3p: Arriba's own
@@ -166,8 +168,9 @@ COLUMNS = [
 ]
 READTHROUGH_MAX_DISTANCE = 50_000  # bp (Berk, 25 Nov): an adjacent-gene read-through is capped at tier 3
 LOF_EFFECTS = {"Loss-of-function", "Likely Loss-of-function"}
-EXACT_PAIR_RULE = ("OncoKB API answer: a matched alteration names both genes; else VARIANT_IN_ONCOKB=True, two "
-                   "different genes, MUTATION_EFFECT not (Likely) Loss-of-function, ONCOGENIC not Unknown")
+EXACT_PAIR_RULE = ("OncoKB API answer: a matched alteration is 'GENE5-GENE3 Fusion' (either order), when OncoKB "
+                   "names its matches; else VARIANT_IN_ONCOKB=True, two different genes, MUTATION_EFFECT not "
+                   "(Likely) Loss-of-function, ONCOGENIC not Unknown")
 ONCOKB_LEVELS = ("LEVEL_1", "LEVEL_2", "LEVEL_3A", "LEVEL_3B", "LEVEL_4", "LEVEL_R1", "LEVEL_R2",
                  "LEVEL_Dx1", "LEVEL_Dx2", "LEVEL_Dx3", "LEVEL_Px1", "LEVEL_Px2", "LEVEL_Px3")
 SUPPORT_FILTERS = {"in_vitro", "relative_support", "min_support"}
@@ -268,10 +271,11 @@ def oncokb_exact_pair(entry, fusion):
     stored by the annotator at annotation time (Berk, 25 Nov: rulings over the API answer, never a copy of
     OncoKB's data). -> True / False, or None when the pair has no OncoKB annotation.
 
-    1. If the response records the alterations OncoKB matched (optional field MATCHED_ALTERATIONS: a list,
-       or a ';' / ','-separated string, e.g. "EML4-ALK Fusion" vs "Fusions"), the pair is specific when a
-       matched alteration names both genes, in either order.
-    2. Otherwise: VARIANT_IN_ONCOKB is True, the partners are two different genes, MUTATION_EFFECT is not
+    1. If the response records the alterations OncoKB matched (ONCOKB_MATCHED_ALTERATIONS, written by the
+       annotator from gennext-workflows#75: ';'-joined, e.g. "EML4-ALK Fusion;Fusions"; MATCHED_ALTERATIONS
+       is accepted too) and the field is non-empty, the pair is specific when one entry is exactly
+       "GENE5-GENE3 Fusion" or "GENE3-GENE5 Fusion".
+    2. Otherwise (field absent: outputs before #75; or empty: OncoKB named no alteration): VARIANT_IN_ONCOKB is True, the partners are two different genes, MUTATION_EFFECT is not
        Loss-of-function or Likely Loss-of-function, and ONCOGENIC is not Unknown. OncoKB also sets
        VARIANT_IN_ONCOKB for tumour-suppressor and intragenic fusions it matches as truncating; the effect test
        drops those (rollout check of 9,736 stored rows, 25 Nov)."""
@@ -281,12 +285,12 @@ def oncokb_exact_pair(entry, fusion):
     g5, _, g3 = (fusion or "").partition("--")
     if not g5 or not g3:
         return False
-    matched = onc.get("MATCHED_ALTERATIONS")
+    matched = onc.get("ONCOKB_MATCHED_ALTERATIONS", onc.get("MATCHED_ALTERATIONS"))
     if matched:
-        alts = matched if isinstance(matched, list) else re.split(r"[;,]", matched)
+        alts = matched if isinstance(matched, list) else matched.split(";")
         alts = {a.strip() for a in alts if a and a.strip()}
-        return any(re.search(rf"(^|[\s-]){re.escape(x)}-{re.escape(y)}(\s|$)", a)
-                   for a in alts for x, y in ((g5, g3), (g3, g5)))
+        if alts:
+            return f"{g5}-{g3} Fusion" in alts or f"{g3}-{g5} Fusion" in alts
     return (onc.get("VARIANT_IN_ONCOKB") == "True" and g5 != g3
             and onc.get("MUTATION_EFFECT") not in LOF_EFFECTS
             and (onc.get("ONCOGENIC") or "Unknown") != "Unknown")
@@ -753,6 +757,8 @@ def caller_details(ev, entry):
         oncokb_px_citations=_split(onc.get("PX_CITATIONS"), ";"),
         oncokb_gene_in_oncokb=tf.get(onc.get("GENE_IN_ONCOKB")),
         oncokb_variant_in_oncokb=tf.get(onc.get("VARIANT_IN_ONCOKB")),
+        oncokb_variant_summary=_str(onc.get("ONCOKB_VARIANT_SUMMARY")),
+        oncokb_matched_alterations=_split(onc.get("ONCOKB_MATCHED_ALTERATIONS"), ";"),
         pair_fii_explained=_str((entry or {}).get("Explained FII")))
 
 

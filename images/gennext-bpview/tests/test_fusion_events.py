@@ -410,6 +410,13 @@ def test_tier_rules_0_6(d):
     assert X(m("Fusions;Oncogenic Mutations"), "NTRK2--MYO9A") is False        # gene-level match only
     assert X(m(["TACC3-FGFR3 Fusion"]), "FGFR3--TACC3") is True                # either gene order
     assert X(m(["BRAF-AGK Fusion"]), "BRAF--MRPS33") is False                  # names one gene only
+    # gennext-workflows#75's key: ';'-joined, exact names; empty -> today's rule
+    k = lambda v, **kw: {"OncoKB": dict({"VARIANT_IN_ONCOKB": "True", "MUTATION_EFFECT": "Likely Gain-of-function",
+                                          "ONCOGENIC": "Likely Oncogenic", "ONCOKB_MATCHED_ALTERATIONS": v}, **kw)}
+    assert X(k("EML4-ALK Fusion;Fusions"), "EML4--ALK") is True
+    assert X(k("Fusions"), "BRAF--MRPS33") is False            # gene-level only, although VARIANT_IN_ONCOKB is True
+    assert X(k(""), "BRAF--MRPS33") is True                    # OncoKB named nothing: today's rule decides
+    assert X(k("Fusions;MSH2-KCNK12 Fusion", MUTATION_EFFECT="Likely Loss-of-function"), "MSH2--KCNK12") is True
 
     # Adjacent-gene read-through (Berk, 25 Nov): same chromosome and strand, < 50 kb, no gene between ->
     # tier III unless OncoKB recognises the exact pair. MSMB-NCOA4 shape: kept, Mitelman, 6 molecules.
