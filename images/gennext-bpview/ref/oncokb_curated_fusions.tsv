@@ -1,6 +1,0 @@
-#version: stub
-# STUB: two entries for tests. Replaced by the pinned OncoKB curated-fusion snapshot (data release v7.7)
-# from refhub's cache before production use.
-alteration	gene
-EML4-ALK Fusion	ALK
-FGFR3-TACC3 Fusion	FGFR3

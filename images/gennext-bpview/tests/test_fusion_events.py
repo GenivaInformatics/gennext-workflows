@@ -358,11 +358,11 @@ def test_tier_rules_0_6(d):
     assert ek["oncokb_pair_specific"] == "true" and ek["canonical_junction"] == "true", ek
     # partner-agnostic kinase hit with 2 molecules: rescued without an exact OncoKB pair -> tier III
     assert nt["tier"] == "3" and "rescue_capped" in nt["tier_flags"], nt
-    assert "without OncoKB curation of this exact gene pair: tier III" in nt["tier_reason"], nt["tier_reason"]
+    assert "OncoKB doesn't recognise this exact gene pair: tier III" in nt["tier_reason"], nt["tier_reason"]
     assert nt["oncokb_pair_specific"] == "false" and nt["reading_frame"] == "", nt  # mid-exon: not computable
     # a partner-agnostic single molecule, rescued: tier III
     assert fg["tier"] == "3" and "rescue_capped" in fg["tier_flags"], fg
-    assert "without OncoKB curation of this exact gene pair: tier III" in fg["tier_reason"], fg["tier_reason"]
+    assert "OncoKB doesn't recognise this exact gene pair: tier III" in fg["tier_reason"], fg["tier_reason"]
     # CLDN18-ARHGAP26 shape: Arriba's frame, source arriba; not canonical (mid-exon), so it doesn't lead
     assert cl["tier"] == "2" and (cl["reading_frame"], cl["reading_frame_source"]) == ("in-frame", "arriba"), cl
     assert cl["site5"] == "exon" and cl["canonical_junction"] == "false", cl
@@ -394,7 +394,25 @@ def test_tier_rules_0_6(d):
     subprocess.run([sys.executable, FE, "build", "--sample-id", "T6", "--arriba-tsv", ap, "--starfusion-tsv", sp,
                     "--oncokb-json", jp, "--protein-domains", ".", "--oncokb-curated-fusions", cur, "--out-tsv", out,
                     "--out-meta-tsv", meta], check=True)
-    assert dict(l.rstrip("\n").split("\t") for l in open(meta))["oncokb_curated_fusions"].startswith("test (2 fusions"), meta
+    assert dict(l.rstrip("\n").split("\t") for l in open(meta))["oncokb_exact_pair"].startswith("curated list test (2 fusions"), meta
+    subprocess.run([sys.executable, FE, "build", "--sample-id", "T6", "--arriba-tsv", ap, "--starfusion-tsv", sp,
+                    "--oncokb-json", jp, "--protein-domains", ".", "--out-tsv", out, "--out-meta-tsv", meta], check=True)
+    assert dict(l.rstrip("\n").split("\t") for l in open(meta))["oncokb_exact_pair"].startswith("derived: VARIANT_IN_ONCOKB"), meta
+    # Without a list, the derived rule decides (default): the EML4-ALK shape stays exact
+    r = [x for x in csv.DictReader(open(out), delimiter="\t") if x["fusion"] == "EK--AK"][0]
+    assert r["oncokb_pair_specific"] == "true" and r["tier"] == "2", r
+
+    # The derived exact-pair rule on the shapes seen in the real OncoKB output (oncokb-cache's check)
+    def ok(v, effect, onc):
+        return {"OncoKB": {"VARIANT_IN_ONCOKB": v, "MUTATION_EFFECT": effect, "ONCOGENIC": onc}}
+    X = fusion_events.oncokb_exact_pair
+    assert X(ok("True", "Gain-of-function", "Oncogenic"), "EML4--ALK") is True
+    assert X(ok("True", "Likely Gain-of-function", "Likely Oncogenic"), "BRAF--MRPS33") is True
+    assert X(ok("True", "Likely Loss-of-function", "Likely Oncogenic"), "MSH2--KCNK12") is False   # tumour suppressor
+    assert X(ok("True", "Loss-of-function", "Oncogenic"), "BRCA1--BRCA1") is False                 # intragenic
+    assert X(ok("True", "Gain-of-function", "Unknown"), "MIEN1--ERBB2") is False                   # unknown oncogenicity
+    assert X(ok("False", "Likely Gain-of-function", "Likely Oncogenic"), "NTRK2--MYO9A") is False   # gene-level only
+    assert X(None, "GOPC--ROS1") is None                                                            # no annotation
 
     # Adjacent-gene read-through (Berk, 25 Nov): same chromosome and strand, < 50 kb, no gene between ->
     # tier III unless OncoKB's curated list has the pair. MSMB-NCOA4 shape: kept, Mitelman, 6 molecules.
