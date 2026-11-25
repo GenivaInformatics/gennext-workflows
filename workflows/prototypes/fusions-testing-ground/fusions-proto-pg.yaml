@@ -252,7 +252,7 @@ spec:
             path: "{{workflow.parameters.output-base}}{{workflow.parameters.dev-user-id}}/{{workflow.parameters.dev-run-id}}/"
             type: DirectoryOrCreate
       script:
-        image: bergun/gennext-bpview:0.5.0@sha256:338ce5ca83ffd0ac2e9d32fd00b6d494f36337b99c87eff00121f8d36aa29da1
+        image: bergun/gennext-bpview:0.6.1@sha256:de67e144d552b257f53c80cd1963c8e1eb53fe2f864dca564e94d1a81c2bfba6
         command: [bash]
         resources:
           requests: {cpu: "1", memory: 256Mi}
@@ -400,7 +400,7 @@ spec:
             path: "{{workflow.parameters.output-base}}{{workflow.parameters.dev-user-id}}/{{workflow.parameters.dev-run-id}}/{{inputs.parameters.dev-sample-uuid}}/"
             type: Directory
       script:
-        image: bergun/gennext-bpview:0.5.0@sha256:338ce5ca83ffd0ac2e9d32fd00b6d494f36337b99c87eff00121f8d36aa29da1
+        image: bergun/gennext-bpview:0.6.1@sha256:de67e144d552b257f53c80cd1963c8e1eb53fe2f864dca564e94d1a81c2bfba6
         command: [bash]
         resources:
           requests: {cpu: "1", memory: 4Gi}
