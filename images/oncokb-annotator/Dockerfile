@@ -51,6 +51,9 @@
 #                          (their chunk failed) are tried alone once more after
 #                          a pause, as 0.3.7 retried every row
 #   0.3.14-upstream-v4.1.0 as 0.3.13; rows with the ANNOVAR step's oncokbGene
+#   0.3.15-upstream-v4.1.0 as 0.3.14; fusion_annotator.py runs upstream's
+#                          FusionAnnotator.py and adds ONCOKB_MATCHED_ALTERATIONS
+#                          and ONCOKB_VARIANT_SUMMARY from the same answers
 #                          facts (oncokb_isoform*, oncokb_gene_db) send
 #                          their protein change to refhub as proteinFallback
 #                          (refhub's strict fallback). Output unchanged
@@ -77,4 +80,4 @@ RUN apk add --no-cache --virtual .build-deps g++ \
     && apk del .build-deps \
     && rm /tmp/constraints.txt
 
-COPY filtered_maf_annotator.py filtered_sv_annotator.py backfill_filtered_maf.py /app/oncokb/
+COPY filtered_maf_annotator.py filtered_sv_annotator.py backfill_filtered_maf.py fusion_annotator.py /app/oncokb/

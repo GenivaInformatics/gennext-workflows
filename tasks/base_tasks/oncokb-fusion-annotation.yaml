@@ -96,7 +96,7 @@ spec:
           max_attempts = 3
 
           cmd = [
-              "python", "./FusionAnnotator.py",
+              "python", "./fusion_annotator.py",
               "-i", "/tmp/fusions_input.tsv",
               "-o", "/tmp/fusions_annotated.tsv",
               "-b", oncokb_token,
