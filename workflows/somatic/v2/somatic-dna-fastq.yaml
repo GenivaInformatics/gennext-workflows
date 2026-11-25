@@ -14,7 +14,8 @@ spec:
           - name: sample-uuid
           - name: dna-input-files
           # Raw per-sample manifest from the backend. Carries msiMinCoverage,
-          # the per-kit MSI depth gate consumed by filter-msisensor-pro below.
+          # the per-kit MSI depth gate consumed by filter-msisensor-pro, and the
+          # sample's TMB method (tmb* fields) read by collect-tmb-data below.
           - name: sample-run-data
           - name: tumor-type
           - name: ref-version
@@ -707,9 +708,14 @@ spec:
                   value: "{{inputs.parameters.sample-temp-dir}}metrics/msi/{{inputs.parameters.sample-id}}_msi_filtered_summary.json"
             depends: "msisensor-pro && (validate-msi-bed-file.Succeeded || validate-msi-bed-file.Skipped)"
           - name: collect-tmb-data
+            # The sample's TMB method, resolved by the backend into the run
+            # manifest (RunManifestSample.tmb*), the way msiMinCoverage is
+            # read above. collect-tmb-data-v2 runs it as given and posts
+            # tmbMethodId with the result. A manifest without the fields
+            # fails the step (empty tmbMethodId) instead of guessing.
             templateRef:
-              name: collect-tmb-data-template
-              template: collect-tmb-data
+              name: collect-tmb-data-v2
+              template: collect-tmb-data-v2
             arguments:
               parameters:
                 - name: run-id
@@ -720,22 +726,22 @@ spec:
                   value: "{{tasks.duckdb-snv.outputs.parameters.output-duckdb}}"
                 - name: target-bed-file
                   value: "{{tasks.validate-bed-file.outputs.parameters.validated-bed-file}}"
-                - name: af-lower-threshold
-                  value: "0.05"
-                - name: af-upper-threshold
-                  value: "0.95"
                 - name: output-dir
                   value: "{{inputs.parameters.sample-temp-dir}}/metrics/tmb/"
-                - name: cosmic-vcf
-                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other/cosmic/Cosmic_CompleteTargetedScreensMutant_v103_GRCh38.vcf.gz"
-                - name: filter-common-variants
-                  value: "true"
-                - name: gnomad-vcf
-                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/gnomad4/gnomad4_1pct.vcf.gz"
-                - name: turkish-variome-vcf
-                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/turkish_variome/turkish_variome_1pct.vcf.gz"
-                - name: common-af-threshold
-                  value: "0.01"
+                - name: ref-dir
+                  value: "{{inputs.parameters.ref-base-dir}}/hg38/other"
+                - name: tmb-method-id
+                  value: "{{= sprig.default('', jsonpath(inputs.parameters['sample-run-data'], '$.samples[0]')['tmbMethodId']) }}"
+                - name: tmb-input-type
+                  value: "{{= sprig.default('', jsonpath(inputs.parameters['sample-run-data'], '$.samples[0]')['tmbInputType']) }}"
+                - name: tmb-calculator-image
+                  value: "{{= sprig.default('', jsonpath(inputs.parameters['sample-run-data'], '$.samples[0]')['tmbCalculatorImage']) }}"
+                - name: tmb-method-args
+                  value: "{{= sprig.default('', jsonpath(inputs.parameters['sample-run-data'], '$.samples[0]')['tmbMethodArgs']) }}"
+                - name: tmb-reference-files
+                  value: "{{= sprig.default('', jsonpath(inputs.parameters['sample-run-data'], '$.samples[0]')['tmbReferenceFiles']) }}"
+                - name: tmb-target-source
+                  value: "{{= sprig.default('', jsonpath(inputs.parameters['sample-run-data'], '$.samples[0]')['tmbTargetSource']) }}"
             depends: "duckdb-snv && validate-bed-file"
           - name: collect-msi-data
             templateRef:

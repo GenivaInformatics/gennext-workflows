@@ -1,0 +1,22 @@
+{
+  "_source": "Synthetic combined_snv rows (no sample data). Each row exercises one filter of today's method; 'why' is for the reader only.",
+  "rows": [
+    {"Chrom": "chr17", "Start": 7676000, "Ref": "C", "Alt": "T", "ExonicFunc.refGene": "nonsynonymous SNV", "AF": 0.30, "DETS": 5.0, "DP": "210", "why": "kept"},
+    {"Chrom": "chr17", "Start": 7676010, "Ref": "G", "Alt": "A", "ExonicFunc.refGene": "stopgain", "AF": 0.25, "DETS": 4.0, "DP": "190", "why": "kept"},
+    {"Chrom": "chr17", "Start": 7676020, "Ref": "A", "Alt": "G", "ExonicFunc.refGene": "nonsynonymous SNV", "AF": 0.02, "DETS": 4.0, "DP": "300", "why": "AF below 0.05"},
+    {"Chrom": "chr17", "Start": 7676030, "Ref": "T", "Alt": "C", "ExonicFunc.refGene": "nonsynonymous SNV", "AF": 0.98, "DETS": 4.0, "DP": "300", "why": "AF above 0.95"},
+    {"Chrom": "chr17", "Start": 7676040, "Ref": "C", "Alt": "A", "ExonicFunc.refGene": "synonymous SNV", "AF": 0.20, "DETS": 4.0, "DP": "300", "why": "synonymous"},
+    {"Chrom": "chr17", "Start": 7676050, "Ref": "G", "Alt": "T", "ExonicFunc.refGene": "nonsynonymous SNV", "AF": 0.20, "DETS": 1.0, "DP": "300", "why": "DETS below 2.5"},
+    {"Chrom": "chr17", "Start": 7676060, "Ref": "A", "Alt": "T", "ExonicFunc.refGene": "nonsynonymous SNV", "AF": 0.20, "DETS": 3.0, "DP": "300", "why": "not in COSMIC (v1 removes it)"},
+    {"Chrom": "chr17", "Start": 7676100, "Ref": "C", "Alt": "-", "ExonicFunc.refGene": "frameshift deletion", "AF": 0.22, "DETS": 3.5, "DP": "280", "why": "indel in COSMIC and in the gnomAD 1% file"},
+    {"Chrom": "chr12", "Start": 25245300, "Ref": "C", "Alt": "T", "ExonicFunc.refGene": "nonsynonymous SNV", "AF": 0.40, "DETS": 6.0, "DP": "250", "why": "gnomAD AF 0.05"},
+    {"Chrom": "chr12", "Start": 25245310, "Ref": "G", "Alt": "A", "ExonicFunc.refGene": "nonsynonymous SNV", "AF": 0.40, "DETS": 6.0, "DP": "250", "why": "Turkish Variome TR_AF 0.02"},
+    {"Chrom": "chr12", "Start": 25245320, "Ref": "T", "Alt": "G", "ExonicFunc.refGene": "nonsynonymous SNV", "AF": 0.40, "DETS": 6.0, "DP": "250", "why": "gnomAD AF 0.001: kept by v1 (1%), removed by v2 (4e-5)"},
+    {"Chrom": "chr22", "Start": 28734500, "Ref": "C", "Alt": "T", "ExonicFunc.refGene": "nonsynonymous SNV", "AF": 0.30, "DETS": 5.0, "DP": "260", "why": "CHEK2 is blacklisted"},
+    {"Chrom": "chr3", "Start": 179203600, "Ref": "A", "Alt": "G", "ExonicFunc.refGene": "nonsynonymous SNV", "AF": 0.35, "DETS": 5.0, "DP": "20", "why": "kept; DP 20 is under v2's 50 (fastq/bam), not checked for vcf"},
+    {"Chrom": "chr3", "Start": 179203650, "Ref": "G", "Alt": "C", "ExonicFunc.refGene": "nonsynonymous SNV", "AF": 0.35, "DETS": 5.0, "DP": "240", "why": "kept"},
+    {"Chrom": "chr13", "Start": 32336300, "Ref": "C", "Alt": "T", "ExonicFunc.refGene": "nonsynonymous SNV", "AF": 0.30, "DETS": 5.0, "DP": "240", "why": "CDS but outside the kit BED: kept only with the CDS target"},
+    {"Chrom": "chr17", "Start": 7676200, "Ref": "G", "Alt": "C", "ExonicFunc.refGene": "nonsynonymous SNV", "AF": 0.30, "DETS": 5.0, "DP": "240", "Filter": "weak_evidence", "why": "not PASS: not queried"},
+    {"Chrom": "chr17", "Start": 7676210, "Ref": "G", "Alt": "C", "ExonicFunc.refGene": ".", "Func.refGene": "intronic", "AF": 0.30, "DETS": 5.0, "DP": "240", "why": "not exonic: not queried"}
+  ]
+}

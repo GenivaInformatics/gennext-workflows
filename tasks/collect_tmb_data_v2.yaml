@@ -1,0 +1,417 @@
+# collect-tmb-data-v2: runs the TMB method the backend put in the run manifest.
+#
+# The method (calculator image, effective arguments, reference files, target
+# source) is resolved by the backend when it builds the run manifest. The
+# callers read it from sample-run-data and pass it in unchanged. This template
+# applies no rules of its own: it checks the method is well formed, checks
+# every reference file's sha256, runs the calculator, and publishes.
+#
+#   compute-tmb  calculator image from the manifest. Writes the exact API
+#                payload to <output-dir>/tmb_api_payload.json through the
+#                calculator's test:// endpoint (no network call).
+#   publish-tmb  adds tmbMethodId, tmbInputType and tmbEffectiveArgs to the
+#                staged payload, puts the cluster token in place of STAGED,
+#                and POSTs it to /api/v0/runs/{run}/somatic.
+#
+# Reference files are reached under /mnt/ref, a read-only mount of ref-dir
+# (<ref-base-dir>/hg38/other). Method arguments name them as /mnt/ref/<path>,
+# and the method's reference files list the same paths, relative to /mnt/ref.
+# There are no per-database volumes: a file is visible to the calculator only
+# through that one directory, and only checked files should be named by args.
+#
+# tests/test_tmb_v2_byte_identity.py runs both scripts below from this file.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: collect-tmb-data-v2
+  namespace: argo
+spec:
+  templates:
+    - name: collect-tmb-data-v2
+      inputs:
+        parameters:
+          - name: run-id
+          - name: sample-id
+          - name: duckdb-file
+          - name: target-bed-file
+          - name: output-dir
+          # <ref-base-dir>/hg38/other, mounted read-only at /mnt/ref.
+          - name: ref-dir
+          # From the run manifest (RunManifestSample), unchanged:
+          - name: tmb-method-id          # tmbMethodId
+          - name: tmb-input-type         # tmbInputType: fastq, bam or vcf
+          - name: tmb-calculator-image   # tmbCalculatorImage: repo@sha256:<64 hex>
+          - name: tmb-method-args        # tmbMethodArgs: JSON array of strings, as a string
+          - name: tmb-reference-files    # tmbReferenceFiles: JSON [{path, sha256}], as a string
+          - name: tmb-target-source      # tmbTargetSource: kit_bed or cds_bed
+          - name: api-base-url
+            value: "http://gennext-backend.gennext-prod.svc.cluster.local:3030"
+      steps:
+        - - name: compute-tmb
+            template: compute-tmb
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: duckdb-file
+                  value: "{{inputs.parameters.duckdb-file}}"
+                - name: target-bed-file
+                  value: "{{inputs.parameters.target-bed-file}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.output-dir}}"
+                - name: ref-dir
+                  value: "{{inputs.parameters.ref-dir}}"
+                - name: tmb-method-id
+                  value: "{{inputs.parameters.tmb-method-id}}"
+                - name: tmb-input-type
+                  value: "{{inputs.parameters.tmb-input-type}}"
+                - name: tmb-calculator-image
+                  value: "{{inputs.parameters.tmb-calculator-image}}"
+                - name: tmb-method-args
+                  value: "{{inputs.parameters.tmb-method-args}}"
+                - name: tmb-reference-files
+                  value: "{{inputs.parameters.tmb-reference-files}}"
+                - name: tmb-target-source
+                  value: "{{inputs.parameters.tmb-target-source}}"
+        - - name: publish-tmb
+            template: publish-tmb
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: sample-id
+                  value: "{{inputs.parameters.sample-id}}"
+                - name: output-dir
+                  value: "{{inputs.parameters.output-dir}}"
+                - name: tmb-method-id
+                  value: "{{inputs.parameters.tmb-method-id}}"
+                - name: tmb-input-type
+                  value: "{{inputs.parameters.tmb-input-type}}"
+                - name: tmb-method-args
+                  value: "{{inputs.parameters.tmb-method-args}}"
+                - name: api-base-url
+                  value: "{{inputs.parameters.api-base-url}}"
+
+    # ═══════════════════════════════════════════════════════════════════
+    # compute-tmb: runs the method's calculator and stages the payload.
+    # Every input reaches the script as an environment value, so nothing
+    # from the manifest is ever interpreted by a shell.
+    # ═══════════════════════════════════════════════════════════════════
+    - name: compute-tmb
+      inputs:
+        parameters:
+          - name: run-id
+          - name: sample-id
+          - name: duckdb-file
+          - name: target-bed-file
+          - name: output-dir
+          - name: ref-dir
+          - name: tmb-method-id
+          - name: tmb-input-type
+          - name: tmb-calculator-image
+          - name: tmb-method-args
+          - name: tmb-reference-files
+          - name: tmb-target-source
+      volumes:
+        - name: duckdb-file
+          hostPath:
+            path: "{{inputs.parameters.duckdb-file}}"
+            type: File
+        - name: target-bed-file
+          hostPath:
+            path: "{{inputs.parameters.target-bed-file}}"
+            type: File
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: DirectoryOrCreate
+        - name: ref-dir
+          hostPath:
+            path: "{{=sprig.osClean(inputs.parameters['ref-dir'])}}"
+            type: Directory
+      script:
+        name: tmb-calculator
+        image: "{{inputs.parameters.tmb-calculator-image}}"
+        command: [python]
+        workingDir: /mnt/input
+        env:
+          - name: TMB_RUN_ID
+            value: "{{inputs.parameters.run-id}}"
+          - name: TMB_SAMPLE_ID
+            value: "{{inputs.parameters.sample-id}}"
+          - name: TMB_DUCKDB
+            value: "/mnt/input/{{=sprig.osBase(inputs.parameters['duckdb-file'])}}"
+          - name: TMB_KIT_BED
+            value: "/mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}"
+          - name: TMB_METHOD_ID
+            value: "{{inputs.parameters.tmb-method-id}}"
+          - name: TMB_INPUT_TYPE
+            value: "{{inputs.parameters.tmb-input-type}}"
+          - name: TMB_CALCULATOR_IMAGE
+            value: "{{inputs.parameters.tmb-calculator-image}}"
+          - name: TMB_METHOD_ARGS
+            value: "{{inputs.parameters.tmb-method-args}}"
+          - name: TMB_REFERENCE_FILES
+            value: "{{inputs.parameters.tmb-reference-files}}"
+          - name: TMB_TARGET_SOURCE
+            value: "{{inputs.parameters.tmb-target-source}}"
+        volumeMounts:
+          - name: duckdb-file
+            mountPath: "/mnt/input/{{=sprig.osBase(inputs.parameters['duckdb-file'])}}"
+            readOnly: true
+          - name: target-bed-file
+            mountPath: "/mnt/input/{{=sprig.osBase(inputs.parameters['target-bed-file'])}}"
+            readOnly: true
+          - name: output-dir
+            mountPath: /mnt/output
+          - name: ref-dir
+            mountPath: /mnt/ref
+            readOnly: true
+        source: |
+          # BEGIN COMPUTE_TMB_PYTHON
+          import hashlib
+          import json
+          import os
+          import re
+          import shlex
+          import subprocess
+          import sys
+
+          REF_ROOT = "/mnt/ref"
+          OUTPUT_DIR = "/mnt/output"
+          CALCULATOR = "/app/calculate_tmb.py"
+          CDS_BED = "/app/data/gencode_v48_canonical_cds.bed"
+          PAYLOAD = os.path.join(OUTPUT_DIR, "tmb_api_payload.json")
+          # Set here, per sample. A method's arguments may not set them too:
+          # argparse keeps the last value (and accepts unique prefixes), so a
+          # method could otherwise redirect the output or post directly.
+          FIXED = ("--duckdb", "--target-bed", "--cds-bed", "--output-dir",
+                   "--run-id", "--sample-id", "--api-endpoint", "--api-token")
+
+
+          def fail(message):
+              print(f"collect-tmb-data-v2: {message}", file=sys.stderr)
+              raise SystemExit(1)
+
+
+          def env(name):
+              value = os.environ.get(name, "")
+              if not value:
+                  fail(f"{name} is empty")
+              return value
+
+
+          # Never empty with a backend that has TMB methods; this catches a
+          # manifest built by one that predates them.
+          if not os.environ.get("TMB_METHOD_ID"):
+              fail("the run manifest has no tmbMethodId")
+          method_id = env("TMB_METHOD_ID")
+          image = env("TMB_CALCULATOR_IMAGE")
+          if not re.fullmatch(r"[a-z0-9./_:-]+@sha256:[0-9a-f]{64}", image):
+              fail(f"calculator image is not pinned by digest: {image}")
+          input_type = env("TMB_INPUT_TYPE")
+          if input_type not in ("fastq", "bam", "vcf"):
+              fail(f"unknown input type: {input_type}")
+          target_source = env("TMB_TARGET_SOURCE")
+          if target_source == "kit_bed":
+              target_bed = env("TMB_KIT_BED")
+          elif target_source == "cds_bed":
+              target_bed = CDS_BED
+          else:
+              fail(f"unknown target source: {target_source}")
+
+          try:
+              method_args = json.loads(env("TMB_METHOD_ARGS"))
+              reference_files = json.loads(env("TMB_REFERENCE_FILES"))
+          except json.JSONDecodeError as err:
+              fail(f"method arguments or reference files are not JSON: {err}")
+          if not (isinstance(method_args, list)
+                  and all(isinstance(a, str) for a in method_args)):
+              fail("method arguments must be a JSON array of strings")
+          for arg in method_args:
+              option = arg.split("=", 1)[0]
+              if option.startswith("--") and len(option) > 2 and any(
+                      f.startswith(option) for f in FIXED):
+                  fail(f"method arguments may not set {arg}")
+          if not isinstance(reference_files, list):
+              fail("reference files must be a JSON array")
+
+          # Every reference file must be present with the method's checksum.
+          # This catches a node with a missing, wrong or partial file.
+          for entry in reference_files:
+              if not (isinstance(entry, dict)
+                      and isinstance(entry.get("path"), str)
+                      and isinstance(entry.get("sha256"), str)):
+                  fail(f"reference file entry must have a path and a sha256: {entry}")
+              rel = entry["path"]
+              if (not rel or rel.startswith("/")
+                      or ".." in rel.split("/")):
+                  fail(f"reference file path must be relative to {REF_ROOT}: {rel}")
+              path = os.path.join(REF_ROOT, rel)
+              if not os.path.isfile(path):
+                  fail(f"reference file missing on this node: {rel}")
+              digest = hashlib.sha256()
+              with open(path, "rb") as handle:
+                  for block in iter(lambda: handle.read(1 << 20), b""):
+                      digest.update(block)
+              if digest.hexdigest() != entry["sha256"].lower():
+                  fail(f"reference file checksum mismatch: {rel} is "
+                       f"{digest.hexdigest()}, the method expects {entry['sha256']}")
+              print(f"reference file ok: {rel}")
+
+          # A payload left by an earlier attempt must never be published.
+          if os.path.lexists(PAYLOAD):
+              os.remove(PAYLOAD)
+
+          argv = [
+              sys.executable, CALCULATOR,
+              "--duckdb", env("TMB_DUCKDB"),
+              "--target-bed", target_bed,
+              "--cds-bed", CDS_BED,
+              "--output-dir", OUTPUT_DIR + "/",
+              "--run-id", env("TMB_RUN_ID"),
+              "--sample-id", env("TMB_SAMPLE_ID"),
+              "--api-endpoint", "test://" + PAYLOAD,
+              "--api-token", "STAGED",
+          ] + method_args
+          print(f"TMB method {method_id} ({input_type}, {target_source}) with {image}")
+          print("Running: " + shlex.join(argv), flush=True)
+          result = subprocess.run(argv, check=False)
+          if result.returncode != 0:
+              fail(f"calculator exited {result.returncode}")
+          if not os.path.isfile(PAYLOAD):
+              fail("calculator did not write the staged payload")
+          print(f"Staged {PAYLOAD}")
+          # END COMPUTE_TMB_PYTHON
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "500m"
+          limits:
+            memory: "16Gi"
+            cpu: "1000m"
+
+    # ═══════════════════════════════════════════════════════════════════
+    # publish-tmb: posts the staged payload with the method that made it.
+    # It never recalculates TMB. Standard library only.
+    # ═══════════════════════════════════════════════════════════════════
+    - name: publish-tmb
+      inputs:
+        parameters:
+          - name: run-id
+          - name: sample-id
+          - name: output-dir
+          - name: tmb-method-id
+          - name: tmb-input-type
+          - name: tmb-method-args
+          - name: api-base-url
+      volumes:
+        - name: output-dir
+          hostPath:
+            path: "{{inputs.parameters.output-dir}}"
+            type: Directory
+      script:
+        name: tmb-publish
+        image: python:3.11-alpine3.18@sha256:4799cdc47a1b7ecc2829e71e74d06ce7c0af54dec4f5ff139f869cc2c4283b1d
+        command: [python]
+        env:
+          - name: TMB_RUN_ID
+            value: "{{inputs.parameters.run-id}}"
+          - name: TMB_SAMPLE_ID
+            value: "{{inputs.parameters.sample-id}}"
+          - name: TMB_METHOD_ID
+            value: "{{inputs.parameters.tmb-method-id}}"
+          - name: TMB_INPUT_TYPE
+            value: "{{inputs.parameters.tmb-input-type}}"
+          - name: TMB_METHOD_ARGS
+            value: "{{inputs.parameters.tmb-method-args}}"
+          - name: TMB_API_BASE_URL
+            value: "{{inputs.parameters.api-base-url}}"
+          - name: GENNEXT_CLUSTER_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: gennext-cluster-secrets
+                key: gennext_cluster_token
+        volumeMounts:
+          - name: output-dir
+            mountPath: /mnt/output
+            readOnly: true
+        source: |
+          # BEGIN PUBLISH_TMB_PYTHON
+          import json
+          import os
+          import sys
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          OUTPUT_DIR = os.environ.get("TMB_OUTPUT_DIR", "/mnt/output")
+          PAYLOAD = os.path.join(OUTPUT_DIR, "tmb_api_payload.json")
+
+
+          def fail(message):
+              print(f"publish-tmb: {message}", file=sys.stderr)
+              raise SystemExit(1)
+
+
+          run_id = os.environ["TMB_RUN_ID"]
+          sample_id = os.environ["TMB_SAMPLE_ID"]
+          method_id = os.environ["TMB_METHOD_ID"]
+          input_type = os.environ["TMB_INPUT_TYPE"]
+          if not method_id or not input_type:
+              fail("method id and input type are required")
+          # The same value compute ran, so this is exactly what was run.
+          effective_args = json.loads(os.environ["TMB_METHOD_ARGS"])
+
+          with open(PAYLOAD) as handle:
+              payload = json.load(handle)
+          missing = sorted({"runId", "sampleId", "somaticData", "token"} - payload.keys())
+          if missing:
+              fail(f"staged payload is missing keys: {missing}")
+          if payload["token"] != "STAGED":
+              fail("staged payload must carry only the STAGED token")
+          if payload["runId"] != run_id or payload["sampleId"] != sample_id:
+              fail(f"staged payload is for {payload['runId']}/{payload['sampleId']}, "
+                   f"not {run_id}/{sample_id}")
+          somatic = payload["somaticData"]
+          if not isinstance(somatic, dict) or "tmbValue" not in somatic:
+              fail("staged payload has no TMB value")
+          for key in ("tmbMethodId", "tmbInputType", "tmbEffectiveArgs"):
+              if key in somatic:
+                  fail(f"staged payload already has {key}")
+
+          somatic["tmbMethodId"] = method_id
+          somatic["tmbInputType"] = input_type
+          somatic["tmbEffectiveArgs"] = effective_args
+          payload["token"] = os.environ["GENNEXT_CLUSTER_TOKEN"]
+
+          url = (os.environ["TMB_API_BASE_URL"].rstrip("/") + "/api/v0/runs/"
+                 + urllib.parse.quote(run_id, safe="") + "/somatic")
+          request = urllib.request.Request(
+              url,
+              data=json.dumps(payload).encode(),
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  status = response.status
+                  body = response.read().decode(errors="replace")
+          except urllib.error.HTTPError as err:
+              status = err.code
+              body = err.read().decode(errors="replace")
+          except urllib.error.URLError as err:
+              fail(f"could not reach the backend: {err.reason}")
+          if status != 200:
+              fail(f"TMB publication failed: {status} {body}")
+          print(f"Published TMB for {sample_id} with method {method_id} ({input_type})")
+          # END PUBLISH_TMB_PYTHON
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"

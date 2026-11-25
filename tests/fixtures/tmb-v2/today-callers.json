@@ -1,0 +1,173 @@
+{
+  "_source": "collect-tmb-data task arguments in somatic-dna-{fastq,bam,vcf}-v2 on main c489ad9, identical to the live templates on 26 Nov 2026. The callers before collect-tmb-data-v2; kept here as the V0 baseline.",
+  "callers": {
+    "fastq": {
+      "templateRef": {
+        "name": "collect-tmb-data-template",
+        "template": "collect-tmb-data"
+      },
+      "parameters": [
+        {
+          "name": "run-id",
+          "value": "{{inputs.parameters.run-id}}"
+        },
+        {
+          "name": "sample-id",
+          "value": "{{inputs.parameters.sample-id}}"
+        },
+        {
+          "name": "duckdb-file",
+          "value": "{{tasks.duckdb-snv.outputs.parameters.output-duckdb}}"
+        },
+        {
+          "name": "target-bed-file",
+          "value": "{{tasks.validate-bed-file.outputs.parameters.validated-bed-file}}"
+        },
+        {
+          "name": "af-lower-threshold",
+          "value": "0.05"
+        },
+        {
+          "name": "af-upper-threshold",
+          "value": "0.95"
+        },
+        {
+          "name": "output-dir",
+          "value": "{{inputs.parameters.sample-temp-dir}}/metrics/tmb/"
+        },
+        {
+          "name": "cosmic-vcf",
+          "value": "{{inputs.parameters.ref-base-dir}}/hg38/other/cosmic/Cosmic_CompleteTargetedScreensMutant_v103_GRCh38.vcf.gz"
+        },
+        {
+          "name": "filter-common-variants",
+          "value": "true"
+        },
+        {
+          "name": "gnomad-vcf",
+          "value": "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/gnomad4/gnomad4_1pct.vcf.gz"
+        },
+        {
+          "name": "turkish-variome-vcf",
+          "value": "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/turkish_variome/turkish_variome_1pct.vcf.gz"
+        },
+        {
+          "name": "common-af-threshold",
+          "value": "0.01"
+        }
+      ]
+    },
+    "bam": {
+      "templateRef": {
+        "name": "collect-tmb-data-template",
+        "template": "collect-tmb-data"
+      },
+      "parameters": [
+        {
+          "name": "run-id",
+          "value": "{{inputs.parameters.run-id}}"
+        },
+        {
+          "name": "sample-id",
+          "value": "{{inputs.parameters.sample-id}}"
+        },
+        {
+          "name": "duckdb-file",
+          "value": "{{tasks.duckdb-snv.outputs.parameters.output-duckdb}}"
+        },
+        {
+          "name": "target-bed-file",
+          "value": "{{tasks.validate-bed-file.outputs.parameters.validated-bed-file}}"
+        },
+        {
+          "name": "af-lower-threshold",
+          "value": "0.05"
+        },
+        {
+          "name": "af-upper-threshold",
+          "value": "0.95"
+        },
+        {
+          "name": "output-dir",
+          "value": "{{inputs.parameters.sample-temp-dir}}/metrics/tmb/"
+        },
+        {
+          "name": "cosmic-vcf",
+          "value": "{{inputs.parameters.ref-base-dir}}/hg38/other/cosmic/Cosmic_CompleteTargetedScreensMutant_v103_GRCh38.vcf.gz"
+        },
+        {
+          "name": "filter-common-variants",
+          "value": "true"
+        },
+        {
+          "name": "gnomad-vcf",
+          "value": "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/gnomad4/gnomad4_1pct.vcf.gz"
+        },
+        {
+          "name": "turkish-variome-vcf",
+          "value": "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/turkish_variome/turkish_variome_1pct.vcf.gz"
+        },
+        {
+          "name": "common-af-threshold",
+          "value": "0.01"
+        }
+      ]
+    },
+    "vcf": {
+      "templateRef": {
+        "name": "collect-tmb-data-template",
+        "template": "collect-tmb-data"
+      },
+      "parameters": [
+        {
+          "name": "run-id",
+          "value": "{{inputs.parameters.run-id}}"
+        },
+        {
+          "name": "sample-id",
+          "value": "{{inputs.parameters.sample-id}}"
+        },
+        {
+          "name": "duckdb-file",
+          "value": "{{tasks.duckdb-snv.outputs.parameters.output-duckdb}}"
+        },
+        {
+          "name": "target-bed-file",
+          "value": "{{tasks.validate-bed-file.outputs.parameters.validated-bed-file}}"
+        },
+        {
+          "name": "af-lower-threshold",
+          "value": "0.05"
+        },
+        {
+          "name": "af-upper-threshold",
+          "value": "0.95"
+        },
+        {
+          "name": "output-dir",
+          "value": "{{inputs.parameters.sample-temp-dir}}/metrics/tmb/"
+        },
+        {
+          "name": "cosmic-vcf",
+          "value": "{{inputs.parameters.ref-base-dir}}/hg38/other/cosmic/Cosmic_CompleteTargetedScreensMutant_v103_GRCh38.vcf.gz"
+        },
+        {
+          "name": "filter-common-variants",
+          "value": "true"
+        },
+        {
+          "name": "gnomad-vcf",
+          "value": "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/gnomad4/gnomad4_1pct.vcf.gz"
+        },
+        {
+          "name": "turkish-variome-vcf",
+          "value": "{{inputs.parameters.ref-base-dir}}/hg38/other/common_variants/turkish_variome/turkish_variome_1pct.vcf.gz"
+        },
+        {
+          "name": "common-af-threshold",
+          "value": "0.01"
+        }
+      ]
+    }
+  }
+}
