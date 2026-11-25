@@ -1,0 +1,277 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: fusion-events-v1-template
+  namespace: argo
+spec:
+  templates:
+    # Fusion event data, contract v1 (docs/fusions/event-contract.md), for production RNA runs.
+    # Called by somatic-rna-fastq-v2 after the callers and the OncoKB fusion annotation. It only adds
+    # files and tables: FusionInspector, fusion-report and every existing output keep running as before.
+    # The calling DAG's copy step waits for these steps in any end state, so a failure here never fails the
+    # sample or blocks its copy and post-processing: the sample then has no event data (or only partial
+    # bpview files) and api-edge reports it as legacy. The failed step shows red in Argo.
+    #
+    # Writes, under {results-dir} (the sample's temp results/, copied to its output by copy-temp-to-output):
+    #   fusions/fusion-events/{s}_arriba.rescued.tsv   Arriba kept + rescued calls (rescue rule, Q1)
+    #   fusions/bpview/{s}_bpview.*                    contigs, reads, exons, events.json (every event drawn)
+    #   fusions/fusion-events/{s}_fusion_events.tsv, {s}_fusion_events_meta.tsv
+    #   db/{s}_fusions.duckdb                          + tables fusion_events, fusion_events_meta
+    - name: fusion-events
+      activeDeadlineSeconds: 3600
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: input-bam            # the fgbio-marked STAR BAM (duplicate flags are required)
+          - name: ref-genome-fa
+          - name: gene-annotation-gtf  # MANE Select GTF: exons, CDS phase, gene spans
+          - name: results-dir          # the sample's temp results/ folder, ending in /
+          - name: arriba-settings
+            default: max_sensitivity
+      volumes:
+        - name: bam
+          hostPath: {path: "{{=sprig.osDir(inputs.parameters['input-bam'])}}", type: Directory}
+        - name: ref-genome
+          hostPath: {path: "{{=sprig.osDir(inputs.parameters['ref-genome-fa'])}}", type: Directory}
+        - name: gtf
+          hostPath: {path: "{{inputs.parameters.gene-annotation-gtf}}", type: File}
+        - name: results
+          hostPath: {path: "{{inputs.parameters.results-dir}}", type: Directory}
+      script:
+        image: bergun/gennext-bpview:0.6.1@sha256:de67e144d552b257f53c80cd1963c8e1eb53fe2f864dca564e94d1a81c2bfba6
+        command: [bash]
+        resources:
+          requests: {cpu: "1", memory: 3Gi}
+          limits: {memory: 12Gi}
+        volumeMounts:
+          - {name: bam, mountPath: /mnt/input/bam, readOnly: true}
+          - {name: ref-genome, mountPath: /mnt/ref/genome, readOnly: true}
+          - {name: gtf, mountPath: /mnt/ref/annotation.gtf.gz, readOnly: true}
+          - {name: results, mountPath: /mnt/results}
+        source: |
+          set -euo pipefail
+          ID="{{inputs.parameters.sample-id}}"
+          P=/mnt/results/fusions
+          BAM="/mnt/input/bam/{{=sprig.osBase(inputs.parameters['input-bam'])}}"
+          GENOME="/mnt/ref/genome/{{=sprig.osBase(inputs.parameters['ref-genome-fa'])}}"
+          SF="${P}/star-fusion/${ID}_starfusion.tsv"
+          ONCOKB="${P}/oncokb/fusions_with_oncokb.json"
+          [ -s "${ONCOKB}" ] || ONCOKB=.
+          mkdir -p "${P}/bpview" "${P}/fusion-events"
+          fusion-events --version; bpview --version
+          T0=$(date +%s)
+          fusion-events rescue \
+            --arriba-tsv "${P}/arriba/${ID}_fusions.tsv" \
+            --arriba-discarded-tsv "${P}/arriba/${ID}_fusions.discarded.tsv" \
+            --starfusion-tsv "${SF}" --oncokb-json "${ONCOKB}" \
+            --out-arriba-tsv "${P}/fusion-events/${ID}_arriba.rescued.tsv"
+          T1=$(date +%s)
+          # no --fusion-list: bpview draws every event, so every count is countable in the BAM (contract §4)
+          bpview --sample-id "${ID}" --bam "${BAM}" --fasta "${GENOME}" --gtf /mnt/ref/annotation.gtf.gz \
+            --arriba-tsv "${P}/fusion-events/${ID}_arriba.rescued.tsv" --starfusion-tsv "${SF}" \
+            --max-events 1500 --max-context 40 --out-prefix "${P}/bpview/${ID}_bpview"
+          T2=$(date +%s)
+          fusion-events build --sample-id "${ID}" \
+            --arriba-tsv "${P}/fusion-events/${ID}_arriba.rescued.tsv" --starfusion-tsv "${SF}" \
+            --oncokb-json "${ONCOKB}" --bpview-events "${P}/bpview/${ID}_bpview.events.json" \
+            --gtf /mnt/ref/annotation.gtf.gz --arriba-settings "{{inputs.parameters.arriba-settings}}" \
+            --out-tsv "${P}/fusion-events/${ID}_fusion_events.tsv" \
+            --out-meta-tsv "${P}/fusion-events/${ID}_fusion_events_meta.tsv"
+          T3=$(date +%s)
+          echo "seconds: rescue $((T1-T0)), bpview $((T2-T1)), build $((T3-T2))"
+
+    # fusion_events + fusion_events_meta into the sample's fusions DuckDB, in one transaction, meta last.
+    # The same workflow mutex as the other DuckDB writers (duckdb-template).
+    - name: fusion-events-load
+      activeDeadlineSeconds: 900
+      synchronization:
+        mutex:
+          name: "{{workflow.name}}-mutex"
+      inputs:
+        parameters:
+          - name: sample-id
+          - name: results-dir
+      volumes:
+        - name: results
+          hostPath: {path: "{{inputs.parameters.results-dir}}", type: Directory}
+      script:
+        image: qldrsc/duckdb@sha256:fe7b9397f8f65b96c1920c4e5ca66dc71bc30a6872893572a643442d2379fa3d
+        command: [sh]
+        resources:
+          requests: {cpu: "1", memory: 1Gi}
+          limits: {memory: 4Gi}
+        volumeMounts:
+          - {name: results, mountPath: /mnt/results}
+        source: |
+          set -eu
+          ID="{{inputs.parameters.sample-id}}"
+          DB="/mnt/results/db/${ID}_fusions.duckdb"
+          EV="/mnt/results/fusions/fusion-events/${ID}_fusion_events.tsv"
+          META="/mnt/results/fusions/fusion-events/${ID}_fusion_events_meta.tsv"
+          [ -s "${DB}" ] && [ -s "${EV}" ] && [ -s "${META}" ] || { echo "ERROR: missing ${DB}, ${EV} or ${META}"; exit 1; }
+          sed -e "s|@EV@|${EV}|" -e "s|@META@|${META}|" <<'SQL' | duckdb "${DB}"
+          .bail on
+          BEGIN TRANSACTION;
+          CREATE OR REPLACE TABLE fusion_events AS
+            SELECT * REPLACE (
+                  coalesce(string_split(gene5_aliases, '|'), []::VARCHAR[]) AS gene5_aliases,
+                  coalesce(string_split(gene3_aliases, '|'), []::VARCHAR[]) AS gene3_aliases,
+                  coalesce(string_split(callers, '|'), []::VARCHAR[]) AS callers,
+                  coalesce(string_split(arriba_filters, '|'), []::VARCHAR[]) AS arriba_filters,
+                  coalesce(string_split(known_db, '|'), []::VARCHAR[]) AS known_db,
+                  coalesce(string_split(tier_flags, '|'), []::VARCHAR[]) AS tier_flags,
+                  coalesce(string_split(prototype_rules, '|'), []::VARCHAR[]) AS prototype_rules,
+                  coalesce(string_split(arriba_tags, '|'), []::VARCHAR[]) AS arriba_tags,
+                  coalesce(string_split(arriba_retained_domains1, '|'), []::VARCHAR[]) AS arriba_retained_domains1,
+                  coalesce(string_split(arriba_retained_domains2, '|'), []::VARCHAR[]) AS arriba_retained_domains2,
+                  coalesce(string_split(starfusion_annots, '|'), []::VARCHAR[]) AS starfusion_annots,
+                  coalesce(string_split(oncokb_treatments, '|'), []::VARCHAR[]) AS oncokb_treatments,
+                  coalesce(string_split(oncokb_mutation_effect_citations, '|'), []::VARCHAR[]) AS oncokb_mutation_effect_citations,
+                  coalesce(string_split(oncokb_treatment_citations, '|'), []::VARCHAR[]) AS oncokb_treatment_citations,
+                  coalesce(string_split(oncokb_dx_citations, '|'), []::VARCHAR[]) AS oncokb_dx_citations,
+                  coalesce(string_split(oncokb_px_citations, '|'), []::VARCHAR[]) AS oncokb_px_citations,
+                  coalesce(string_split(oncokb_matched_alterations, '|'), []::VARCHAR[]) AS oncokb_matched_alterations
+            )
+            FROM read_csv('@EV@', delim='\t', header=true, nullstr='', quote='',
+                columns={
+                  'sample_id': 'VARCHAR',
+                  'event_id': 'VARCHAR',
+                  'event_rank': 'INTEGER',
+                  'fusion': 'VARCHAR',
+                  'gene5': 'VARCHAR',
+                  'gene3': 'VARCHAR',
+                  'gene5_aliases': 'VARCHAR',
+                  'gene3_aliases': 'VARCHAR',
+                  'breakpoint5': 'VARCHAR',
+                  'breakpoint3': 'VARCHAR',
+                  'orientation_known': 'BOOLEAN',
+                  'transcript5': 'VARCHAR',
+                  'transcript3': 'VARCHAR',
+                  'exon5': 'INTEGER',
+                  'exon3': 'INTEGER',
+                  'site5': 'VARCHAR',
+                  'site3': 'VARCHAR',
+                  'reading_frame': 'VARCHAR',
+                  'splice_type': 'VARCHAR',
+                  'kinase_gene': 'VARCHAR',
+                  'kinase_retained': 'BOOLEAN',
+                  'kinase_domain_fraction': 'DOUBLE',
+                  'callers': 'VARCHAR',
+                  'n_callers': 'INTEGER',
+                  'caller_arriba': 'BOOLEAN',
+                  'caller_starfusion': 'BOOLEAN',
+                  'arriba_status': 'VARCHAR',
+                  'arriba_filters': 'VARCHAR',
+                  'arriba_confidence': 'VARCHAR',
+                  'arriba_type': 'VARCHAR',
+                  'arriba_split_reads': 'INTEGER',
+                  'arriba_discordant_mates': 'INTEGER',
+                  'starfusion_junction_reads': 'INTEGER',
+                  'starfusion_spanning_frags': 'INTEGER',
+                  'starfusion_ffpm': 'DOUBLE',
+                  'breakpoint_offset': 'INTEGER',
+                  'unique_molecules': 'INTEGER',
+                  'molecules_junction': 'INTEGER',
+                  'molecules_spanning': 'INTEGER',
+                  'start_sites': 'INTEGER',
+                  'pcr_copies': 'INTEGER',
+                  'support_source': 'VARCHAR',
+                  'low_support': 'BOOLEAN',
+                  'known_db': 'VARCHAR',
+                  'curated_known': 'BOOLEAN',
+                  'oncokb_oncogenic': 'VARCHAR',
+                  'oncokb_mutation_effect': 'VARCHAR',
+                  'oncokb_highest_level': 'VARCHAR',
+                  'oncokb_highest_dx_level': 'VARCHAR',
+                  'pair_clinical_tier': 'VARCHAR',
+                  'pair_fii': 'DOUBLE',
+                  'pon_gene_pair_count': 'INTEGER',
+                  'pon_junction_count': 'INTEGER',
+                  'pon_size': 'INTEGER',
+                  'pon_recurrent': 'BOOLEAN',
+                  'tier': 'INTEGER',
+                  'tier_basis': 'VARCHAR',
+                  'tier_flags': 'VARCHAR',
+                  'tier_reason': 'VARCHAR',
+                  'bpview_contig': 'VARCHAR',
+                  'builder_version': 'VARCHAR',
+                  'prototype_rules': 'VARCHAR',
+                  'arriba_gene1': 'VARCHAR',
+                  'arriba_gene2': 'VARCHAR',
+                  'arriba_breakpoint1': 'VARCHAR',
+                  'arriba_breakpoint2': 'VARCHAR',
+                  'arriba_strand1': 'VARCHAR',
+                  'arriba_strand2': 'VARCHAR',
+                  'arriba_split_reads1': 'INTEGER',
+                  'arriba_split_reads2': 'INTEGER',
+                  'arriba_coverage1': 'INTEGER',
+                  'arriba_coverage2': 'INTEGER',
+                  'arriba_site1': 'VARCHAR',
+                  'arriba_site2': 'VARCHAR',
+                  'arriba_filters_raw': 'VARCHAR',
+                  'arriba_duplicates': 'INTEGER',
+                  'arriba_tags': 'VARCHAR',
+                  'arriba_retained_domains1': 'VARCHAR',
+                  'arriba_retained_domains2': 'VARCHAR',
+                  'arriba_closest_genomic_breakpoint1': 'VARCHAR',
+                  'arriba_closest_genomic_breakpoint2': 'VARCHAR',
+                  'arriba_gene_id1': 'VARCHAR',
+                  'arriba_gene_id2': 'VARCHAR',
+                  'arriba_transcript_id1': 'VARCHAR',
+                  'arriba_transcript_id2': 'VARCHAR',
+                  'arriba_fusion_transcript': 'VARCHAR',
+                  'arriba_peptide_sequence': 'VARCHAR',
+                  'starfusion_left_gene': 'VARCHAR',
+                  'starfusion_right_gene': 'VARCHAR',
+                  'starfusion_left_breakpoint': 'VARCHAR',
+                  'starfusion_right_breakpoint': 'VARCHAR',
+                  'starfusion_est_junction': 'DOUBLE',
+                  'starfusion_est_spanning': 'DOUBLE',
+                  'starfusion_splice_type': 'VARCHAR',
+                  'starfusion_large_anchor_support': 'BOOLEAN',
+                  'starfusion_left_break_dinuc': 'VARCHAR',
+                  'starfusion_right_break_dinuc': 'VARCHAR',
+                  'starfusion_left_break_entropy': 'DOUBLE',
+                  'starfusion_right_break_entropy': 'DOUBLE',
+                  'starfusion_annots': 'VARCHAR',
+                  'oncokb_highest_sensitive_level': 'VARCHAR',
+                  'oncokb_highest_resistance_level': 'VARCHAR',
+                  'oncokb_highest_px_level': 'VARCHAR',
+                  'oncokb_treatments': 'VARCHAR',
+                  'oncokb_mutation_effect_citations': 'VARCHAR',
+                  'oncokb_treatment_citations': 'VARCHAR',
+                  'oncokb_dx_citations': 'VARCHAR',
+                  'oncokb_px_citations': 'VARCHAR',
+                  'oncokb_gene_in_oncokb': 'BOOLEAN',
+                  'oncokb_variant_in_oncokb': 'BOOLEAN',
+                  'oncokb_variant_summary': 'VARCHAR',
+                  'oncokb_matched_alterations': 'VARCHAR',
+                  'pair_fii_explained': 'VARCHAR',
+                  'arriba_split_reads_5p': 'INTEGER',
+                  'arriba_split_reads_3p': 'INTEGER',
+                  'arriba_bam_split_reads_5p': 'INTEGER',
+                  'arriba_bam_split_reads_3p': 'INTEGER',
+                  'arriba_bam_molecules': 'INTEGER',
+                  'arriba_bam_pcr_copies': 'INTEGER',
+                  'arriba_cited_missing': 'INTEGER',
+                  'starfusion_bam_split_reads_5p': 'INTEGER',
+                  'starfusion_bam_split_reads_3p': 'INTEGER',
+                  'starfusion_bam_molecules': 'INTEGER',
+                  'starfusion_bam_pcr_copies': 'INTEGER',
+                  'starfusion_cited_missing': 'INTEGER',
+                  'reading_frame_source': 'VARCHAR',
+                  'oncokb_pair_specific': 'BOOLEAN',
+                  'canonical_junction': 'BOOLEAN',
+                  'adjacent_readthrough': 'BOOLEAN'
+                });
+          CREATE OR REPLACE TABLE fusion_events_meta AS
+            SELECT * FROM read_csv('@META@', delim='\t', header=true, nullstr='', quote='',
+                                   columns={'key': 'VARCHAR', 'value': 'VARCHAR'});
+          -- The table must hold exactly the rows the builder wrote (meta key "events"); a mismatch aborts the
+          -- transaction, so neither table is written and the sample stays legacy.
+          SELECT CASE WHEN (SELECT count(*) FROM fusion_events)
+                           <> (SELECT CAST(value AS BIGINT) FROM fusion_events_meta WHERE key = 'events')
+                      THEN error('fusion_events row count differs from the meta count') END;
+          COMMIT;
+          SQL
+          echo "loaded into ${DB}: $(duckdb -csv -noheader "${DB}" "SELECT count(*) FROM fusion_events") events"
