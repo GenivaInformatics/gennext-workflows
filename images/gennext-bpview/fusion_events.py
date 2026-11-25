@@ -61,7 +61,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bpview  # noqa: E402  (same image, same directory)
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 CONTRACT_VERSION = "1"
 
 ACTIONABLE = {"LEVEL_1", "LEVEL_2", "LEVEL_R1"}
@@ -76,7 +76,8 @@ CURATED_DB = {"Mitelman", "COSMIC"}
 # Every field a user may filter on is its own typed column. List columns (VARCHAR[]) are written
 # '|'-separated in the TSV and split on load; an empty cell is an empty list.
 TIER_FLAGS = ("out_of_frame", "weak_caller_evidence", "low_unique_molecules", "low_support", "rescued",
-              "orientation_unknown", "pon_recurrent", "pon_capped")
+              "rescue_capped", "no_molecules", "readthrough_capped", "orientation_unknown", "pon_recurrent",
+              "pon_capped")
 COLUMNS = [
     # identity and order
     ("sample_id", "VARCHAR"), ("event_id", "VARCHAR"), ("event_rank", "INTEGER"), ("fusion", "VARCHAR"),
@@ -139,6 +140,8 @@ COLUMNS = [
     ("oncokb_mutation_effect_citations", "VARCHAR[]"), ("oncokb_treatment_citations", "VARCHAR[]"),
     ("oncokb_dx_citations", "VARCHAR[]"), ("oncokb_px_citations", "VARCHAR[]"),
     ("oncokb_gene_in_oncokb", "BOOLEAN"), ("oncokb_variant_in_oncokb", "BOOLEAN"),
+    # OncoKB's variantSummary and matched alteration names, when the annotator stored them (gennext-workflows#75)
+    ("oncokb_variant_summary", "VARCHAR"), ("oncokb_matched_alterations", "VARCHAR[]"),
     # fusion-report
     ("pair_fii_explained", "VARCHAR"),
     # Both callers side by side, on the event's 5'/3'. arriba_split_reads_5p/_3p: Arriba's own
@@ -151,7 +154,23 @@ COLUMNS = [
     ("starfusion_bam_split_reads_5p", "INTEGER"), ("starfusion_bam_split_reads_3p", "INTEGER"),
     ("starfusion_bam_molecules", "INTEGER"), ("starfusion_bam_pcr_copies", "INTEGER"),
     ("starfusion_cited_missing", "INTEGER"),
+    # --- 0.6.0 additions (contract v1, additive)
+    # reading_frame_source: "arriba" (Arriba's call) or "mane" (derived from the MANE Select CDS phase of
+    # both partners when no caller gives a frame); null when reading_frame is null.
+    ("reading_frame_source", "VARCHAR"),
+    # OncoKB's answer for this specific gene pair (not only one gene's fusions, not as a loss-of-function event),
+    # decided from the OncoKB API response stored at annotation time (oncokb_exact_pair).
+    ("oncokb_pair_specific", "BOOLEAN"),
+    # Both breakpoints at exon boundaries of the MANE Select transcripts.
+    ("canonical_junction", "BOOLEAN"),
+    # Same chromosome and strand, < READTHROUGH_MAX_DISTANCE apart, no other gene between the breakpoints.
+    ("adjacent_readthrough", "BOOLEAN"),
 ]
+READTHROUGH_MAX_DISTANCE = 50_000  # bp: an adjacent-gene read-through is capped at tier 3
+LOF_EFFECTS = {"Loss-of-function", "Likely Loss-of-function"}
+EXACT_PAIR_RULE = ("OncoKB API answer: a matched alteration is 'GENE5-GENE3 Fusion' (either order), when OncoKB "
+                   "names its matches; else VARIANT_IN_ONCOKB=True, two different genes, MUTATION_EFFECT not "
+                   "(Likely) Loss-of-function, ONCOGENIC not Unknown")
 ONCOKB_LEVELS = ("LEVEL_1", "LEVEL_2", "LEVEL_3A", "LEVEL_3B", "LEVEL_4", "LEVEL_R1", "LEVEL_R2",
                  "LEVEL_Dx1", "LEVEL_Dx2", "LEVEL_Dx3", "LEVEL_Px1", "LEVEL_Px2", "LEVEL_Px3")
 SUPPORT_FILTERS = {"in_vitro", "relative_support", "min_support"}
@@ -225,7 +244,7 @@ def load_transcripts(path):
             if line.startswith("#"):
                 continue
             f = line.rstrip("\n").split("\t")
-            if len(f) < 9 or f[2] != "exon":
+            if len(f) < 9 or f[2] not in ("exon", "CDS"):
                 continue
             a = f[8]
             g, t, n = (re.search(k + r' "?([^";]+)"?;', a) for k in ("gene_name", "transcript_id", "exon_number"))
@@ -234,13 +253,72 @@ def load_transcripts(path):
             rank = 2 if 'tag "MANE_Select"' in a else 1 if 'tag "Ensembl_canonical"' in a else 0
             if not rank:
                 continue
-            e = tx.setdefault((g.group(1), t.group(1)), dict(id=t.group(1), chrom=f[0], strand=f[6], rank=rank, exons=[]))
-            e["exons"].append((int(f[3]), int(f[4]), int(n.group(1))))
+            e = tx.setdefault((g.group(1), t.group(1)),
+                              dict(id=t.group(1), chrom=f[0], strand=f[6], rank=rank, exons=[], cds=[]))
+            if f[2] == "exon":
+                e["exons"].append((int(f[3]), int(f[4]), int(n.group(1))))
+            else:
+                e["cds"].append((int(f[3]), int(f[4])))
     best = {}
     for (gene, _), t in tx.items():
         if gene not in best or t["rank"] > best[gene]["rank"]:
             best[gene] = t
     return best
+
+
+def oncokb_exact_pair(entry, fusion):
+    """Is OncoKB's answer for this fusion about this specific gene pair? Decided from the OncoKB API response
+    stored by the annotator at annotation time (a ruling over the API answer, never a copy of
+    OncoKB's data). -> True / False, or None when the pair has no OncoKB annotation.
+
+    1. If the response records the alterations OncoKB matched (ONCOKB_MATCHED_ALTERATIONS, written by the
+       annotator from gennext-workflows#75: ';'-joined, e.g. "EML4-ALK Fusion;Fusions"; MATCHED_ALTERATIONS
+       is accepted too) and the field is non-empty, the pair is specific when one entry is exactly
+       "GENE5-GENE3 Fusion" or "GENE3-GENE5 Fusion".
+    2. Otherwise (field absent: outputs before #75; or empty: OncoKB named no alteration): VARIANT_IN_ONCOKB is True, the partners are two different genes, MUTATION_EFFECT is not
+       Loss-of-function or Likely Loss-of-function, and ONCOGENIC is not Unknown. OncoKB also sets
+       VARIANT_IN_ONCOKB for tumour-suppressor and intragenic fusions it matches as truncating; the effect test
+       drops those (rollout check of 9,736 stored rows, 25 Nov)."""
+    onc = (entry or {}).get("OncoKB")
+    if not onc:
+        return None
+    g5, _, g3 = (fusion or "").partition("--")
+    if not g5 or not g3:
+        return False
+    matched = onc.get("ONCOKB_MATCHED_ALTERATIONS", onc.get("MATCHED_ALTERATIONS"))
+    if matched:
+        alts = matched if isinstance(matched, list) else matched.split(";")
+        alts = {a.strip() for a in alts if a and a.strip()}
+        if alts:
+            return f"{g5}-{g3} Fusion" in alts or f"{g3}-{g5} Fusion" in alts
+    return (onc.get("VARIANT_IN_ONCOKB") == "True" and g5 != g3
+            and onc.get("MUTATION_EFFECT") not in LOF_EFFECTS
+            and (onc.get("ONCOGENIC") or "Unknown") != "Unknown")
+
+
+def gene_spans(transcripts):
+    """{chrom: [(start, end, gene)]} from the selected transcripts (MANE Select)."""
+    out = {}
+    for g, t in transcripts.items():
+        if t["exons"]:
+            out.setdefault(t["chrom"], []).append((min(a for a, _, _ in t["exons"]), max(b for _, b, _ in t["exons"]), g))
+    return out
+
+
+def adjacent_readthrough(ev, spans):
+    """Partner distance (bp) when the event is an adjacent-gene read-through: same chromosome and strand,
+    closer than READTHROUGH_MAX_DISTANCE, and no other gene overlapping the interval between the breakpoints;
+    else None. Genes are those with a MANE Select transcript in --gtf."""
+    if ev["chr1"] != ev["chr2"] or not ev["oriented"] or strand5(ev) != strand3(ev):
+        return None
+    d = abs(ev["pos1"] - ev["pos2"])
+    if d >= READTHROUGH_MAX_DISTANCE:
+        return None
+    lo, hi = sorted((ev["pos1"], ev["pos2"]))
+    partners = set(ev["names1"]) | set(ev["names2"])
+    if any(a < hi and b > lo and g not in partners for a, b, g in spans.get(ev["chr1"], [])):
+        return None
+    return d
 
 
 def load_kinase_domains(path):
@@ -366,6 +444,32 @@ def exon_site(tx, side, chrom, pos, keep):
     return tx["id"], ex[2], site
 
 
+def _kept_bases(segs, pos, keep):
+    """Bases of [start, end] segments on the kept side of a breakpoint (keep 'le': <= pos; 'ge': >= pos)."""
+    if keep == "le":
+        return sum(max(0, min(b, pos) - a + 1) for a, b in segs)
+    return sum(max(0, b - max(a, pos) + 1) for a, b in segs)
+
+
+def mane_frame(t5, t3, ev, site5, site3):
+    """Reading frame from the MANE Select CDS phase of both partners, or None when not computable.
+    Both breakpoints must be at exon boundaries inside the partner's CDS: a splice junction is exact, while a
+    mid-exon junction can carry inserted or microhomology bases that coordinates can't show. n5 = coding bases
+    of the 5' partner kept up to and including its breakpoint; n3 = coding bases of the 3' partner
+    before its breakpoint. In frame when n5 and n3 have the same phase (mod 3). Stop codons created at
+    the junction are not detected, so this never says stop-codon."""
+    if not t5 or not t3 or not t5.get("cds") or not t3.get("cds"):
+        return None
+    if site5 != "exon_boundary" or site3 != "exon_boundary":
+        return None
+    for t, pos in ((t5, ev["pos1"]), (t3, ev["pos2"])):
+        if not (min(a for a, _ in t["cds"]) <= pos <= max(b for _, b in t["cds"])):
+            return None  # in a UTR: the frame depends on which start codon is used
+    n5 = _kept_bases(t5["cds"], ev["pos1"], ev["keep1"])
+    n3 = sum(b - a + 1 for a, b in t3["cds"]) - _kept_bases(t3["cds"], ev["pos2"], ev["keep2"])
+    return "in-frame" if n5 % 3 == n3 % 3 else "out-of-frame"
+
+
 def gene_tx(names, transcripts, chrom):
     for n in names:
         t = transcripts.get(n)
@@ -448,7 +552,9 @@ def evidence_fails(row, opts):
     basic: frame and caller evidence, needed for tiers 1 and 2 through OncoKB.
     support: unique molecules, needed for tier 1 only."""
     basic, support = {}, {}
-    if row["reading_frame"] in ("out-of-frame", "stop-codon") and not opts.allow_out_of_frame:
+    # only the caller's frame counts as evidence; a MANE-derived frame (reading_frame_source "mane") is shown only
+    if (row.get("reading_frame_source") in (None, "arriba") and row["reading_frame"] in ("out-of-frame", "stop-codon")
+            and not opts.allow_out_of_frame):
         basic["out_of_frame"] = f"reading frame {row['reading_frame']}"
     if row["n_callers"] < 2 and row["arriba_confidence"] not in ("high", "medium"):
         basic["weak_caller_evidence"] = "one caller and Arriba confidence not high/medium"
@@ -500,6 +606,29 @@ def tier_event(row, opts):
                                                       + ([low["orientation_unknown"]] if "orientation_unknown" in low else [])))
         else:
             reasons.append("not known or actionable")
+    if row["arriba_status"] == "rescued":
+        # Rescue rule: a rescued call stays above tier 3 only when OncoKB recognises that exact
+        # gene pair, whatever its molecule count (partner-agnostic levels and database tags don't count),
+        # and even then it never reaches tier 1.
+        if not row["oncokb_pair_specific"] and tier < 3:
+            flags.append("rescue_capped")
+            reasons.append("rescued call, and OncoKB doesn't recognise this exact gene pair: tier III")
+            tier = 3
+        elif tier == 1:
+            flags.append("rescue_capped")
+            reasons.append("rescued call: never tier I")
+            tier = 2
+    if row["adjacent_readthrough"] and not row["oncokb_pair_specific"] and tier < 3:
+        flags.append("readthrough_capped")
+        reasons.append(f"adjacent-gene read-through ({row['readthrough_distance']:,} bp apart, under "
+                       f"{READTHROUGH_MAX_DISTANCE:,} bp, no gene between), and OncoKB doesn't recognise this exact "
+                       "gene pair: tier III")
+        tier = 3
+    if not row["unique_molecules"] and tier < 3:
+        # No counted molecule, no tier above III, whatever the path (a kept curated call too)
+        flags.append("no_molecules")
+        reasons.append("no counted molecule: tier III")
+        tier = 3
     if row["low_support"]:
         flags.append("low_support")
         if tier == 1:
@@ -628,6 +757,8 @@ def caller_details(ev, entry):
         oncokb_px_citations=_split(onc.get("PX_CITATIONS"), ";"),
         oncokb_gene_in_oncokb=tf.get(onc.get("GENE_IN_ONCOKB")),
         oncokb_variant_in_oncokb=tf.get(onc.get("VARIANT_IN_ONCOKB")),
+        oncokb_variant_summary=_str(onc.get("ONCOKB_VARIANT_SUMMARY")),
+        oncokb_matched_alterations=_split(onc.get("ONCOKB_MATCHED_ALTERATIONS"), ";"),
         pair_fii_explained=_str((entry or {}).get("Explained FII")))
 
 
@@ -664,6 +795,7 @@ def build_rows(opts):
     events = bpview.merge_events(arriba, starf, opts.merge_tolerance)
     pairs, bp, pon = load_pairs(opts.oncokb_json), load_bpview(opts.bpview_events), load_pon(opts.pon)
     transcripts, domains = load_transcripts(opts.gtf), load_kinase_domains(opts.protein_domains)
+    spans = gene_spans(transcripts)
     rows = []
     for ev in events:
         a, s = ev.get("arriba") or {}, ev.get("starfusion") or {}
@@ -677,6 +809,12 @@ def build_rows(opts):
         t5, x5, site5 = exon_site(gene_tx(ev["names1"], transcripts, ev["chr1"]), "5", ev["chr1"], ev["pos1"], ev["keep1"])
         t3, x3, site3 = exon_site(gene_tx(ev["names2"], transcripts, ev["chr2"]), "3", ev["chr2"], ev["pos2"], ev["keep2"])
         kg, kr, kf = kinase_info(ev, domains, opts.kinase_min_fraction)
+        caller_frame = a.get("reading_frame") if a.get("reading_frame") not in (None, ".", "") else None
+        frame, frame_src = (caller_frame, "arriba") if caller_frame else (None, None)
+        if frame is None:
+            tx5, tx3 = (gene_tx(ev["names" + i], transcripts, ev["chr" + i]) for i in ("1", "2"))
+            frame = mane_frame(tx5, tx3, ev, site5, site3)
+            frame_src = "mane" if frame else None
         status = a.get("status") if a else None
         bp5 = f"{ev['chr1']}:{ev['pos1']}:{strand5(ev)}"
         bp3 = f"{ev['chr2']}:{ev['pos2']}:{strand3(ev)}"
@@ -689,7 +827,9 @@ def build_rows(opts):
             gene5_aliases=list(ev["names1"]), gene3_aliases=list(ev["names2"]),
             breakpoint5=bp5, breakpoint3=bp3, orientation_known=bool(ev["oriented"]),
             transcript5=t5, transcript3=t3, exon5=x5, exon3=x3, site5=site5, site3=site3,
-            reading_frame=(a.get("reading_frame") if a.get("reading_frame") not in (None, ".") else None),
+            # tiers use the caller's frame only; a MANE-derived frame is shown, marked by reading_frame_source
+            reading_frame=frame, reading_frame_source=frame_src,
+            canonical_junction=(site5 == "exon_boundary" and site3 == "exon_boundary") if site5 and site3 else None,
             splice_type=bpview.splice_type(ev),
             kinase_gene=kg, kinase_retained=kr, kinase_domain_fraction=kf,
             callers=list(ev["callers"]), n_callers=len(ev["callers"]),
@@ -715,6 +855,10 @@ def build_rows(opts):
             pon_gene_pair_count=npair, pon_junction_count=njunc, pon_size=size,
             bpview_contig=b["contig"] if b else None, builder_version=__version__)
         row.update(caller_details(ev, entry))
+        row["oncokb_pair_specific"] = oncokb_exact_pair(entry, fusion)
+        rt = adjacent_readthrough(ev, spans) if spans else None
+        row["adjacent_readthrough"] = (rt is not None) if spans else None
+        row["readthrough_distance"] = rt
         row.update({c: None for c, _ in COLUMNS if c not in row})
         row.update(caller_sides(ev, b))
         row["curated_known"] = bool(CURATED_DB & set(row["known_db"]))
@@ -723,8 +867,15 @@ def build_rows(opts):
         row["prototype_rules"] = ((["rescue"] if status == "rescued" else [])
                                   + (["low_support"] if row["low_support"] else []))
         rows.append((row, bpview.priority(ev)))
-    # Default order: tier, supported before low support, unique molecules, then caller priority.
-    rows.sort(key=lambda x: (x[0]["tier"], x[0]["low_support"], -x[0]["unique_molecules"],
+    # Default order: tier; then exact curated or OncoKB-curated actionable/oncogenic pairs at a canonical
+    # junction (both breakpoints at exon boundaries) first; then supported before low support,
+    # unique molecules, and caller priority as before.
+    def leads(r):
+        exact = r["curated_known"] or r["oncokb_pair_specific"]
+        # an event with no supporting molecule in the BAM doesn't lead
+        return bool(r["canonical_junction"]) and bool(exact) and (r["unique_molecules"] or 0) >= 1
+
+    rows.sort(key=lambda x: (x[0]["tier"], not leads(x[0]), x[0]["low_support"], -x[0]["unique_molecules"],
                              tuple(-v for v in x[1])))
     out, seen = [], {}
     for i, (row, _) in enumerate(rows):
@@ -743,6 +894,7 @@ def write_meta(path, opts, rows):
             ("prototype", "true" if opts.prototype else "false"),
             ("arriba_settings", opts.arriba_settings or ""),
             ("pon", f"{os.path.basename(opts.pon)} ({len(pon['samples'])} samples)" if pon else "none"),
+            ("oncokb_exact_pair", EXACT_PAIR_RULE),
             ("events", str(len(rows)))]
     with open(path, "w") as fh:
         fh.write("key\tvalue\n")
