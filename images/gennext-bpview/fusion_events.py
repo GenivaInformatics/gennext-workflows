@@ -61,7 +61,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bpview  # noqa: E402  (same image, same directory)
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 CONTRACT_VERSION = "1"
 
 ACTIONABLE = {"LEVEL_1", "LEVEL_2", "LEVEL_R1"}
@@ -867,13 +867,16 @@ def build_rows(opts):
         row["prototype_rules"] = ((["rescue"] if status == "rescued" else [])
                                   + (["low_support"] if row["low_support"] else []))
         rows.append((row, bpview.priority(ev)))
-    # Default order: tier; then exact curated or OncoKB-curated actionable/oncogenic pairs at a canonical
-    # junction (both breakpoints at exon boundaries) first; then supported before low support,
+    # Default order: tier; then the events that lead (below); then supported before low support,
     # unique molecules, and caller priority as before.
     def leads(r):
-        exact = r["curated_known"] or r["oncokb_pair_specific"]
-        # an event with no supporting molecule in the BAM doesn't lead
-        return bool(r["canonical_junction"]) and bool(exact) and (r["unique_molecules"] or 0) >= 1
+        # A canonical junction (both breakpoints at exon boundaries) with at least 1 molecule leads when
+        # OncoKB answers for the exact pair, even at 1 molecule; a curated database pair (Mitelman, COSMIC)
+        # leads only when the call is not low support, so weak single-molecule database pairs don't sort
+        # ahead of strongly supported calls (0.6.1).
+        if not r["canonical_junction"] or (r["unique_molecules"] or 0) < 1:
+            return False
+        return bool(r["oncokb_pair_specific"]) or (bool(r["curated_known"]) and not r["low_support"])
 
     rows.sort(key=lambda x: (x[0]["tier"], not leads(x[0]), x[0]["low_support"], -x[0]["unique_molecules"],
                              tuple(-v for v in x[1])))

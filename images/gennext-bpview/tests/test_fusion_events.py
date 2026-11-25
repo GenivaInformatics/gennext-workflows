@@ -297,7 +297,7 @@ def test_caller_sides():
 
 
 def test_tier_rules_0_6(d):
-    """0.6.0, on the shapes of the real samples: the rescue rule, the order within a tier,
+    """0.6.0/0.6.1, on the shapes of the real samples: the rescue rule, the order within a tier,
     and the MANE-derived reading frame."""
     gtf = os.path.join(d, "t6.gtf")
     with open(gtf, "w") as fh:
@@ -306,7 +306,8 @@ def test_tier_rules_0_6(d):
                 for feat in ("exon", "CDS"):
                     fh.write(f'{chrom}\tT\t{feat}\t{a}\t{b}\t.\t+\t0\tgene_name "{name}"; transcript_id "{name}-201"; '
                              f'exon_number {n}; tag "MANE_Select";\n')
-        for i, g in enumerate(("EK", "AK", "NT", "MY", "FG", "CI", "CL", "AR", "FR", "TA")):
+        for i, g in enumerate(("EK", "AK", "NT", "MY", "FG", "CI", "CL", "AR", "FR", "TA",
+                               "AT", "KM", "AP", "BD", "SP", "PT")):
             gene(f"chr{i + 1}", g)
     hdr = ARRIBA_HDR + ["filters", "arriba_status"]
 
@@ -325,6 +326,12 @@ def test_tier_rules_0_6(d):
         row("CL", "AR", "chr7", "chr8", 350, 300, 84, "high", "in-frame", "kept", tags="Mitelman"),
         # FGFR3-TACC3 shape: kept, 29 molecules, exact OncoKB pair, canonical junction
         row("FR", "TA", "chr9", "chr10", 399, 500, 29, "high", "in-frame", "kept"),
+        # two weak database pairs: kept, Arriba only, low confidence, 1 molecule (low support), curated
+        # (Mitelman), canonical junction
+        row("AT", "KM", "chr11", "chr12", 199, 300, 1, "low", "in-frame", "kept", tags="Mitelman"),
+        row("AP", "BD", "chr13", "chr14", 399, 500, 1, "low", "in-frame", "kept", tags="Mitelman"),
+        # a supported database pair: kept, 5 molecules, curated (Mitelman), canonical junction
+        row("SP", "PT", "chr15", "chr16", 199, 300, 5, "high", "in-frame", "kept", tags="Mitelman"),
     ]
     sf = [sf_row("NT", "MY", "chr3:150", "chr4:350", 2, 0), sf_row("FG", "CI", "chr5:150", "chr6:350", 1, 0)]
     for r in sf:
@@ -338,7 +345,10 @@ def test_tier_rules_0_6(d):
              "NT--MY": okb("LEVEL_1", "Likely Oncogenic", False),
              "FG--CI": okb("LEVEL_2", "Likely Oncogenic", False),
              "CL--AR": okb("", "Unknown", False, ["Mitelman"]),
-             "FR--TA": okb("LEVEL_3B", "Oncogenic", True)}
+             "FR--TA": okb("LEVEL_3B", "Oncogenic", True),
+             "AT--KM": okb("", "Unknown", False, ["Mitelman"]),
+             "AP--BD": okb("", "Unknown", False, ["Mitelman"]),
+             "SP--PT": okb("", "Unknown", False, ["Mitelman"])}
     ap, sp, jp, out = (os.path.join(d, x) for x in ("t6.arriba.tsv", "t6.sf.tsv", "t6.json", "t6.ev.tsv"))
     tsv(ap, hdr, arr)
     tsv(sp, SF_HDR, sf)
@@ -363,10 +373,32 @@ def test_tier_rules_0_6(d):
     # CLDN18-ARHGAP26 shape: Arriba's frame, source arriba; not canonical (mid-exon), so it doesn't lead
     assert cl["tier"] == "2" and (cl["reading_frame"], cl["reading_frame_source"]) == ("in-frame", "arriba"), cl
     assert cl["site5"] == "exon" and cl["canonical_junction"] == "false", cl
-    # Order in tier II: canonical exact pairs first (FGFR3-TACC3 shape, then EML4-ALK shape), then the rest
-    # by the existing order (CLDN18-ARHGAP26 shape)
-    order = sorted((r for r in ev.values() if r["tier"] == "2"), key=lambda r: int(r["event_rank"]))
-    assert [r["fusion"] for r in order] == ["FR--TA", "EK--AK", "CL--AR"], [r["fusion"] for r in order]
+    # Order in tier II (0.6.1). Leading: canonical junctions with an exact OncoKB pair, even at 1 molecule
+    # (FGFR3-TACC3 shape, then EML4-ALK shape), or a curated database pair that isn't low support. The rest
+    # by the existing order: the strongly supported mid-exon CLDN18-ARHGAP26 shape comes before the two
+    # weak single-molecule database pairs, which no longer lead.
+    for k in ("AT--KM", "AP--BD"):
+        w = ev[k]
+        assert (w["tier"], w["curated_known"], w["canonical_junction"], w["low_support"]) == ("2", "true", "true", "true"), w
+    assert (ev["SP--PT"]["low_support"], ev["SP--PT"]["canonical_junction"]) == ("false", "true"), ev["SP--PT"]
+    order = [r["fusion"] for r in sorted((r for r in ev.values() if r["tier"] == "2"), key=lambda r: int(r["event_rank"]))]
+    assert order[:4] == ["FR--TA", "SP--PT", "EK--AK", "CL--AR"] and set(order[4:]) == {"AT--KM", "AP--BD"}, order
+
+    def tier2(rows):
+        tsv(ap, hdr, rows)
+        subprocess.run([sys.executable, FE, "build", "--sample-id", "T6", "--arriba-tsv", ap, "--starfusion-tsv", sp,
+                        "--oncokb-json", jp, "--gtf", gtf, "--protein-domains", ".", "--out-tsv", out], check=True)
+        got = [r for r in csv.DictReader(open(out), delimiter="\t") if r["tier"] == "2"]
+        return [r["fusion"] for r in sorted(got, key=lambda r: int(r["event_rank"]))]
+    by = {f"{r['gene1']}--{r['gene2']}": r for r in arr}
+    # a sample like the EML4-ALK case: the exact OncoKB pair with 1 molecule stays first in tier II, ahead
+    # of the weak database pairs
+    o = tier2([by[k] for k in ("AT--KM", "EK--AK", "AP--BD")])
+    assert o[0] == "EK--AK" and set(o) == {"EK--AK", "AT--KM", "AP--BD"}, o
+    # a sample like the CLDN18-ARHGAP26 case: the strongly supported mid-exon database pair is first in
+    # tier II, ahead of the two weak single-molecule database pairs at exon boundaries (0.6.0 put it third)
+    o = tier2([by[k] for k in ("AT--KM", "AP--BD", "CL--AR")])
+    assert o[0] == "CL--AR" and set(o) == {"CL--AR", "AT--KM", "AP--BD"}, o
     # an exact OncoKB pair that is rescued with enough molecules still never reaches tier I
     arr2 = [row("EK", "AK", "chr1", "chr2", 199, 300, 5, "high", ".", "rescued", "relative_support(1)")]
     tsv(ap, hdr, arr2)

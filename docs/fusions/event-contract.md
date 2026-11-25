@@ -94,7 +94,7 @@ the same junction.
 | Field | Type | Meaning |
 |---|---|---|
 | `event_id` | VARCHAR | Stable key for selection, views and the report: the junction, `chr5:pos5:strand5>chr3:pos3:strand3` (strand `+`/`-`, or `.` on both sides when `orientation_known` is false). The same junction in a re-run gets the same ID. It is unique **within a sample** only (the same junction in two samples has the same ID), so selection and the report key on (`sample_uuid`, `event_id`). In the rare case of two events at one junction, the second gets `#2`. |
-| `event_rank` | INTEGER | Default order, 1 = first: tier; then, from fusion-events 0.6.0, events that are a curated database pair (`curated_known`: Mitelman, COSMIC) or a pair OncoKB answers for specifically (`oncokb_pair_specific`), at a `canonical_junction`, with at least 1 unique molecule; then supported before `low_support`, unique molecules (descending), caller priority. |
+| `event_rank` | INTEGER | Default order, 1 = first: tier; then the events that lead: at a `canonical_junction` with at least 1 unique molecule, and either a pair OncoKB answers for specifically (`oncokb_pair_specific`, even at 1 molecule) or a curated database pair (`curated_known`: Mitelman, COSMIC) that is not `low_support` (fusion-events 0.6.1; in 0.6.0 a `low_support` curated pair led too); then supported before `low_support`, unique molecules (descending), caller priority. |
 | `sample_id` | VARCHAR | Sample name |
 | `fusion` | VARCHAR | `GENE5--GENE3`, the join key to the gene-pair data |
 | `gene5`, `gene3` | VARCHAR | Display genes |
