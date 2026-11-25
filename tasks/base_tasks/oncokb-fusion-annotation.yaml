@@ -29,7 +29,7 @@ spec:
             type: DirectoryOrCreate
       script:
         name: oncokb-fusion-annotation
-        image: bergun/oncokb-annotator:0.3.15-upstream-v4.1.0@sha256:9666c19e7be15f10e0f98f43ab883d4a219969f8383569de5329b780887a0421
+        image: bergun/oncokb-annotator:0.3.16-upstream-v4.1.0@sha256:ec3ee9f8a7b28f645017cc1cd39901ff3f7308d9cd1319dd42fbd50c14d0f01e
         command: [python3]
         source: |
           import json
