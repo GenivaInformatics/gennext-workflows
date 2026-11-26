@@ -29,6 +29,10 @@ Checks:
   never leaves a stale payload; arguments are never shell-interpreted;
   publish posts the staged payload plus tmbMethodId, tmbInputType and
   tmbEffectiveArgs with the cluster token, and fails on a mismatch or non-200.
+  the dev Workflows from make_tmb_v0_workflow.py and make_tmb_method_workflow.py
+  have no secret, backend URL or publish step; the method Workflow's measuring
+  wrapper and report step run on the fixtures (label, V6 figures, and no
+  --min-depth for vcf input).
 
 hostPath volumes are emulated under a temporary "host" root, so every mount
 is the template's own. Needs python3 with PyYAML, and Docker (pulls the
@@ -485,9 +489,77 @@ def v0_workflow_checks():
           and sample["tmbCalculatorImage"] == V1_IMAGE, "V0 workflow: carries the v1 method row")
 
 
+def method_workflow_checks(tmp):
+    """tests/make_tmb_method_workflow.py: its compute (under the measuring
+    wrapper) and report steps run, the label and V6 figures come out, and
+    vcf input runs without --min-depth."""
+    sys.path.insert(0, str(REPO / "tests"))
+    import make_tmb_method_workflow as gen  # noqa: E402 (path set just above)
+
+    v2 = METHODS["v2"]
+    method = {"label": "fixture v2", "calculatorImage": v2["calculator_image"],
+              "cliArgs": v2["cli_args"], "referenceFiles": [
+                  {"path": r["path"], "sha256": sha256(FIX / "ref" / r["path"])}
+                  for r in v2["reference_files"]],
+              "targetSource": "kit_bed", "denominator": "cds",
+              "inputOverrides": v2["input_overrides"], "highThreshold": 10.0,
+              "minRegionSizeBp": 1300000}
+    host, ctx = new_host(f"{tmp}/method", "kit.bed")
+    args = type("Args", (), dict(
+        node="n1", run_id=RUN_ID, sample_id=SAMPLE_ID, input_type="vcf",
+        duckdb=ctx["tasks.duckdb-snv.outputs.parameters.output-duckdb"],
+        target_bed=ctx["tasks.validate-bed-file.outputs.parameters.validated-bed-file"],
+        scratch_dir="/runspace/data/scratch/tmb-method/", ref_base_dir=REF_BASE,
+        method_id=METHOD_ID, generate_name="tmb-method-"))
+    wf = gen.build(args, method)
+    text = json.dumps(wf)
+    check("secretKeyRef" not in text and "gennext-backend" not in text
+          and "publish-tmb" not in text and "http://" not in text,
+          "method workflow: no secret, no backend URL, no publish step")
+    by_name = {t["name"]: t for t in wf["spec"]["templates"]}
+    ours = templates("tasks/collect_tmb_data_v2.yaml")["compute-tmb"]
+    check(by_name["compute-tmb"]["script"]["source"] == ours["script"]["source"],
+          "method workflow: compute-tmb's script is this branch's, verbatim")
+    # Argo's path: workflow arguments -> main -> its v2 task -> wrapper -> compute.
+    wf_args = {p["name"]: p["value"] for p in wf["spec"]["arguments"]["parameters"]}
+    mf = json.loads(wf_args["sample-run-data"])
+    main_in = inputs_for(by_name["main"], wf_args)
+    task = by_name["main"]["dag"]["tasks"][0]
+    outer = inputs_for(by_name["collect-tmb-data-v2"],
+                       {p["name"]: render(p["value"], main_in, mf)
+                        for p in task["arguments"]["parameters"]})
+    step = by_name["collect-tmb-data-v2"]["steps"][0][0]
+    params = inputs_for(by_name["compute-tmb"], {p["name"]: render(p["value"], outer)
+                                                 for p in step["arguments"]["parameters"]})
+    run = run_script(host, by_name["compute-tmb"], params, {})
+    check(run.returncode == 0 and "V6 " in run.stdout,
+          "method workflow: compute runs under the measuring wrapper")
+    if run.returncode:
+        print(show(run))
+        return
+    run = run_script(host, by_name["report"], {}, {})
+    line = [l for l in run.stdout.splitlines() if l.startswith("RESULT ")]
+    check(run.returncode == 0 and len(line) == 1, "method workflow: report prints one RESULT")
+    if not line:
+        print(show(run))
+        return
+    result = json.loads(line[0][len("RESULT "):])
+    check(result["label"].startswith("Undeterminable (coding region"),
+          f"method workflow: label by the method's thresholds ({result['label']})")
+    check("--min-depth" not in result["effectiveArgs"]
+          and "--exclude-mnv" in result["effectiveArgs"],
+          "method workflow: vcf effective args lack --min-depth (V3)")
+    v6 = result["v6"]
+    check(v6.get("exit") == 0 and v6.get("wall_s", -1) >= 0
+          and (v6.get("calculator_max_rss_mib") or 0) > 10,
+          f"method workflow: V6 figures recorded ({v6})")
+
+
 def main():
     static_checks()
     v0_workflow_checks()
+    with tempfile.TemporaryDirectory() as tmp:
+        method_workflow_checks(tmp)
     with tempfile.TemporaryDirectory() as tmp:
         # V0, per caller, kit BED.
         v0 = {}
